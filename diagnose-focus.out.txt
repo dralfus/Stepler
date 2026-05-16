@@ -1,0 +1,2 @@
+foreground: hwnd:A0AF2 CASCADIA_HOSTING_WINDOW_CLASS
+focused: hwnd:80BF8 Windows.UI.Input.InputSite.WindowClass

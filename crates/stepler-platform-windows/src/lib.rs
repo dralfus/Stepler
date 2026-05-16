@@ -1,0 +1,3863 @@
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+use stepler_core::{
+    Capabilities, MethodBinding, MethodId, ReplacementPlan, TextContext, TextRange,
+};
+use stepler_platform::{
+    ApplyReplacementResult, ClipboardBackend, ClipboardFormatSnapshot, ClipboardSnapshot,
+    ForegroundControl, ForegroundProvider, ForegroundTarget, HotkeyListener, MethodProbe,
+    MethodResolver, PlatformError, TextContextProvider, TextReplacer,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyboardControlAction {
+    SwitchToRussian,
+    SwitchToEnglish,
+    SwitchToNext,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisteredHotkey {
+    Pause,
+    ScrollLock,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsFocusDiagnostics {
+    pub foreground_hwnd: String,
+    pub foreground_class: String,
+    pub foreground_title: String,
+    pub focused_hwnd: String,
+    pub focused_class: String,
+    pub focused_title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsMethodDiagnostics {
+    pub foreground: WindowsFocusDiagnostics,
+    pub probes: Vec<WindowsMethodProbeDiagnostics>,
+    pub selected_context_method: Option<String>,
+    pub selected_replacement_method: Option<String>,
+    pub context_method: Option<String>,
+    pub context_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsMethodProbeDiagnostics {
+    pub method: String,
+    pub safety: String,
+    pub requires_clipboard: bool,
+    pub requires_focus_stability: bool,
+    pub can_preflight: bool,
+    pub can_verify: bool,
+    pub reason: String,
+}
+
+pub fn focus_diagnostics() -> Result<WindowsFocusDiagnostics, PlatformError> {
+    focus_diagnostics_impl()
+}
+
+pub fn method_diagnostics() -> Result<WindowsMethodDiagnostics, PlatformError> {
+    method_diagnostics_impl()
+}
+
+impl RegisteredHotkey {
+    #[cfg(windows)]
+    pub fn message_loop<F>(mut on_hotkey: F) -> Result<(), PlatformError>
+    where
+        F: FnMut(stepler_core::CorrectionMode),
+    {
+        register_hotkey(HOTKEY_ID_PAUSE, VK_PAUSE)?;
+        register_hotkey(HOTKEY_ID_SCROLL_LOCK, VK_SCROLL)?;
+        let _registrations = RegisteredHotkeyGuard;
+
+        let mut message = Msg::default();
+        loop {
+            let result = unsafe { GetMessageW(&mut message as *mut Msg, 0, 0, 0) };
+            if result == -1 {
+                return Err(PlatformError::HotkeyUnavailable);
+            }
+            if result == 0 {
+                return Ok(());
+            }
+
+            if message.message == WM_HOTKEY {
+                match message.wparam as i32 {
+                    HOTKEY_ID_PAUSE => on_hotkey(stepler_core::CorrectionMode::Pause),
+                    HOTKEY_ID_SCROLL_LOCK => on_hotkey(stepler_core::CorrectionMode::ScrollLock),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn message_loop<F>(_on_hotkey: F) -> Result<(), PlatformError>
+    where
+        F: FnMut(stepler_core::CorrectionMode),
+    {
+        Err(PlatformError::Unsupported)
+    }
+}
+
+#[cfg(windows)]
+pub fn message_loop_with_keyboard_controls<F, G>(
+    mut on_hotkey: F,
+    mut on_control: G,
+) -> Result<(), PlatformError>
+where
+    F: FnMut(stepler_core::CorrectionMode),
+    G: FnMut(KeyboardControlAction),
+{
+    install_keyboard_control_hook()?;
+    let _hook = KeyboardControlHookGuard;
+
+    let mut message = Msg::default();
+    loop {
+        let result = unsafe { GetMessageW(&mut message as *mut Msg, 0, 0, 0) };
+        if result == -1 {
+            return Err(PlatformError::HotkeyUnavailable);
+        }
+        if result == 0 {
+            return Ok(());
+        }
+
+        match message.message {
+            WM_HOTKEY => match message.wparam as i32 {
+                HOTKEY_ID_PAUSE => on_hotkey(stepler_core::CorrectionMode::Pause),
+                HOTKEY_ID_SCROLL_LOCK => on_hotkey(stepler_core::CorrectionMode::ScrollLock),
+                _ => {}
+            },
+            WM_STEPLER_HOTKEY => {
+                if let Some(mode) = correction_mode_from_message_id(message.wparam) {
+                    on_hotkey(mode);
+                }
+            }
+            WM_STEPLER_KEYBOARD_CONTROL => {
+                if let Some(action) = KeyboardControlAction::from_message_id(message.wparam) {
+                    on_control(action);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn message_loop_with_keyboard_controls<F, G>(
+    _on_hotkey: F,
+    _on_control: G,
+) -> Result<(), PlatformError>
+where
+    F: FnMut(stepler_core::CorrectionMode),
+    G: FnMut(KeyboardControlAction),
+{
+    Err(PlatformError::Unsupported)
+}
+
+#[cfg(windows)]
+pub fn request_keyboard_control_message_loop_stop() -> bool {
+    KEYBOARD_CONTROL_THREAD_ID
+        .get()
+        .copied()
+        .map(|thread_id| unsafe { PostThreadMessageW(thread_id, WM_QUIT, 0, 0) != 0 })
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+pub fn request_keyboard_control_message_loop_stop() -> bool {
+    false
+}
+
+#[cfg(windows)]
+pub fn install_console_modifier_release_handler() -> Result<(), PlatformError> {
+    let ok = unsafe { SetConsoleCtrlHandler(Some(console_ctrl_handler), 1) };
+    if ok == 0 {
+        return Err(PlatformError::Unsupported);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn install_console_modifier_release_handler() -> Result<(), PlatformError> {
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn release_modifier_keys() {
+    for key in [
+        VK_LCONTROL,
+        VK_RCONTROL,
+        VK_CONTROL,
+        VK_LMENU,
+        VK_RMENU,
+        VK_MENU,
+        VK_LSHIFT,
+        VK_RSHIFT,
+        VK_SHIFT,
+    ] {
+        unsafe {
+            keybd_event(key as u8, 0, KEYEVENTF_KEYUP, 0);
+        }
+    }
+    let events = [
+        VK_LCONTROL,
+        VK_RCONTROL,
+        VK_CONTROL,
+        VK_LMENU,
+        VK_RMENU,
+        VK_MENU,
+        VK_LSHIFT,
+        VK_RSHIFT,
+        VK_SHIFT,
+    ]
+    .iter()
+    .copied()
+    .map(|key| KeyboardInputEvent::new(key, true, KeyboardInputMode::VirtualKey))
+    .collect::<Vec<_>>();
+    let _ = send_keyboard_input(&events);
+}
+
+#[cfg(not(windows))]
+pub fn release_modifier_keys() {}
+
+impl KeyboardControlAction {
+    fn message_id(self) -> usize {
+        match self {
+            Self::SwitchToRussian => 1,
+            Self::SwitchToEnglish => 2,
+            Self::SwitchToNext => 3,
+        }
+    }
+
+    fn from_message_id(value: usize) -> Option<Self> {
+        match value {
+            1 => Some(Self::SwitchToRussian),
+            2 => Some(Self::SwitchToEnglish),
+            3 => Some(Self::SwitchToNext),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn console_ctrl_handler(_ctrl_type: u32) -> i32 {
+    release_modifier_keys();
+    0
+}
+
+fn correction_mode_message_id(mode: stepler_core::CorrectionMode) -> usize {
+    match mode {
+        stepler_core::CorrectionMode::Pause => 1,
+        stepler_core::CorrectionMode::ScrollLock => 2,
+    }
+}
+
+fn correction_mode_from_message_id(value: usize) -> Option<stepler_core::CorrectionMode> {
+    match value {
+        1 => Some(stepler_core::CorrectionMode::Pause),
+        2 => Some(stepler_core::CorrectionMode::ScrollLock),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct WindowsLayoutSwitcher {
+    layouts: Vec<isize>,
+    ordered_layouts: Vec<isize>,
+    russian_layout: Option<isize>,
+    english_layout: Option<isize>,
+}
+
+impl WindowsLayoutSwitcher {
+    pub fn new() -> Self {
+        let mut switcher = Self::default();
+        switcher.reload_layouts();
+        switcher
+    }
+
+    pub fn reload_layouts(&mut self) {
+        self.layouts = keyboard_layouts();
+        self.russian_layout = find_layout_by_language(&self.layouts, LANG_RUSSIAN);
+        self.english_layout = find_layout_by_language(&self.layouts, LANG_ENGLISH);
+        self.ordered_layouts.clear();
+        if let Some(layout) = self.russian_layout {
+            self.ordered_layouts.push(layout);
+        }
+        if let Some(layout) = self.english_layout {
+            self.ordered_layouts.push(layout);
+        }
+        if self.ordered_layouts.is_empty() {
+            self.ordered_layouts.extend(self.layouts.iter().copied());
+        }
+    }
+
+    pub fn switch_to_russian(&self) -> Result<(), PlatformError> {
+        let Some(layout) = self.russian_layout else {
+            return Err(PlatformError::Unsupported);
+        };
+        switch_foreground_layout(layout)
+    }
+
+    pub fn switch_to_english(&self) -> Result<(), PlatformError> {
+        let Some(layout) = self.english_layout else {
+            return Err(PlatformError::Unsupported);
+        };
+        switch_foreground_layout(layout)
+    }
+
+    pub fn switch_to_next(&self) -> Result<(), PlatformError> {
+        if self.ordered_layouts.len() < 2 {
+            return Err(PlatformError::Unsupported);
+        }
+
+        let foreground = foreground_hwnd()?;
+        let thread_id = window_thread_id(foreground)?;
+        let current = unsafe { GetKeyboardLayout(thread_id) };
+        let current_index = self
+            .ordered_layouts
+            .iter()
+            .position(|layout| *layout == current)
+            .unwrap_or(0);
+        let next = self.ordered_layouts[(current_index + 1) % self.ordered_layouts.len()];
+        switch_foreground_layout(next)
+    }
+
+    pub fn handle_action(&self, action: KeyboardControlAction) -> Result<(), PlatformError> {
+        match action {
+            KeyboardControlAction::SwitchToRussian => self.switch_to_russian(),
+            KeyboardControlAction::SwitchToEnglish => self.switch_to_english(),
+            KeyboardControlAction::SwitchToNext => self.switch_to_next(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct WindowsForegroundProvider;
+
+impl ForegroundProvider for WindowsForegroundProvider {
+    fn foreground_control(&self) -> Result<ForegroundControl, PlatformError> {
+        foreground_control()
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct WindowsTextContextProvider;
+
+impl TextContextProvider for WindowsTextContextProvider {
+    fn text_context(&self) -> Result<TextContext, PlatformError> {
+        text_context()
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct WindowsTextReplacer;
+
+impl TextReplacer for WindowsTextReplacer {
+    fn apply_replacement(
+        &self,
+        context: &TextContext,
+        plan: &ReplacementPlan,
+    ) -> Result<ApplyReplacementResult, PlatformError> {
+        apply_replacement(context, plan)
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Default, Clone, Copy)]
+struct Win32EditMessagesMethod;
+
+#[cfg(windows)]
+impl Win32EditMessagesMethod {
+    fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
+        is_supported_edit_class(&target.focused_class)
+            .then(|| MethodProbe::safe(MethodId::Win32EditMessages, "focused Win32 edit control"))
+    }
+
+    fn capture(
+        &self,
+        foreground: isize,
+        focused: isize,
+        app_class: String,
+    ) -> Result<TextContext, PlatformError> {
+        let text = window_text(focused)?;
+        let (selection_start, selection_end) =
+            edit_selection(focused).unwrap_or((text.len(), text.len()));
+        let selection_start =
+            edit_offset_to_byte_offset(&text, selection_start).unwrap_or(text.len());
+        let selection_end = edit_offset_to_byte_offset(&text, selection_end).unwrap_or(text.len());
+        let selection_range = if selection_start != selection_end {
+            Some(TextRange::new(selection_start, selection_end))
+        } else {
+            None
+        };
+
+        Ok(TextContext {
+            app_id: app_class,
+            window_id: hwnd_id(foreground),
+            control_id: hwnd_id(focused),
+            text_snapshot: text,
+            caret_range: TextRange::caret(selection_end),
+            selection_range,
+            capabilities: Capabilities {
+                can_replace_directly: true,
+                can_read_selection: true,
+                can_read_caret: true,
+                method_binding: Some(MethodBinding::new(
+                    MethodId::Win32EditMessages,
+                    vec![MethodId::Win32EditMessages],
+                )),
+            },
+        })
+    }
+
+    fn apply(
+        &self,
+        context: &TextContext,
+        plan: &ReplacementPlan,
+    ) -> Result<ApplyReplacementResult, PlatformError> {
+        let hwnd =
+            parse_hwnd_id(&context.control_id).ok_or(PlatformError::ReplacementUnavailable)?;
+        let focused_class = window_class_name(hwnd).unwrap_or_else(|| String::from("unknown"));
+        if !is_supported_edit_class(&focused_class) {
+            return Err(PlatformError::ReplacementUnavailable);
+        }
+
+        let current_text = window_text(hwnd)?;
+        let actual_before = slice_by_range(&current_text, plan.range)
+            .ok_or(PlatformError::PreflightFailed)?
+            .to_owned();
+
+        if actual_before != plan.expected_before_text {
+            return Err(PlatformError::PreflightFailed);
+        }
+
+        set_edit_selection(hwnd, plan.range.start, plan.range.end)?;
+        replace_edit_selection(hwnd, &plan.replacement_text)?;
+
+        let actual_after = window_text(hwnd).ok();
+        Ok(ApplyReplacementResult {
+            applied: true,
+            actual_before_text: Some(actual_before),
+            actual_after_text: actual_after,
+            method: MethodId::Win32EditMessages.as_str().to_owned(),
+        })
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Default, Clone, Copy)]
+struct ConsoleBufferMethod;
+
+#[cfg(windows)]
+impl ConsoleBufferMethod {
+    fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
+        (target.app_class == "ConsoleWindowClass")
+            .then(|| MethodProbe::safe(MethodId::ConsoleBuffer, "classic console buffer"))
+    }
+
+    fn capture(
+        &self,
+        foreground: isize,
+        focused: isize,
+        app_class: &str,
+        focused_class: &str,
+    ) -> Result<TextContext, PlatformError> {
+        let input = read_console_input_text(foreground)?;
+        let text_len = input.len();
+        Ok(TextContext {
+            app_id: format!("{app_class}/{focused_class}"),
+            window_id: hwnd_id(foreground),
+            control_id: format!("terminal-console:{}", hwnd_id(focused)),
+            text_snapshot: input,
+            caret_range: TextRange::caret(text_len),
+            selection_range: None,
+            capabilities: Capabilities {
+                can_replace_directly: false,
+                can_read_selection: false,
+                can_read_caret: false,
+                method_binding: Some(MethodBinding::new(
+                    MethodId::ConsoleBuffer,
+                    vec![MethodId::ConsoleBuffer],
+                )),
+            },
+        })
+    }
+
+    fn apply(
+        &self,
+        context: &TextContext,
+        plan: &ReplacementPlan,
+    ) -> Result<ApplyReplacementResult, PlatformError> {
+        let foreground = foreground_hwnd()?;
+        let current_text = read_console_input_text(foreground)?;
+        let actual_before = slice_by_range(&current_text, plan.range);
+        if current_text != context.text_snapshot
+            || actual_before != Some(plan.expected_before_text.as_str())
+        {
+            return Err(PlatformError::PreflightFailed);
+        }
+
+        let replacement = replace_range_text(&current_text, plan.range, &plan.replacement_text)
+            .ok_or(PlatformError::PreflightFailed)?;
+        let chars_to_remove = current_text.encode_utf16().count();
+        for _ in 0..chars_to_remove {
+            send_key(VK_BACK);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        restore_clipboard(clipboard_snapshot_from_text(&replacement))?;
+        send_key_chord(&[VK_LSHIFT], VK_INSERT);
+        std::thread::sleep(Duration::from_millis(60));
+
+        Ok(ApplyReplacementResult {
+            applied: true,
+            actual_before_text: Some(current_text),
+            actual_after_text: Some(replacement),
+            method: MethodId::ConsoleBuffer.as_str().to_owned(),
+        })
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Default, Clone, Copy)]
+struct TerminalClipboardShortcutMethod;
+
+#[cfg(windows)]
+impl TerminalClipboardShortcutMethod {
+    fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
+        is_supported_terminal_class(&target.app_class, &target.focused_class).then(|| {
+            MethodProbe::risky(
+                MethodId::TerminalClipboardShortcut,
+                "terminal clipboard shortcut fallback",
+            )
+        })
+    }
+
+    fn capture(
+        &self,
+        foreground: isize,
+        focused: isize,
+        app_class: &str,
+        focused_class: &str,
+    ) -> Result<TextContext, PlatformError> {
+        let left_text = read_terminal_left_text()?;
+        let text_len = left_text.len();
+        Ok(TextContext {
+            app_id: format!("{app_class}/{focused_class}"),
+            window_id: hwnd_id(foreground),
+            control_id: format!("terminal:{}", hwnd_id(focused)),
+            text_snapshot: left_text,
+            caret_range: TextRange::caret(text_len),
+            selection_range: None,
+            capabilities: Capabilities {
+                can_replace_directly: false,
+                can_read_selection: false,
+                can_read_caret: false,
+                method_binding: Some(MethodBinding::new(
+                    MethodId::TerminalClipboardShortcut,
+                    vec![MethodId::TerminalClipboardShortcut],
+                )),
+            },
+        })
+    }
+
+    fn apply(
+        &self,
+        context: &TextContext,
+        plan: &ReplacementPlan,
+    ) -> Result<ApplyReplacementResult, PlatformError> {
+        let actual_before = slice_by_range(&context.text_snapshot, plan.range);
+        if actual_before != Some(plan.expected_before_text.as_str()) {
+            return Err(PlatformError::PreflightFailed);
+        }
+
+        let replacement =
+            replace_range_text(&context.text_snapshot, plan.range, &plan.replacement_text)
+                .ok_or(PlatformError::PreflightFailed)?;
+        send_key_chord(&[VK_LSHIFT], VK_HOME);
+        std::thread::sleep(Duration::from_millis(40));
+        restore_clipboard(clipboard_snapshot_from_text(&replacement))?;
+        send_terminal_shortcut_with_english_layout(&[VK_CONTROL, VK_SHIFT], VK_V);
+        std::thread::sleep(Duration::from_millis(60));
+
+        Ok(ApplyReplacementResult {
+            applied: true,
+            actual_before_text: Some(context.text_snapshot.clone()),
+            actual_after_text: Some(replacement),
+            method: MethodId::TerminalClipboardShortcut.as_str().to_owned(),
+        })
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Default, Clone, Copy)]
+struct ClipboardSelectionMethod;
+
+#[cfg(windows)]
+impl ClipboardSelectionMethod {
+    fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
+        if is_supported_edit_class(&target.focused_class)
+            || is_supported_terminal_class(&target.app_class, &target.focused_class)
+            || is_word_target(target)
+            || target.app_class.eq_ignore_ascii_case("Progman")
+            || target.app_class.eq_ignore_ascii_case("WorkerW")
+            || target.focused_class.eq_ignore_ascii_case("SysListView32")
+        {
+            return None;
+        }
+
+        Some(MethodProbe::risky(
+            MethodId::ClipboardSelection,
+            "generic selected text clipboard fallback",
+        ))
+    }
+
+    fn capture(
+        &self,
+        foreground: isize,
+        focused: isize,
+        app_class: &str,
+        focused_class: &str,
+    ) -> Result<TextContext, PlatformError> {
+        let snapshot = capture_clipboard()?;
+        let sequence_before = snapshot.sequence_number;
+        send_key_chord(&[VK_CONTROL], VK_C);
+        let copied = wait_for_clipboard_text_change(sequence_before, Duration::from_millis(700))
+            .filter(|text| !text.trim().is_empty())
+            .ok_or(PlatformError::ReplacementUnavailable);
+        let _ = restore_clipboard(snapshot);
+        let text = copied?;
+        let text_len = text.len();
+
+        Ok(TextContext {
+            app_id: format!("{app_class}/{focused_class}"),
+            window_id: hwnd_id(foreground),
+            control_id: format!("clipboard-selection:{}", hwnd_id(focused)),
+            text_snapshot: text,
+            caret_range: TextRange::caret(text_len),
+            selection_range: Some(TextRange::new(0, text_len)),
+            capabilities: Capabilities {
+                can_replace_directly: false,
+                can_read_selection: true,
+                can_read_caret: false,
+                method_binding: Some(MethodBinding::new(
+                    MethodId::ClipboardSelection,
+                    vec![MethodId::ClipboardSelection, MethodId::SendInput],
+                )),
+            },
+        })
+    }
+
+    fn apply(
+        &self,
+        context: &TextContext,
+        plan: &ReplacementPlan,
+    ) -> Result<ApplyReplacementResult, PlatformError> {
+        if plan.range != TextRange::new(0, context.text_snapshot.len())
+            || plan.expected_before_text != context.text_snapshot
+        {
+            return Err(PlatformError::PreflightFailed);
+        }
+
+        restore_clipboard(clipboard_snapshot_from_text(&plan.replacement_text))?;
+        send_key_chord(&[VK_CONTROL], VK_V);
+        std::thread::sleep(Duration::from_millis(60));
+
+        Ok(ApplyReplacementResult {
+            applied: true,
+            actual_before_text: Some(context.text_snapshot.clone()),
+            actual_after_text: Some(plan.replacement_text.clone()),
+            method: MethodId::ClipboardSelection.as_str().to_owned(),
+        })
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Default, Clone, Copy)]
+struct SendInputMethod;
+
+#[cfg(windows)]
+impl SendInputMethod {
+    fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
+        if is_supported_terminal_class(&target.app_class, &target.focused_class)
+            || is_word_target(target)
+            || target.app_class.eq_ignore_ascii_case("Progman")
+            || target.app_class.eq_ignore_ascii_case("WorkerW")
+            || target.focused_class.eq_ignore_ascii_case("SysListView32")
+        {
+            return None;
+        }
+
+        let mut probe = MethodProbe::risky(MethodId::SendInput, "generic SendInput text fallback");
+        probe.requires_clipboard = false;
+        probe.can_preflight = false;
+        probe.can_verify = false;
+        Some(probe)
+    }
+
+    fn apply(
+        &self,
+        context: &TextContext,
+        plan: &ReplacementPlan,
+    ) -> Result<ApplyReplacementResult, PlatformError> {
+        if plan.range != TextRange::new(0, context.text_snapshot.len())
+            || plan.expected_before_text != context.text_snapshot
+        {
+            return Err(PlatformError::PreflightFailed);
+        }
+
+        send_unicode_text(&plan.replacement_text)?;
+        std::thread::sleep(Duration::from_millis(40));
+
+        Ok(ApplyReplacementResult {
+            applied: true,
+            actual_before_text: Some(context.text_snapshot.clone()),
+            actual_after_text: Some(plan.replacement_text.clone()),
+            method: MethodId::SendInput.as_str().to_owned(),
+        })
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Default, Clone, Copy)]
+struct WordComMethod;
+
+#[cfg(windows)]
+impl WordComMethod {
+    fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
+        is_word_target(target)
+            .then(|| MethodProbe::safe(MethodId::WordCom, "Word COM object model"))
+    }
+
+    fn capture(
+        &self,
+        foreground: isize,
+        focused: isize,
+        app_class: &str,
+        focused_class: &str,
+    ) -> Result<TextContext, PlatformError> {
+        let output = run_powershell_script(WORD_CAPTURE_SCRIPT, &[])?;
+        let fields = parse_key_value_lines(&output);
+        if fields.get("ok").map(String::as_str) != Some("1") {
+            return Err(PlatformError::ReplacementUnavailable);
+        }
+        let text = fields
+            .get("text_b64")
+            .and_then(|value| decode_utf16le_base64(value).ok())
+            .ok_or(PlatformError::ReplacementUnavailable)?;
+        let base = fields
+            .get("base")
+            .and_then(|value| value.parse::<usize>().ok())
+            .ok_or(PlatformError::ReplacementUnavailable)?;
+        let selection_range = (fields.get("kind").map(String::as_str) == Some("selection"))
+            .then(|| TextRange::new(0, text.len()));
+        if text.trim().is_empty() {
+            return Err(PlatformError::ReplacementUnavailable);
+        }
+
+        Ok(TextContext {
+            app_id: format!("{app_class}/{focused_class}"),
+            window_id: hwnd_id(foreground),
+            control_id: format!("word-com:{}:{}", base, hwnd_id(focused)),
+            caret_range: TextRange::caret(text.len()),
+            selection_range,
+            text_snapshot: text,
+            capabilities: Capabilities {
+                can_replace_directly: true,
+                can_read_selection: true,
+                can_read_caret: true,
+                method_binding: Some(MethodBinding::new(
+                    MethodId::WordCom,
+                    vec![MethodId::WordCom],
+                )),
+            },
+        })
+    }
+
+    fn apply(
+        &self,
+        context: &TextContext,
+        plan: &ReplacementPlan,
+    ) -> Result<ApplyReplacementResult, PlatformError> {
+        let base = parse_word_com_base(&context.control_id)
+            .ok_or(PlatformError::ReplacementUnavailable)?;
+        let actual_before = slice_by_range(&context.text_snapshot, plan.range)
+            .ok_or(PlatformError::PreflightFailed)?
+            .to_owned();
+        if actual_before != plan.expected_before_text {
+            return Err(PlatformError::PreflightFailed);
+        }
+
+        let abs_start = base + byte_offset_to_utf16(&context.text_snapshot, plan.range.start);
+        let abs_end = base + byte_offset_to_utf16(&context.text_snapshot, plan.range.end);
+        let env = [
+            ("STEPLER_WORD_START", abs_start.to_string()),
+            ("STEPLER_WORD_END", abs_end.to_string()),
+            (
+                "STEPLER_WORD_EXPECTED_B64",
+                encode_utf16le_base64(&plan.expected_before_text),
+            ),
+            (
+                "STEPLER_WORD_REPLACEMENT_B64",
+                encode_utf16le_base64(&plan.replacement_text),
+            ),
+        ];
+        let output = run_powershell_script(WORD_APPLY_SCRIPT, &env)?;
+        let fields = parse_key_value_lines(&output);
+        if fields.get("ok").map(String::as_str) != Some("1") {
+            return Err(PlatformError::PreflightFailed);
+        }
+        let actual_after = fields
+            .get("after_b64")
+            .and_then(|value| decode_utf16le_base64(value).ok());
+
+        Ok(ApplyReplacementResult {
+            applied: true,
+            actual_before_text: Some(actual_before),
+            actual_after_text: actual_after,
+            method: MethodId::WordCom.as_str().to_owned(),
+        })
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Default, Clone, Copy)]
+struct UiAutomationTextMethod;
+
+#[cfg(windows)]
+impl UiAutomationTextMethod {
+    fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
+        if is_supported_edit_class(&target.focused_class)
+            || is_supported_terminal_class(&target.app_class, &target.focused_class)
+            || is_word_target(target)
+            || target.app_class.eq_ignore_ascii_case("Progman")
+            || target.app_class.eq_ignore_ascii_case("WorkerW")
+            || target.focused_class.eq_ignore_ascii_case("SysListView32")
+        {
+            return None;
+        }
+
+        Some(MethodProbe::safe(
+            MethodId::UiAutomationText,
+            "focused UI Automation text/value candidate",
+        ))
+    }
+
+    fn capture(
+        &self,
+        foreground: isize,
+        focused: isize,
+        app_class: &str,
+        focused_class: &str,
+    ) -> Result<TextContext, PlatformError> {
+        let output = run_powershell_script(
+            UIA_CAPTURE_SCRIPT,
+            &[("STEPLER_UIA_FOREGROUND_HWND", foreground.to_string())],
+        )?;
+        let fields = parse_key_value_lines(&output);
+        if fields.get("ok").map(String::as_str) != Some("1") {
+            return Err(PlatformError::ReplacementUnavailable);
+        }
+        if fields.get("can_set_value").map(String::as_str) != Some("1") {
+            return Err(PlatformError::ReplacementUnavailable);
+        }
+
+        let text = fields
+            .get("text_b64")
+            .and_then(|value| decode_utf16le_base64(value).ok())
+            .ok_or(PlatformError::ReplacementUnavailable)?;
+        if text.is_empty() {
+            return Err(PlatformError::ReplacementUnavailable);
+        }
+
+        let selection_start_utf16 = fields
+            .get("selection_start")
+            .and_then(|value| value.parse::<usize>().ok());
+        let selection_end_utf16 = fields
+            .get("selection_end")
+            .and_then(|value| value.parse::<usize>().ok());
+        let caret_utf16 = fields
+            .get("caret")
+            .and_then(|value| value.parse::<usize>().ok());
+
+        let selection_range =
+            selection_start_utf16
+                .zip(selection_end_utf16)
+                .and_then(|(start, end)| {
+                    if start == end {
+                        return None;
+                    }
+                    Some(TextRange::new(
+                        edit_offset_to_byte_offset(&text, start)?,
+                        edit_offset_to_byte_offset(&text, end)?,
+                    ))
+                });
+        let caret = caret_utf16
+            .and_then(|caret| edit_offset_to_byte_offset(&text, caret))
+            .or_else(|| selection_range.map(|range| range.end))
+            .unwrap_or_else(|| text.len());
+        let selection_range = selection_range.or_else(|| {
+            let start = selection_start_utf16?;
+            let end = selection_end_utf16?;
+            if start != end {
+                return None;
+            }
+            let caret = edit_offset_to_byte_offset(&text, start)?;
+            (caret != text.len()).then_some(TextRange::caret(caret))
+        });
+        let user_selection_range = selection_range.and_then(|range| {
+            if range.start == range.end {
+                None
+            } else {
+                Some(range)
+            }
+        });
+        let caret = user_selection_range.map(|range| range.end).unwrap_or(caret);
+        let runtime_id = fields
+            .get("runtime_id")
+            .cloned()
+            .unwrap_or_else(|| String::from("unknown"));
+
+        Ok(TextContext {
+            app_id: format!("{app_class}/{focused_class}"),
+            window_id: hwnd_id(foreground),
+            control_id: format!("uia:{}:{}", runtime_id, hwnd_id(focused)),
+            text_snapshot: text,
+            caret_range: TextRange::caret(caret),
+            selection_range: user_selection_range,
+            capabilities: Capabilities {
+                can_replace_directly: true,
+                can_read_selection: user_selection_range.is_some(),
+                can_read_caret: true,
+                method_binding: Some(MethodBinding::new(
+                    MethodId::UiAutomationText,
+                    vec![MethodId::UiAutomationText],
+                )),
+            },
+        })
+    }
+
+    fn apply(
+        &self,
+        context: &TextContext,
+        plan: &ReplacementPlan,
+    ) -> Result<ApplyReplacementResult, PlatformError> {
+        let actual_before = slice_by_range(&context.text_snapshot, plan.range)
+            .ok_or(PlatformError::PreflightFailed)?
+            .to_owned();
+        if actual_before != plan.expected_before_text {
+            return Err(PlatformError::PreflightFailed);
+        }
+
+        let replacement =
+            replace_range_text(&context.text_snapshot, plan.range, &plan.replacement_text)
+                .ok_or(PlatformError::PreflightFailed)?;
+        let runtime_id = parse_uia_runtime_id(&context.control_id)
+            .ok_or(PlatformError::ReplacementUnavailable)?;
+        let caret_after_utf16 = byte_offset_to_utf16(&context.text_snapshot, plan.range.start)
+            + plan.replacement_text.encode_utf16().count();
+        let env = [
+            (
+                "STEPLER_UIA_FOREGROUND_HWND",
+                parse_hwnd_id(&context.window_id)
+                    .map(|hwnd| hwnd.to_string())
+                    .unwrap_or_default(),
+            ),
+            ("STEPLER_UIA_RUNTIME_ID", runtime_id),
+            (
+                "STEPLER_UIA_EXPECTED_B64",
+                encode_utf16le_base64(&context.text_snapshot),
+            ),
+            (
+                "STEPLER_UIA_REPLACEMENT_B64",
+                encode_utf16le_base64(&replacement),
+            ),
+            ("STEPLER_UIA_CARET_UTF16", caret_after_utf16.to_string()),
+        ];
+        let output = run_powershell_script(UIA_APPLY_SCRIPT, &env)?;
+        let fields = parse_key_value_lines(&output);
+        if fields.get("ok").map(String::as_str) != Some("1") {
+            return Err(PlatformError::PreflightFailed);
+        }
+        let actual_after = fields
+            .get("after_b64")
+            .and_then(|value| decode_utf16le_base64(value).ok());
+
+        Ok(ApplyReplacementResult {
+            applied: true,
+            actual_before_text: Some(actual_before),
+            actual_after_text: actual_after,
+            method: MethodId::UiAutomationText.as_str().to_owned(),
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct WindowsClipboardBackend;
+
+impl ClipboardBackend for WindowsClipboardBackend {
+    fn capture(&self) -> Result<ClipboardSnapshot, PlatformError> {
+        capture_clipboard()
+    }
+
+    fn restore(&self, snapshot: ClipboardSnapshot) -> Result<(), PlatformError> {
+        restore_clipboard(snapshot)
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct WindowsHotkeyListener {
+    running: bool,
+}
+
+impl WindowsHotkeyListener {
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl HotkeyListener for WindowsHotkeyListener {
+    fn start(&mut self) -> Result<(), PlatformError> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) -> Result<(), PlatformError> {
+        self.running = false;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stepler_platform::HotkeyListener;
+
+    #[test]
+    fn skeleton_hotkey_listener_tracks_running_state() {
+        let mut listener = WindowsHotkeyListener::default();
+
+        assert!(!listener.is_running());
+
+        listener.start().unwrap();
+        assert!(listener.is_running());
+
+        listener.stop().unwrap();
+        assert!(!listener.is_running());
+    }
+
+    #[test]
+    fn context_id_parser_rejects_invalid_ids() {
+        assert_eq!(parse_hwnd_id("nope"), None);
+        assert_eq!(parse_hwnd_id("hwnd:"), None);
+        assert_eq!(parse_hwnd_id("hwnd:XYZ"), None);
+        assert_eq!(parse_hwnd_id("hwnd:1A"), Some(0x1A));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_foreground_override_parses_decimal_and_hex_hwnds() {
+        unsafe {
+            std::env::set_var("STEPLER_TEST_FOREGROUND_HWND", "123");
+        }
+        assert_eq!(test_foreground_hwnd_override(), Some(123));
+        unsafe {
+            std::env::set_var("STEPLER_TEST_FOREGROUND_HWND", "0x7B");
+        }
+        assert_eq!(test_foreground_hwnd_override(), Some(123));
+        unsafe {
+            std::env::remove_var("STEPLER_TEST_FOREGROUND_HWND");
+        }
+    }
+
+    #[test]
+    fn supported_edit_class_is_allowlisted() {
+        assert!(is_supported_edit_class("Edit"));
+        assert!(is_supported_edit_class("RICHEDIT50W"));
+        assert!(is_supported_edit_class("RichEditD2DPT"));
+        assert!(!is_supported_edit_class("ConsoleWindowClass"));
+        assert!(!is_supported_edit_class("Notepad"));
+    }
+
+    #[test]
+    fn supported_terminal_class_is_allowlisted() {
+        assert!(is_supported_terminal_class(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass"
+        ));
+        assert!(is_supported_terminal_class(
+            "ConsoleWindowClass",
+            "ConsoleWindowClass"
+        ));
+        assert!(!is_supported_terminal_class("Notepad", "Edit"));
+    }
+
+    #[test]
+    fn context_capabilities_carry_method_binding() {
+        let capabilities = Capabilities {
+            can_replace_directly: true,
+            can_read_selection: true,
+            can_read_caret: true,
+            method_binding: Some(MethodBinding::new(
+                MethodId::Win32EditMessages,
+                vec![MethodId::Win32EditMessages],
+            )),
+        };
+
+        let binding = capabilities.method_binding.unwrap();
+        assert_eq!(binding.context_method, MethodId::Win32EditMessages);
+        assert_eq!(binding.replace_methods, vec![MethodId::Win32EditMessages]);
+    }
+
+    #[test]
+    fn context_replacement_method_uses_first_bound_replace_method() {
+        let context = TextContext {
+            app_id: String::from("ConsoleWindowClass"),
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("terminal-console:hwnd:1"),
+            text_snapshot: String::from("пше"),
+            caret_range: TextRange::caret("пше".len()),
+            selection_range: None,
+            capabilities: Capabilities {
+                can_replace_directly: false,
+                can_read_selection: false,
+                can_read_caret: false,
+                method_binding: Some(MethodBinding::new(
+                    MethodId::ConsoleBuffer,
+                    vec![MethodId::ConsoleBuffer],
+                )),
+            },
+        };
+
+        assert_eq!(
+            context_replacement_method(&context),
+            Some(MethodId::ConsoleBuffer)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn win32_edit_method_probes_supported_edit_controls() {
+        let target = ForegroundTarget {
+            app_class: String::from("Notepad"),
+            focused_class: String::from("Edit"),
+            title: String::new(),
+            process_name: None,
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("hwnd:2"),
+        };
+
+        let probe = Win32EditMessagesMethod.probe(&target).unwrap();
+
+        assert_eq!(probe.method_id, MethodId::Win32EditMessages);
+        assert_eq!(probe.safety, stepler_platform::ProbeSafety::Safe);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn console_buffer_method_probes_classic_console() {
+        let target = ForegroundTarget {
+            app_class: String::from("ConsoleWindowClass"),
+            focused_class: String::from("ConsoleWindowClass"),
+            title: String::new(),
+            process_name: None,
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("hwnd:1"),
+        };
+
+        let probe = ConsoleBufferMethod.probe(&target).unwrap();
+
+        assert_eq!(probe.method_id, MethodId::ConsoleBuffer);
+        assert_eq!(probe.safety, stepler_platform::ProbeSafety::Safe);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_clipboard_method_probes_windows_terminal_as_risky() {
+        let target = ForegroundTarget {
+            app_class: String::from("CASCADIA_HOSTING_WINDOW_CLASS"),
+            focused_class: String::from("Windows.UI.Input.InputSite.WindowClass"),
+            title: String::new(),
+            process_name: None,
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("hwnd:2"),
+        };
+
+        let probe = TerminalClipboardShortcutMethod.probe(&target).unwrap();
+
+        assert_eq!(probe.method_id, MethodId::TerminalClipboardShortcut);
+        assert_eq!(probe.safety, stepler_platform::ProbeSafety::Risky);
+        assert!(probe.requires_clipboard);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn clipboard_selection_method_probes_unknown_controls_as_risky() {
+        let target = ForegroundTarget {
+            app_class: String::from("Chrome_WidgetWin_1"),
+            focused_class: String::from("Chrome_WidgetWin_0"),
+            title: String::new(),
+            process_name: None,
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("hwnd:2"),
+        };
+
+        let probe = ClipboardSelectionMethod.probe(&target).unwrap();
+
+        assert_eq!(probe.method_id, MethodId::ClipboardSelection);
+        assert_eq!(probe.safety, stepler_platform::ProbeSafety::Risky);
+        assert!(probe.requires_clipboard);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn send_input_method_probes_unknown_controls_as_risky_without_clipboard() {
+        let target = ForegroundTarget {
+            app_class: String::from("Chrome_WidgetWin_1"),
+            focused_class: String::from("Chrome_WidgetWin_0"),
+            title: String::new(),
+            process_name: None,
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("hwnd:2"),
+        };
+
+        let probe = SendInputMethod.probe(&target).unwrap();
+
+        assert_eq!(probe.method_id, MethodId::SendInput);
+        assert_eq!(probe.safety, stepler_platform::ProbeSafety::Risky);
+        assert!(!probe.requires_clipboard);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn uia_text_method_probes_unknown_non_special_controls() {
+        let target = ForegroundTarget {
+            app_class: String::from("Chrome_WidgetWin_1"),
+            focused_class: String::from("Chrome_RenderWidgetHostHWND"),
+            title: String::from("Codex"),
+            process_name: None,
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("hwnd:2"),
+        };
+
+        let probe = UiAutomationTextMethod.probe(&target).unwrap();
+
+        assert_eq!(probe.method_id, MethodId::UiAutomationText);
+        assert_eq!(probe.safety, stepler_platform::ProbeSafety::Safe);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn uia_text_method_does_not_probe_known_special_controls() {
+        let edit = ForegroundTarget {
+            app_class: String::from("Notepad"),
+            focused_class: String::from("Edit"),
+            title: String::new(),
+            process_name: None,
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("hwnd:2"),
+        };
+        let terminal = ForegroundTarget {
+            app_class: String::from("CASCADIA_HOSTING_WINDOW_CLASS"),
+            focused_class: String::from("Windows.UI.Input.InputSite.WindowClass"),
+            title: String::new(),
+            process_name: None,
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("hwnd:2"),
+        };
+
+        assert!(UiAutomationTextMethod.probe(&edit).is_none());
+        assert!(UiAutomationTextMethod.probe(&terminal).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn word_com_method_probes_word_windows() {
+        let target = ForegroundTarget {
+            app_class: String::from("OpusApp"),
+            focused_class: String::from("_WwG"),
+            title: String::from("Document1 - Word"),
+            process_name: Some(String::from("WINWORD")),
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("hwnd:2"),
+        };
+
+        let probe = WordComMethod.probe(&target).unwrap();
+
+        assert_eq!(probe.method_id, MethodId::WordCom);
+        assert_eq!(probe.safety, stepler_platform::ProbeSafety::Safe);
+        assert!(!probe.requires_clipboard);
+    }
+
+    #[test]
+    fn word_com_control_id_carries_absolute_base() {
+        assert_eq!(parse_word_com_base("word-com:42:hwnd:ABC"), Some(42));
+        assert_eq!(parse_word_com_base("word-com:nope:hwnd:ABC"), None);
+    }
+
+    #[test]
+    fn utf16le_base64_round_trips_word_text() {
+        let encoded = encode_utf16le_base64("любовь");
+
+        assert_eq!(encoded, "OwROBDEEPgQyBEwE");
+        assert_eq!(decode_utf16le_base64(&encoded).unwrap(), "любовь");
+    }
+
+    #[test]
+    fn unsupported_control_error_keeps_diagnostic_classes() {
+        let error = PlatformError::UnsupportedControl {
+            app_class: String::from("Chrome_WidgetWin_1"),
+            focused_class: String::from("Chrome_RenderWidgetHostHWND"),
+        };
+
+        assert_eq!(
+            format!("{error:?}"),
+            "UnsupportedControl { app_class: \"Chrome_WidgetWin_1\", focused_class: \"Chrome_RenderWidgetHostHWND\" }"
+        );
+    }
+
+    #[test]
+    fn slice_by_range_uses_byte_offsets_and_checks_boundaries() {
+        let text = "привет мир";
+
+        assert_eq!(
+            slice_by_range(text, TextRange::new(0, "привет".len())),
+            Some("привет")
+        );
+        assert_eq!(slice_by_range(text, TextRange::new(1, 3)), None);
+    }
+
+    #[test]
+    fn replace_range_text_preserves_terminal_prefix() {
+        let text = "echo ghbdtn vbh";
+        let start = text.find("ghbdtn").unwrap();
+        let end = text.len();
+
+        assert_eq!(
+            replace_range_text(text, TextRange::new(start, end), "привет мир"),
+            Some(String::from("echo привет мир"))
+        );
+    }
+
+    #[test]
+    fn console_prompt_line_parser_extracts_input() {
+        assert_eq!(
+            console_input_from_prompt_line("PS C:\\Users\\alexey.andreev> пше      "),
+            "пше"
+        );
+        assert_eq!(console_input_from_prompt_line("ghbdtn vbh"), "ghbdtn vbh");
+    }
+
+    #[test]
+    fn converts_offsets_between_utf16_and_utf8_boundaries() {
+        let text = "a привет 🌍";
+        let byte_offset = "a привет".len();
+        let edit_offset = byte_offset_to_edit_offset(text, byte_offset).unwrap();
+
+        assert_eq!(
+            edit_offset_to_byte_offset(text, edit_offset),
+            Some(byte_offset)
+        );
+        assert_eq!(edit_offset_to_byte_offset(text, 999), None);
+        assert_eq!(byte_offset_to_edit_offset(text, 3), None);
+    }
+
+    #[test]
+    fn converts_edit_offsets_with_crlf_counted_as_one_position() {
+        let text = "one\r\ntwo\r\nвальс поле long ghbdtn vbh";
+        let ghbdtn_start = text.find("ghbdtn").unwrap();
+        let ghbdtn_end = ghbdtn_start + "ghbdtn".len();
+
+        let edit_start = byte_offset_to_edit_offset(text, ghbdtn_start).unwrap();
+        let edit_end = byte_offset_to_edit_offset(text, ghbdtn_end).unwrap();
+
+        assert!(edit_start < ghbdtn_start);
+        assert!(edit_end < ghbdtn_end);
+        assert_eq!(
+            edit_offset_to_byte_offset(text, edit_start),
+            Some(ghbdtn_start)
+        );
+        assert_eq!(edit_offset_to_byte_offset(text, edit_end), Some(ghbdtn_end));
+        assert_eq!(
+            byte_offset_to_edit_offset(text, text.find('\n').unwrap()),
+            None
+        );
+    }
+
+    #[test]
+    fn clipboard_wide_string_round_trips_with_nul_terminator() {
+        let wide = string_to_null_terminated_utf16("тест");
+
+        assert_eq!(wide.last(), Some(&0));
+        assert_eq!(utf16_until_nul_to_string(&wide), "тест");
+    }
+
+    #[test]
+    fn global_memory_bytes_round_up_to_even_utf16_size() {
+        let wide = string_to_null_terminated_utf16("ab");
+        let bytes = utf16_to_le_bytes(&wide);
+
+        assert_eq!(bytes.len(), wide.len() * 2);
+        assert_eq!(le_bytes_to_utf16(&bytes), wide);
+    }
+
+    #[test]
+    fn clipboard_snapshot_can_hold_multiple_formats() {
+        let snapshot = ClipboardSnapshot {
+            text: Some(String::from("hello")),
+            sequence_number: Some(42),
+            formats: vec![
+                ClipboardFormatSnapshot {
+                    format: 1,
+                    bytes: vec![1, 2, 3],
+                },
+                ClipboardFormatSnapshot {
+                    format: CF_UNICODETEXT,
+                    bytes: utf16_to_le_bytes(&string_to_null_terminated_utf16("hello")),
+                },
+            ],
+        };
+
+        assert_eq!(snapshot.formats.len(), 2);
+        assert_eq!(snapshot.text.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn keyboard_control_action_message_ids_round_trip() {
+        for action in [
+            KeyboardControlAction::SwitchToRussian,
+            KeyboardControlAction::SwitchToEnglish,
+            KeyboardControlAction::SwitchToNext,
+        ] {
+            assert_eq!(
+                KeyboardControlAction::from_message_id(action.message_id()),
+                Some(action)
+            );
+        }
+        assert_eq!(KeyboardControlAction::from_message_id(99), None);
+    }
+
+    #[test]
+    fn keyboard_control_state_switches_only_on_single_ctrl() {
+        let mut state = KeyboardControlHookState::default();
+
+        assert_eq!(state.handle_key(VK_LCONTROL, true, false), None);
+        assert_eq!(
+            state.handle_key(VK_LCONTROL, false, true),
+            Some(KeyboardControlAction::SwitchToRussian)
+        );
+
+        assert_eq!(state.handle_key(VK_RCONTROL, true, false), None);
+        assert_eq!(state.handle_key(0x43, true, false), None);
+        assert_eq!(state.handle_key(VK_RCONTROL, false, true), None);
+    }
+
+    #[test]
+    fn keyboard_control_state_emits_correction_hotkey_once_until_key_up() {
+        let mut state = KeyboardControlHookState::default();
+
+        assert_eq!(
+            state.handle_correction_hotkey(VK_SCROLL, true, false),
+            Some(stepler_core::CorrectionMode::ScrollLock)
+        );
+        assert_eq!(state.handle_correction_hotkey(VK_SCROLL, true, false), None);
+        assert_eq!(state.handle_correction_hotkey(VK_SCROLL, false, true), None);
+        assert_eq!(state.handle_correction_hotkey(VK_SCROLL, true, false), None);
+        state.last_scroll_lock_at = Some(Instant::now() - Duration::from_millis(300));
+        assert_eq!(
+            state.handle_correction_hotkey(VK_SCROLL, true, false),
+            Some(stepler_core::CorrectionMode::ScrollLock)
+        );
+
+        assert_eq!(
+            state.handle_correction_hotkey(VK_PAUSE, true, false),
+            Some(stepler_core::CorrectionMode::Pause)
+        );
+        assert_eq!(state.handle_correction_hotkey(VK_PAUSE, false, true), None);
+        let mut state = KeyboardControlHookState::default();
+        assert_eq!(
+            state.handle_correction_hotkey(VK_CANCEL, true, false),
+            Some(stepler_core::CorrectionMode::Pause)
+        );
+    }
+
+    #[test]
+    fn keyboard_control_state_suppresses_scrolllock_companion_c_briefly() {
+        let mut state = KeyboardControlHookState::default();
+
+        assert_eq!(
+            state.handle_correction_hotkey(VK_SCROLL, true, false),
+            Some(stepler_core::CorrectionMode::ScrollLock)
+        );
+        assert!(state.should_suppress_companion_key(VK_C));
+        assert!(state.should_suppress_companion_key(VK_C));
+        assert!(state.should_suppress_companion_key(VK_HOME));
+        assert!(state.should_suppress_companion_key(VK_RIGHT));
+        assert!(!state.should_suppress_companion_key(VK_LCONTROL));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn injected_keyboard_events_are_not_interpreted_as_user_controls() {
+        let event = KbdLlHookStruct {
+            vk_code: VK_CONTROL,
+            flags: LLKHF_INJECTED,
+            ..KbdLlHookStruct::default()
+        };
+
+        assert!(should_ignore_keyboard_hook_event(event));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn send_input_keyboard_struct_has_windows_x64_size() {
+        assert_eq!(std::mem::size_of::<Input>(), 40);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn send_input_uses_scan_codes_for_keyboard_events() {
+        let input = Input::keyboard_scan_code(VK_C, false);
+        let keyboard = unsafe { input.input.ki };
+
+        assert_eq!(keyboard.vk, 0);
+        assert_ne!(keyboard.scan, 0);
+        assert_eq!(keyboard.flags & KEYEVENTF_SCANCODE, KEYEVENTF_SCANCODE);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn send_input_can_use_virtual_keys_for_terminal_shortcuts() {
+        let input = Input::keyboard_virtual_key(VK_C, false);
+        let keyboard = unsafe { input.input.ki };
+
+        assert_eq!(keyboard.vk, VK_C as u16);
+        assert_eq!(keyboard.scan, 0);
+        assert_eq!(keyboard.flags & KEYEVENTF_SCANCODE, 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn send_input_can_emit_unicode_units() {
+        let input = Input::keyboard_unicode('я' as u16, false);
+        let keyboard = unsafe { input.input.ki };
+
+        assert_eq!(keyboard.vk, 0);
+        assert_eq!(keyboard.scan, 'я' as u16);
+        assert_eq!(keyboard.flags & KEYEVENTF_UNICODE, KEYEVENTF_UNICODE);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn send_input_marks_navigation_keys_as_extended() {
+        for vk in [VK_HOME, VK_END, VK_INSERT] {
+            let input = Input::keyboard_scan_code(vk, false);
+            let keyboard = unsafe { input.input.ki };
+
+            assert_eq!(
+                keyboard.flags & KEYEVENTF_EXTENDEDKEY,
+                KEYEVENTF_EXTENDEDKEY,
+                "vk=0x{vk:X} must not be sent as a numpad key"
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+fn foreground_control() -> Result<ForegroundControl, PlatformError> {
+    let hwnd = foreground_hwnd()?;
+
+    let class_name = window_class_name(hwnd).unwrap_or_else(|| String::from("unknown"));
+    Ok(ForegroundControl {
+        app_id: class_name,
+        window_id: format!("hwnd:{hwnd:X}"),
+        control_id: format!("hwnd:{hwnd:X}"),
+    })
+}
+
+#[cfg(windows)]
+fn focus_diagnostics_impl() -> Result<WindowsFocusDiagnostics, PlatformError> {
+    let foreground = foreground_hwnd()?;
+    let focused = focused_window(foreground).unwrap_or(foreground);
+    Ok(WindowsFocusDiagnostics {
+        foreground_hwnd: hwnd_id(foreground),
+        foreground_class: window_class_name(foreground).unwrap_or_else(|| String::from("unknown")),
+        foreground_title: window_title(foreground).unwrap_or_default(),
+        focused_hwnd: hwnd_id(focused),
+        focused_class: window_class_name(focused).unwrap_or_else(|| String::from("unknown")),
+        focused_title: window_title(focused).unwrap_or_default(),
+    })
+}
+
+#[cfg(windows)]
+fn method_diagnostics_impl() -> Result<WindowsMethodDiagnostics, PlatformError> {
+    let foreground = foreground_hwnd()?;
+    let focused = focused_window(foreground).unwrap_or(foreground);
+    let app_class = window_class_name(foreground).unwrap_or_else(|| String::from("unknown"));
+    let focused_class = window_class_name(focused).unwrap_or_else(|| String::from("unknown"));
+    let target = ForegroundTarget {
+        app_class: app_class.clone(),
+        focused_class: focused_class.clone(),
+        title: window_title(foreground).unwrap_or_default(),
+        process_name: None,
+        window_id: hwnd_id(foreground),
+        control_id: hwnd_id(focused),
+    };
+    let probes = windows_method_probes(&target);
+    let decision = MethodResolver::default().resolve(&target, &probes).ok();
+    let context = text_context();
+    let (context_method, context_error) = match context {
+        Ok(context) => (
+            context
+                .capabilities
+                .method_binding
+                .as_ref()
+                .map(|binding| binding.context_method.as_str().to_owned()),
+            None,
+        ),
+        Err(error) => (None, Some(format!("{error:?}"))),
+    };
+
+    Ok(WindowsMethodDiagnostics {
+        foreground: WindowsFocusDiagnostics {
+            foreground_hwnd: hwnd_id(foreground),
+            foreground_class: app_class,
+            foreground_title: target.title,
+            focused_hwnd: hwnd_id(focused),
+            focused_class,
+            focused_title: window_title(focused).unwrap_or_default(),
+        },
+        probes: probes
+            .into_iter()
+            .map(|probe| WindowsMethodProbeDiagnostics {
+                method: probe.method_id.as_str().to_owned(),
+                safety: format!("{:?}", probe.safety),
+                requires_clipboard: probe.requires_clipboard,
+                requires_focus_stability: probe.requires_focus_stability,
+                can_preflight: probe.can_preflight,
+                can_verify: probe.can_verify,
+                reason: probe.reason,
+            })
+            .collect(),
+        selected_context_method: decision
+            .as_ref()
+            .map(|decision| decision.context_method.as_str().to_owned()),
+        selected_replacement_method: decision
+            .as_ref()
+            .map(|decision| decision.replacement_method.as_str().to_owned()),
+        context_method,
+        context_error,
+    })
+}
+
+#[cfg(not(windows))]
+fn focus_diagnostics_impl() -> Result<WindowsFocusDiagnostics, PlatformError> {
+    Err(PlatformError::Unsupported)
+}
+
+#[cfg(not(windows))]
+fn method_diagnostics_impl() -> Result<WindowsMethodDiagnostics, PlatformError> {
+    Err(PlatformError::Unsupported)
+}
+
+#[cfg(windows)]
+fn text_context() -> Result<TextContext, PlatformError> {
+    let foreground = foreground_hwnd()?;
+
+    let focused = focused_window(foreground).unwrap_or(foreground);
+    let app_class = window_class_name(foreground).unwrap_or_else(|| String::from("unknown"));
+    let focused_class = window_class_name(focused).unwrap_or_else(|| String::from("unknown"));
+    let target = ForegroundTarget {
+        app_class: app_class.clone(),
+        focused_class: focused_class.clone(),
+        title: window_title(foreground).unwrap_or_default(),
+        process_name: None,
+        window_id: hwnd_id(foreground),
+        control_id: hwnd_id(focused),
+    };
+    let probes = windows_method_probes(&target);
+    let resolver = MethodResolver::default();
+    let mut remaining = probes;
+    while !remaining.is_empty() {
+        let decision = resolver.resolve(&target, &remaining).map_err(|_| {
+            PlatformError::UnsupportedControl {
+                app_class: app_class.clone(),
+                focused_class: focused_class.clone(),
+            }
+        })?;
+
+        match capture_by_method(
+            decision.context_method,
+            foreground,
+            focused,
+            &app_class,
+            &focused_class,
+        ) {
+            Ok(context) => return Ok(context),
+            Err(PlatformError::ReplacementUnavailable) => {
+                remaining.retain(|probe| probe.method_id != decision.context_method);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(PlatformError::UnsupportedControl {
+        app_class,
+        focused_class,
+    })
+}
+
+#[cfg(windows)]
+fn capture_by_method(
+    method: MethodId,
+    foreground: isize,
+    focused: isize,
+    app_class: &str,
+    focused_class: &str,
+) -> Result<TextContext, PlatformError> {
+    match method {
+        MethodId::Win32EditMessages => {
+            Win32EditMessagesMethod.capture(foreground, focused, app_class.to_owned())
+        }
+        MethodId::ConsoleBuffer => {
+            ConsoleBufferMethod.capture(foreground, focused, app_class, focused_class)
+        }
+        MethodId::TerminalClipboardShortcut => {
+            TerminalClipboardShortcutMethod.capture(foreground, focused, app_class, focused_class)
+        }
+        MethodId::WordCom => WordComMethod.capture(foreground, focused, app_class, focused_class),
+        MethodId::UiAutomationText => {
+            UiAutomationTextMethod.capture(foreground, focused, app_class, focused_class)
+        }
+        MethodId::ClipboardSelection => {
+            ClipboardSelectionMethod.capture(foreground, focused, app_class, focused_class)
+        }
+        _ => Err(PlatformError::ReplacementUnavailable),
+    }
+}
+
+#[cfg(windows)]
+fn windows_method_probes(target: &ForegroundTarget) -> Vec<MethodProbe> {
+    let mut probes = Vec::new();
+    if let Some(probe) = Win32EditMessagesMethod.probe(target) {
+        probes.push(probe);
+    }
+    if let Some(probe) = ConsoleBufferMethod.probe(target) {
+        probes.push(probe);
+    }
+    if let Some(probe) = WordComMethod.probe(target) {
+        probes.push(probe);
+    } else if let Some(probe) = TerminalClipboardShortcutMethod.probe(target) {
+        probes.push(probe);
+    }
+    if let Some(probe) = UiAutomationTextMethod.probe(target) {
+        probes.push(probe);
+    }
+    if let Some(probe) = ClipboardSelectionMethod.probe(target) {
+        probes.push(probe);
+    }
+    if let Some(probe) = SendInputMethod.probe(target) {
+        probes.push(probe);
+    }
+    probes
+}
+
+#[cfg(not(windows))]
+fn text_context() -> Result<TextContext, PlatformError> {
+    Err(PlatformError::Unsupported)
+}
+
+#[cfg(windows)]
+fn apply_replacement(
+    context: &TextContext,
+    plan: &ReplacementPlan,
+) -> Result<ApplyReplacementResult, PlatformError> {
+    match context_replacement_method(context) {
+        Some(MethodId::Win32EditMessages) => Win32EditMessagesMethod.apply(context, plan),
+        Some(MethodId::ConsoleBuffer) => ConsoleBufferMethod.apply(context, plan),
+        Some(MethodId::TerminalClipboardShortcut) => {
+            TerminalClipboardShortcutMethod.apply(context, plan)
+        }
+        Some(MethodId::WordCom) => WordComMethod.apply(context, plan),
+        Some(MethodId::UiAutomationText) => UiAutomationTextMethod.apply(context, plan),
+        Some(MethodId::ClipboardSelection) => ClipboardSelectionMethod.apply(context, plan),
+        Some(MethodId::SendInput) => SendInputMethod.apply(context, plan),
+        Some(_) => Err(PlatformError::ReplacementUnavailable),
+        None if context.control_id.starts_with("terminal-console:") => {
+            ConsoleBufferMethod.apply(context, plan)
+        }
+        None if context.control_id.starts_with("terminal:") => {
+            TerminalClipboardShortcutMethod.apply(context, plan)
+        }
+        None => Win32EditMessagesMethod.apply(context, plan),
+    }
+}
+
+fn context_replacement_method(context: &TextContext) -> Option<MethodId> {
+    context
+        .capabilities
+        .method_binding
+        .as_ref()
+        .and_then(|binding| binding.replace_methods.first().copied())
+}
+
+#[cfg(not(windows))]
+fn apply_replacement(
+    _context: &TextContext,
+    _plan: &ReplacementPlan,
+) -> Result<ApplyReplacementResult, PlatformError> {
+    Err(PlatformError::Unsupported)
+}
+
+#[cfg(not(windows))]
+fn foreground_control() -> Result<ForegroundControl, PlatformError> {
+    Err(PlatformError::Unsupported)
+}
+
+#[cfg(windows)]
+fn foreground_hwnd() -> Result<isize, PlatformError> {
+    if let Some(hwnd) = test_foreground_hwnd_override() {
+        return Ok(hwnd);
+    }
+
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd == 0 {
+        return Err(PlatformError::ForegroundUnavailable);
+    }
+    Ok(hwnd)
+}
+
+#[cfg(windows)]
+fn test_foreground_hwnd_override() -> Option<isize> {
+    let value = std::env::var("STEPLER_TEST_FOREGROUND_HWND").ok()?;
+    let value = value.trim();
+    let hex = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"));
+    match hex {
+        Some(hex) => isize::from_str_radix(hex, 16).ok(),
+        None => value.parse::<isize>().ok(),
+    }
+}
+
+#[cfg(windows)]
+fn window_thread_id(hwnd: isize) -> Result<u32, PlatformError> {
+    let thread_id = unsafe { GetWindowThreadProcessId(hwnd, std::ptr::null_mut()) };
+    if thread_id == 0 {
+        return Err(PlatformError::ForegroundUnavailable);
+    }
+    Ok(thread_id)
+}
+
+#[cfg(windows)]
+fn window_class_name(hwnd: isize) -> Option<String> {
+    let mut buffer = [0u16; 256];
+    let length = unsafe { GetClassNameW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+    if length <= 0 {
+        return None;
+    }
+
+    Some(String::from_utf16_lossy(&buffer[..length as usize]))
+}
+
+#[cfg(windows)]
+fn window_title(hwnd: isize) -> Option<String> {
+    let length = unsafe { GetWindowTextLengthW(hwnd) };
+    if length <= 0 {
+        return None;
+    }
+
+    let mut buffer = vec![0u16; length as usize + 1];
+    let copied = unsafe { GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+    if copied <= 0 {
+        return None;
+    }
+
+    Some(String::from_utf16_lossy(&buffer[..copied as usize]))
+}
+
+fn hwnd_id(hwnd: isize) -> String {
+    format!("hwnd:{hwnd:X}")
+}
+
+fn is_supported_edit_class(class_name: &str) -> bool {
+    let class_name = class_name.to_ascii_lowercase();
+    class_name == "edit" || class_name.starts_with("richedit")
+}
+
+fn is_supported_terminal_class(app_class: &str, focused_class: &str) -> bool {
+    app_class == "CASCADIA_HOSTING_WINDOW_CLASS"
+        || app_class == "ConsoleWindowClass"
+        || focused_class == "Windows.UI.Input.InputSite.WindowClass"
+}
+
+fn is_word_target(target: &ForegroundTarget) -> bool {
+    target
+        .process_name
+        .as_deref()
+        .is_some_and(|process| process.eq_ignore_ascii_case("WINWORD"))
+        || target.app_class.eq_ignore_ascii_case("OpusApp")
+        || target.focused_class.eq_ignore_ascii_case("_WwG")
+        || target.title.to_ascii_lowercase().contains("word")
+}
+
+fn parse_word_com_base(control_id: &str) -> Option<usize> {
+    let rest = control_id.strip_prefix("word-com:")?;
+    rest.split(':').next()?.parse().ok()
+}
+
+fn parse_uia_runtime_id(control_id: &str) -> Option<String> {
+    let rest = control_id.strip_prefix("uia:")?;
+    Some(rest.split(':').next()?.to_owned())
+}
+
+#[cfg(windows)]
+fn run_powershell_script(script: &str, env: &[(&str, String)]) -> Result<String, PlatformError> {
+    let encoded = encode_utf16le_base64(script);
+    let mut command = std::process::Command::new("powershell.exe");
+    command
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-EncodedCommand")
+        .arg(encoded)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for (key, value) in env {
+        command.env(key, value);
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|_| PlatformError::ReplacementUnavailable)?;
+    let started = Instant::now();
+    let timeout = Duration::from_secs(5);
+    loop {
+        match child
+            .try_wait()
+            .map_err(|_| PlatformError::ReplacementUnavailable)?
+        {
+            Some(status) => {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|_| PlatformError::ReplacementUnavailable)?;
+                if !status.success() {
+                    return Err(PlatformError::ReplacementUnavailable);
+                }
+                return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+            }
+            None if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(PlatformError::ReplacementUnavailable);
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+}
+
+fn parse_key_value_lines(output: &str) -> std::collections::HashMap<String, String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            Some((key.trim().to_owned(), value.trim().to_owned()))
+        })
+        .collect()
+}
+
+fn byte_offset_to_utf16(text: &str, byte_offset: usize) -> usize {
+    if byte_offset >= text.len() {
+        return text.encode_utf16().count();
+    }
+    text[..byte_offset].encode_utf16().count()
+}
+
+fn encode_utf16le_base64(value: &str) -> String {
+    let bytes = value
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect::<Vec<_>>();
+    encode_base64(&bytes)
+}
+
+fn decode_utf16le_base64(value: &str) -> Result<String, String> {
+    let bytes = decode_base64(value)?;
+    if bytes.len() % 2 != 0 {
+        return Err(String::from("decoded UTF-16LE byte length is odd"));
+    }
+    let units = bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect::<Vec<_>>();
+    String::from_utf16(&units).map_err(|error| format!("invalid UTF-16LE text: {error}"))
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+        let triple = ((b0 as u32) << 16) | ((b1 as u32) << 8) | b2 as u32;
+        output.push(TABLE[((triple >> 18) & 0x3F) as usize] as char);
+        output.push(TABLE[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() >= 2 {
+            output.push(TABLE[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() == 3 {
+            output.push(TABLE[(triple & 0x3F) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+    output
+}
+
+fn decode_base64(value: &str) -> Result<Vec<u8>, String> {
+    let mut buffer = Vec::new();
+    let mut accumulator = 0u32;
+    let mut bits = 0u8;
+    let mut padding_seen = false;
+
+    for byte in value.bytes().filter(|byte| !byte.is_ascii_whitespace()) {
+        if byte == b'=' {
+            padding_seen = true;
+            continue;
+        }
+        if padding_seen {
+            return Err(String::from("non-padding base64 byte after padding"));
+        }
+        let Some(value) = base64_value(byte) else {
+            return Err(format!("invalid base64 byte 0x{byte:02X}"));
+        };
+        accumulator = (accumulator << 6) | value as u32;
+        bits += 6;
+        while bits >= 8 {
+            bits -= 8;
+            buffer.push(((accumulator >> bits) & 0xFF) as u8);
+        }
+    }
+
+    Ok(buffer)
+}
+
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+const WORD_CAPTURE_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+function ConvertTo-B64([string] $Text) {
+    [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($Text))
+}
+function Strip-WordRangeMarkers([string] $Text) {
+    if ($null -eq $Text) { return '' }
+    $Text.TrimEnd([char]13, [char]7)
+}
+$word = [Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application')
+$word.Activate()
+try {
+    $selection = $word.ActiveWindow.Selection
+} catch {
+    $selection = $word.Selection
+}
+$document = $word.ActiveDocument
+$selectionStart = [int] $selection.Start
+$selectionEnd = [int] $selection.End
+
+if ($selectionStart -ne $selectionEnd) {
+    $range = $document.Range($selectionStart, $selectionEnd)
+    $text = Strip-WordRangeMarkers ([string] $range.Text)
+    'ok=1'
+    'kind=selection'
+    'base=' + $selectionStart
+    'text_b64=' + (ConvertTo-B64 $text)
+    exit 0
+}
+
+$paragraphRange = $selection.Paragraphs.Item(1).Range
+$paragraphStart = [int] $paragraphRange.Start
+if ($selectionStart -le $paragraphStart) {
+    'ok=0'
+    'error=empty'
+    exit 0
+}
+
+$leftRange = $document.Range($paragraphStart, $selectionStart)
+$text = Strip-WordRangeMarkers ([string] $leftRange.Text)
+$base = $paragraphStart
+'ok=1'
+'kind=paragraph_left'
+'base=' + $base
+'selection_start=' + $selectionStart
+'paragraph_start=' + $paragraphStart
+'text_b64=' + (ConvertTo-B64 $text)
+"#;
+
+#[cfg(windows)]
+const WORD_APPLY_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+function From-B64([string] $Text) {
+    [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Text))
+}
+function Strip-WordRangeMarkers([string] $Text) {
+    if ($null -eq $Text) { return '' }
+    $Text.TrimEnd([char]13, [char]7)
+}
+function ConvertTo-B64([string] $Text) {
+    [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($Text))
+}
+$start = [int] $env:STEPLER_WORD_START
+$end = [int] $env:STEPLER_WORD_END
+$expected = From-B64 $env:STEPLER_WORD_EXPECTED_B64
+$replacement = From-B64 $env:STEPLER_WORD_REPLACEMENT_B64
+$word = [Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application')
+$document = $word.ActiveDocument
+$range = $document.Range($start, $end)
+$actual = Strip-WordRangeMarkers ([string] $range.Text)
+if ($actual -ne $expected) {
+    'ok=0'
+    'error=preflight'
+    exit 0
+}
+$rightBefore = ''
+try {
+    $rightBefore = Strip-WordRangeMarkers ([string] $document.Range($end, $end + 1).Text)
+} catch { }
+$range.Text = $replacement
+$caret = $start + $replacement.Length
+$word.Selection.SetRange($caret, $caret)
+Start-Sleep -Milliseconds 140
+$rightAfter = ''
+try {
+    $rightAfter = Strip-WordRangeMarkers ([string] $document.Range($caret, $caret + 1).Text)
+} catch { }
+if ($rightAfter -eq 'с' -and $rightBefore -ne 'с') {
+    try {
+        $document.Range($caret, $caret + 1).Delete() | Out-Null
+        $word.Selection.SetRange($caret, $caret)
+    } catch { }
+}
+$afterEnd = $caret
+try {
+    $afterEnd = [Math]::Min($document.Content.End, $caret + 1)
+} catch { }
+$after = ''
+try {
+    $after = Strip-WordRangeMarkers ([string] $document.Range($start, $afterEnd).Text)
+} catch { }
+'ok=1'
+'after_b64=' + (ConvertTo-B64 $after)
+"#;
+
+#[cfg(windows)]
+const UIA_CAPTURE_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class SteplerUser32 {
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+}
+'@
+function Get-SteplerForegroundHandle {
+    if (-not [string]::IsNullOrWhiteSpace($env:STEPLER_UIA_FOREGROUND_HWND)) {
+        return [IntPtr]([Int64]::Parse($env:STEPLER_UIA_FOREGROUND_HWND))
+    }
+    [SteplerUser32]::GetForegroundWindow()
+}
+function ConvertTo-B64([string] $Text) {
+    if ($null -eq $Text) { $Text = '' }
+    [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($Text))
+}
+function Get-Pattern($Element, $Pattern) {
+    try { return $Element.GetCurrentPattern($Pattern) } catch { return $null }
+}
+function Normalize-Text([string] $Text) {
+    if ($null -eq $Text) { return '' }
+    $Text.TrimEnd([char]13)
+}
+function Get-ValuePattern($Element) {
+    if ($null -eq $Element) { return $null }
+    Get-Pattern $Element ([System.Windows.Automation.ValuePattern]::Pattern)
+}
+function Is-WritableValueElement($Element) {
+    $value = Get-ValuePattern $Element
+    $null -ne $value -and -not $value.Current.IsReadOnly
+}
+function Find-WritableValueElement {
+    $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+    if (Is-WritableValueElement $focused) {
+        return $focused
+    }
+    $foreground = [System.Windows.Automation.AutomationElement]::FromHandle((Get-SteplerForegroundHandle))
+    if ($null -eq $foreground) { return $focused }
+    $fixtureCondition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+        'SteplerUiaFixtureInput')
+    $fixture = $foreground.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $fixtureCondition)
+    if (Is-WritableValueElement $fixture) {
+        return $fixture
+    }
+    $editCondition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Edit)
+    $edits = $foreground.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCondition)
+    foreach ($edit in $edits) {
+        try {
+            if ($edit.Current.HasKeyboardFocus -and (Is-WritableValueElement $edit)) {
+                return $edit
+            }
+        } catch { }
+    }
+    return $focused
+}
+$element = Find-WritableValueElement
+if ($null -eq $element) {
+    'ok=0'
+    exit 0
+}
+$runtimeId = ($element.GetRuntimeId() -join '.')
+$valuePattern = Get-Pattern $element ([System.Windows.Automation.ValuePattern]::Pattern)
+$textPattern = Get-Pattern $element ([System.Windows.Automation.TextPattern]::Pattern)
+$canSetValue = 0
+$text = ''
+if ($null -ne $valuePattern) {
+    $text = [string]$valuePattern.Current.Value
+    if (-not $valuePattern.Current.IsReadOnly) {
+        $canSetValue = 1
+    }
+} elseif ($null -ne $textPattern) {
+    $text = $textPattern.DocumentRange.GetText(-1)
+}
+$text = Normalize-Text $text
+if ($text.Length -eq 0) {
+    'ok=0'
+    exit 0
+}
+$caret = $text.Length
+$selectionStart = $caret
+$selectionEnd = $caret
+if ($null -ne $textPattern) {
+    try {
+        $selection = $textPattern.GetSelection()
+        if ($null -ne $selection -and $selection.Length -gt 0) {
+            $range = $selection[0]
+            $document = $textPattern.DocumentRange
+            $beforeStart = $document.Clone()
+            $null = $beforeStart.MoveEndpointByRange(
+                [System.Windows.Automation.Text.TextPatternRangeEndpoint]::End,
+                $range,
+                [System.Windows.Automation.Text.TextPatternRangeEndpoint]::Start)
+            $beforeEnd = $document.Clone()
+            $null = $beforeEnd.MoveEndpointByRange(
+                [System.Windows.Automation.Text.TextPatternRangeEndpoint]::End,
+                $range,
+                [System.Windows.Automation.Text.TextPatternRangeEndpoint]::End)
+            $selectionStart = (Normalize-Text $beforeStart.GetText(-1)).Length
+            $selectionEnd = (Normalize-Text $beforeEnd.GetText(-1)).Length
+            $caret = $selectionEnd
+        }
+    } catch {
+        $caret = $text.Length
+        $selectionStart = $caret
+        $selectionEnd = $caret
+    }
+}
+'ok=1'
+'runtime_id=' + $runtimeId
+'can_set_value=' + $canSetValue
+'caret=' + $caret
+'selection_start=' + $selectionStart
+'selection_end=' + $selectionEnd
+'text_b64=' + (ConvertTo-B64 $text)
+"#;
+
+#[cfg(windows)]
+const UIA_APPLY_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class SteplerUser32 {
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+}
+'@
+function Get-SteplerForegroundHandle {
+    if (-not [string]::IsNullOrWhiteSpace($env:STEPLER_UIA_FOREGROUND_HWND)) {
+        return [IntPtr]([Int64]::Parse($env:STEPLER_UIA_FOREGROUND_HWND))
+    }
+    [SteplerUser32]::GetForegroundWindow()
+}
+function ConvertTo-B64([string] $Text) {
+    if ($null -eq $Text) { $Text = '' }
+    [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($Text))
+}
+function ConvertFrom-B64([string] $Text) {
+    [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Text))
+}
+function Get-Pattern($Element, $Pattern) {
+    try { return $Element.GetCurrentPattern($Pattern) } catch { return $null }
+}
+function Runtime-Id($Element) {
+    if ($null -eq $Element) { return '' }
+    try { return ($Element.GetRuntimeId() -join '.') } catch { return '' }
+}
+function Find-ElementByRuntimeId([string] $RuntimeId) {
+    $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+    if ((Runtime-Id $focused) -eq $RuntimeId) {
+        return $focused
+    }
+    $foreground = [System.Windows.Automation.AutomationElement]::FromHandle((Get-SteplerForegroundHandle))
+    if ($null -eq $foreground) { return $focused }
+    $condition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Edit)
+    $all = $foreground.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    foreach ($candidate in $all) {
+        if ((Runtime-Id $candidate) -eq $RuntimeId) {
+            return $candidate
+        }
+    }
+    return $focused
+}
+$element = Find-ElementByRuntimeId $env:STEPLER_UIA_RUNTIME_ID
+if ($null -eq $element) {
+    'ok=0'
+    exit 0
+}
+if ((Runtime-Id $element) -ne $env:STEPLER_UIA_RUNTIME_ID) {
+    'ok=0'
+    exit 0
+}
+$valuePattern = Get-Pattern $element ([System.Windows.Automation.ValuePattern]::Pattern)
+if ($null -eq $valuePattern -or $valuePattern.Current.IsReadOnly) {
+    'ok=0'
+    exit 0
+}
+$expected = ConvertFrom-B64 $env:STEPLER_UIA_EXPECTED_B64
+$replacement = ConvertFrom-B64 $env:STEPLER_UIA_REPLACEMENT_B64
+if ([string]$valuePattern.Current.Value -ne $expected) {
+    'ok=0'
+    exit 0
+}
+$valuePattern.SetValue($replacement)
+Start-Sleep -Milliseconds 30
+$caret = 0
+if (-not [string]::IsNullOrWhiteSpace($env:STEPLER_UIA_CARET_UTF16)) {
+    $caret = [int]$env:STEPLER_UIA_CARET_UTF16
+}
+$textPattern = Get-Pattern $element ([System.Windows.Automation.TextPattern]::Pattern)
+if ($null -ne $textPattern) {
+    try {
+        $range = $textPattern.DocumentRange.Clone()
+        $null = $range.MoveEndpointByUnit(
+            [System.Windows.Automation.Text.TextPatternRangeEndpoint]::Start,
+            [System.Windows.Automation.Text.TextUnit]::Character,
+            $caret)
+        $null = $range.MoveEndpointByRange(
+            [System.Windows.Automation.Text.TextPatternRangeEndpoint]::End,
+            $range,
+            [System.Windows.Automation.Text.TextPatternRangeEndpoint]::Start)
+        $range.Select()
+    } catch { }
+}
+'ok=1'
+'after_b64=' + (ConvertTo-B64 ([string]$valuePattern.Current.Value))
+"#;
+
+#[cfg(windows)]
+fn read_terminal_left_text() -> Result<String, PlatformError> {
+    let snapshot = capture_clipboard()?;
+    let sequence_before = snapshot.sequence_number;
+
+    send_key_chord(&[VK_LSHIFT], VK_HOME);
+    std::thread::sleep(Duration::from_millis(40));
+    send_terminal_shortcut_with_english_layout(&[VK_CONTROL, VK_SHIFT], VK_C);
+
+    let copied = wait_for_clipboard_text_change(sequence_before, Duration::from_millis(700));
+    let restore_result = restore_clipboard(snapshot);
+    send_key(VK_END);
+    restore_result?;
+
+    copied
+        .filter(|text| !text.trim().is_empty())
+        .ok_or(PlatformError::ReplacementUnavailable)
+}
+
+#[cfg(windows)]
+fn read_console_input_text(hwnd: isize) -> Result<String, PlatformError> {
+    let process_id = window_process_id(hwnd)?;
+    let _attachment = ConsoleAttachment::attach(process_id)?;
+    let output = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    if output == 0 || output == INVALID_HANDLE_VALUE {
+        return Err(PlatformError::ReplacementUnavailable);
+    }
+
+    let mut info = ConsoleScreenBufferInfo::default();
+    if unsafe { GetConsoleScreenBufferInfo(output, &mut info as *mut ConsoleScreenBufferInfo) } == 0
+    {
+        return Err(PlatformError::ReplacementUnavailable);
+    }
+
+    let width = info.size.x.max(1) as usize;
+    let cursor_x = info.cursor_position.x.max(0) as usize;
+    let row = info.cursor_position.y.max(0);
+    let mut buffer = vec![0u16; width];
+    let mut read = 0u32;
+    let ok = unsafe {
+        ReadConsoleOutputCharacterW(
+            output,
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            Coord { x: 0, y: row },
+            &mut read as *mut u32,
+        )
+    };
+    if ok == 0 {
+        return Err(PlatformError::ReplacementUnavailable);
+    }
+
+    let line_width = cursor_x.min(read as usize).min(buffer.len());
+    let line = String::from_utf16_lossy(&buffer[..line_width]);
+    let input = console_input_from_prompt_line(&line);
+    if input.trim().is_empty() {
+        return Err(PlatformError::ReplacementUnavailable);
+    }
+
+    Ok(input)
+}
+
+#[cfg(windows)]
+fn window_process_id(hwnd: isize) -> Result<u32, PlatformError> {
+    let mut process_id = 0u32;
+    let thread_id = unsafe { GetWindowThreadProcessId(hwnd, &mut process_id as *mut u32) };
+    if thread_id == 0 || process_id == 0 {
+        return Err(PlatformError::ForegroundUnavailable);
+    }
+    Ok(process_id)
+}
+
+fn console_input_from_prompt_line(line: &str) -> String {
+    let trimmed_end = line.trim_end_matches(' ');
+    for marker in ["> ", ">"] {
+        if let Some(index) = trimmed_end.rfind(marker) {
+            return trimmed_end[index + marker.len()..].to_owned();
+        }
+    }
+    trimmed_end.trim_start().to_owned()
+}
+
+#[cfg(windows)]
+struct ConsoleAttachment;
+
+#[cfg(windows)]
+impl ConsoleAttachment {
+    fn attach(process_id: u32) -> Result<Self, PlatformError> {
+        unsafe {
+            FreeConsole();
+            if AttachConsole(process_id) == 0 {
+                return Err(PlatformError::ReplacementUnavailable);
+            }
+        }
+        Ok(Self)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ConsoleAttachment {
+    fn drop(&mut self) {
+        unsafe {
+            FreeConsole();
+        }
+    }
+}
+
+fn replace_range_text(text: &str, range: TextRange, replacement: &str) -> Option<String> {
+    slice_by_range(text, range)?;
+    let mut result = String::new();
+    result.push_str(&text[..range.start]);
+    result.push_str(replacement);
+    result.push_str(&text[range.end..]);
+    Some(result)
+}
+
+#[cfg(windows)]
+fn wait_for_clipboard_text_change(
+    sequence_before: Option<u32>,
+    timeout: Duration,
+) -> Option<String> {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if let Ok(snapshot) = capture_clipboard() {
+            let sequence_changed = sequence_before
+                .zip(snapshot.sequence_number)
+                .is_none_or(|(before, after)| before != after);
+            if sequence_changed {
+                if let Some(text) = snapshot.text {
+                    return Some(text);
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    None
+}
+
+#[cfg(windows)]
+fn clipboard_snapshot_from_text(text: &str) -> ClipboardSnapshot {
+    ClipboardSnapshot {
+        text: Some(text.to_owned()),
+        sequence_number: None,
+        formats: vec![ClipboardFormatSnapshot {
+            format: CF_UNICODETEXT,
+            bytes: utf16_to_le_bytes(&string_to_null_terminated_utf16(text)),
+        }],
+    }
+}
+
+#[cfg(windows)]
+fn send_key(vk: u32) {
+    let _ = send_keyboard_input(&[
+        KeyboardInputEvent::new(vk, false, KeyboardInputMode::ScanCode),
+        KeyboardInputEvent::new(vk, true, KeyboardInputMode::ScanCode),
+    ]);
+}
+
+#[cfg(windows)]
+fn send_key_chord(modifiers: &[u32], key: u32) {
+    send_key_chord_with_mode(modifiers, key, KeyboardInputMode::ScanCode);
+}
+
+#[cfg(windows)]
+fn send_key_chord_virtual(modifiers: &[u32], key: u32) {
+    send_key_chord_mixed(modifiers, key);
+}
+
+#[cfg(windows)]
+fn send_terminal_shortcut_with_english_layout(modifiers: &[u32], key: u32) {
+    let original_layout = foreground_keyboard_layout().ok();
+    if let Some(english_layout) = find_layout_by_language(&keyboard_layouts(), LANG_ENGLISH) {
+        let _ = switch_foreground_layout(english_layout);
+        std::thread::sleep(Duration::from_millis(40));
+    }
+
+    send_key_chord_virtual(modifiers, key);
+
+    if let Some(layout) = original_layout {
+        let _ = switch_foreground_layout(layout);
+    }
+    release_modifier_keys();
+}
+
+#[cfg(windows)]
+fn send_key_chord_with_mode(modifiers: &[u32], key: u32, mode: KeyboardInputMode) {
+    let mut events = Vec::new();
+    events.extend(
+        modifiers
+            .iter()
+            .copied()
+            .map(|modifier| KeyboardInputEvent::new(modifier, false, mode)),
+    );
+    if !send_keyboard_input(&events) {
+        return;
+    }
+    std::thread::sleep(Duration::from_millis(10));
+
+    if !send_keyboard_input(&[
+        KeyboardInputEvent::new(key, false, mode),
+        KeyboardInputEvent::new(key, true, mode),
+    ]) {
+        let _ = send_keyboard_input(
+            &modifiers
+                .iter()
+                .rev()
+                .copied()
+                .map(|modifier| KeyboardInputEvent::new(modifier, true, mode))
+                .collect::<Vec<_>>(),
+        );
+        return;
+    }
+    std::thread::sleep(Duration::from_millis(10));
+
+    let mut events = Vec::new();
+    events.extend(
+        modifiers
+            .iter()
+            .rev()
+            .copied()
+            .map(|modifier| KeyboardInputEvent::new(modifier, true, mode)),
+    );
+    let _ = send_keyboard_input(&events);
+    release_modifier_keys();
+}
+
+#[cfg(windows)]
+fn send_key_chord_mixed(modifiers: &[u32], key: u32) {
+    let mut events = Vec::new();
+    events.extend(
+        modifiers
+            .iter()
+            .copied()
+            .map(|modifier| KeyboardInputEvent::new(modifier, false, KeyboardInputMode::ScanCode)),
+    );
+    if !send_keyboard_input(&events) {
+        return;
+    }
+    std::thread::sleep(Duration::from_millis(10));
+
+    if !send_keyboard_input(&[
+        KeyboardInputEvent::new(key, false, KeyboardInputMode::VirtualKey),
+        KeyboardInputEvent::new(key, true, KeyboardInputMode::VirtualKey),
+    ]) {
+        let _ = send_keyboard_input(
+            &modifiers
+                .iter()
+                .rev()
+                .copied()
+                .map(|modifier| {
+                    KeyboardInputEvent::new(modifier, true, KeyboardInputMode::ScanCode)
+                })
+                .collect::<Vec<_>>(),
+        );
+        return;
+    }
+    std::thread::sleep(Duration::from_millis(10));
+
+    let mut events = Vec::new();
+    events.extend(
+        modifiers
+            .iter()
+            .rev()
+            .copied()
+            .map(|modifier| KeyboardInputEvent::new(modifier, true, KeyboardInputMode::ScanCode)),
+    );
+    let _ = send_keyboard_input(&events);
+    release_modifier_keys();
+}
+
+#[cfg(windows)]
+fn send_keyboard_input(events: &[KeyboardInputEvent]) -> bool {
+    if events.is_empty() {
+        return true;
+    }
+    if let Some(hwnd) = test_foreground_hwnd_override() {
+        for event in events {
+            let message = if event.key_up { WM_KEYUP } else { WM_KEYDOWN };
+            unsafe {
+                PostMessageW(hwnd, message, event.vk as usize, 0);
+            }
+        }
+        return true;
+    }
+
+    let mut inputs = events
+        .iter()
+        .map(|event| match event.mode {
+            KeyboardInputMode::ScanCode => Input::keyboard_scan_code(event.vk, event.key_up),
+            KeyboardInputMode::VirtualKey => Input::keyboard_virtual_key(event.vk, event.key_up),
+        })
+        .collect::<Vec<_>>();
+
+    let sent = unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_mut_ptr(),
+            std::mem::size_of::<Input>() as i32,
+        )
+    };
+    sent == inputs.len() as u32
+}
+
+#[cfg(windows)]
+fn send_unicode_text(text: &str) -> Result<(), PlatformError> {
+    let mut inputs = Vec::new();
+    for unit in text.encode_utf16() {
+        inputs.push(Input::keyboard_unicode(unit, false));
+        inputs.push(Input::keyboard_unicode(unit, true));
+    }
+
+    if inputs.is_empty() {
+        return Ok(());
+    }
+
+    let sent = unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_mut_ptr(),
+            std::mem::size_of::<Input>() as i32,
+        )
+    };
+    if sent == inputs.len() as u32 {
+        Ok(())
+    } else {
+        Err(PlatformError::ReplacementUnavailable)
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy)]
+struct KeyboardInputEvent {
+    vk: u32,
+    key_up: bool,
+    mode: KeyboardInputMode,
+}
+
+#[cfg(windows)]
+impl KeyboardInputEvent {
+    fn new(vk: u32, key_up: bool, mode: KeyboardInputMode) -> Self {
+        Self { vk, key_up, mode }
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy)]
+enum KeyboardInputMode {
+    ScanCode,
+    VirtualKey,
+}
+
+fn parse_hwnd_id(value: &str) -> Option<isize> {
+    let hex = value.strip_prefix("hwnd:")?;
+    if hex.is_empty() {
+        return None;
+    }
+
+    isize::from_str_radix(hex, 16).ok()
+}
+
+#[cfg(windows)]
+fn foreground_keyboard_layout() -> Result<isize, PlatformError> {
+    let foreground = foreground_hwnd()?;
+    let thread_id = window_thread_id(foreground)?;
+    Ok(unsafe { GetKeyboardLayout(thread_id) })
+}
+
+fn slice_by_range(text: &str, range: TextRange) -> Option<&str> {
+    if range.start > range.end
+        || range.end > text.len()
+        || !text.is_char_boundary(range.start)
+        || !text.is_char_boundary(range.end)
+    {
+        return None;
+    }
+
+    Some(&text[range.start..range.end])
+}
+
+fn edit_offset_to_byte_offset(text: &str, edit_offset: usize) -> Option<usize> {
+    let mut byte_index = 0;
+    let mut edit_units = 0;
+
+    while byte_index < text.len() {
+        if edit_units == edit_offset {
+            return Some(byte_index);
+        }
+
+        if text[byte_index..].starts_with("\r\n") {
+            byte_index += "\r\n".len();
+            edit_units += 1;
+            continue;
+        }
+
+        let ch = text[byte_index..].chars().next()?;
+        byte_index += ch.len_utf8();
+        edit_units += ch.len_utf16();
+    }
+
+    if edit_units == edit_offset {
+        Some(text.len())
+    } else {
+        None
+    }
+}
+
+fn byte_offset_to_edit_offset(text: &str, byte_offset: usize) -> Option<usize> {
+    if byte_offset > text.len() || !text.is_char_boundary(byte_offset) {
+        return None;
+    }
+
+    let mut byte_index = 0;
+    let mut edit_units = 0;
+
+    while byte_index < byte_offset {
+        if text[byte_index..].starts_with("\r\n") {
+            let next_byte = byte_index + "\r\n".len();
+            if byte_offset < next_byte {
+                return None;
+            }
+            byte_index = next_byte;
+            edit_units += 1;
+            continue;
+        }
+
+        let ch = text[byte_index..].chars().next()?;
+        byte_index += ch.len_utf8();
+        edit_units += ch.len_utf16();
+    }
+
+    Some(edit_units)
+}
+
+#[cfg(windows)]
+fn focused_window(foreground: isize) -> Option<isize> {
+    let thread_id = unsafe { GetWindowThreadProcessId(foreground, std::ptr::null_mut()) };
+    if thread_id == 0 {
+        return None;
+    }
+
+    let mut info = GuiThreadInfo::default();
+    info.cb_size = std::mem::size_of::<GuiThreadInfo>() as u32;
+    let ok = unsafe { GetGUIThreadInfo(thread_id, &mut info as *mut GuiThreadInfo) };
+    if ok == 0 || info.hwnd_focus == 0 {
+        return None;
+    }
+
+    Some(info.hwnd_focus)
+}
+
+#[cfg(windows)]
+fn window_text(hwnd: isize) -> Result<String, PlatformError> {
+    let length = unsafe { SendMessageW(hwnd, WM_GETTEXTLENGTH, 0, 0) };
+    if length < 0 {
+        return Err(PlatformError::ForegroundUnavailable);
+    }
+
+    let mut buffer = vec![0u16; length as usize + 1];
+    let copied =
+        unsafe { SendMessageW(hwnd, WM_GETTEXT, buffer.len(), buffer.as_mut_ptr() as isize) };
+    if copied < 0 {
+        return Err(PlatformError::ForegroundUnavailable);
+    }
+
+    Ok(String::from_utf16_lossy(&buffer[..copied as usize]))
+}
+
+#[cfg(windows)]
+fn edit_selection(hwnd: isize) -> Option<(usize, usize)> {
+    let mut start = 0u32;
+    let mut end = 0u32;
+    unsafe {
+        SendMessageW(
+            hwnd,
+            EM_GETSEL,
+            (&mut start as *mut u32) as usize,
+            (&mut end as *mut u32) as isize,
+        );
+    }
+
+    Some((start as usize, end as usize))
+}
+
+#[cfg(windows)]
+fn set_edit_selection(hwnd: isize, start: usize, end: usize) -> Result<(), PlatformError> {
+    let text = window_text(hwnd)?;
+    let start = byte_offset_to_edit_offset(&text, start).ok_or(PlatformError::PreflightFailed)?;
+    let end = byte_offset_to_edit_offset(&text, end).ok_or(PlatformError::PreflightFailed)?;
+    unsafe {
+        SendMessageW(hwnd, EM_SETSEL, start, end as isize);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn replace_edit_selection(hwnd: isize, replacement: &str) -> Result<(), PlatformError> {
+    let replacement: Vec<u16> = replacement
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        SendMessageW(hwnd, EM_REPLACESEL, 1, replacement.as_ptr() as isize);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn capture_clipboard() -> Result<ClipboardSnapshot, PlatformError> {
+    let _guard = ClipboardGuard::open()?;
+    let sequence_number = Some(unsafe { GetClipboardSequenceNumber() });
+    let formats = clipboard_formats();
+    let mut snapshots = Vec::new();
+    for format in formats {
+        if let Some(bytes) = read_clipboard_format_bytes(format) {
+            snapshots.push(ClipboardFormatSnapshot { format, bytes });
+        }
+    }
+
+    let text = if snapshots
+        .iter()
+        .any(|snapshot| snapshot.format == CF_UNICODETEXT)
+    {
+        Some(read_clipboard_text()?)
+    } else {
+        None
+    };
+
+    Ok(ClipboardSnapshot {
+        text,
+        sequence_number,
+        formats: snapshots,
+    })
+}
+
+#[cfg(not(windows))]
+fn capture_clipboard() -> Result<ClipboardSnapshot, PlatformError> {
+    Err(PlatformError::Unsupported)
+}
+
+#[cfg(windows)]
+fn restore_clipboard(snapshot: ClipboardSnapshot) -> Result<(), PlatformError> {
+    let _guard = ClipboardGuard::open()?;
+    unsafe {
+        if EmptyClipboard() == 0 {
+            return Err(PlatformError::ClipboardUnavailable);
+        }
+
+        for format_snapshot in snapshot.formats {
+            let handle = global_alloc_from_bytes(&format_snapshot.bytes)?;
+            if SetClipboardData(format_snapshot.format, handle) == 0 {
+                GlobalFree(handle);
+                return Err(PlatformError::ClipboardUnavailable);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn restore_clipboard(_snapshot: ClipboardSnapshot) -> Result<(), PlatformError> {
+    Err(PlatformError::Unsupported)
+}
+
+#[cfg(windows)]
+fn read_clipboard_text() -> Result<String, PlatformError> {
+    let handle = unsafe { GetClipboardData(CF_UNICODETEXT) };
+    if handle == 0 {
+        return Err(PlatformError::ClipboardUnavailable);
+    }
+
+    let ptr = unsafe { GlobalLock(handle) } as *const u16;
+    if ptr.is_null() {
+        return Err(PlatformError::ClipboardUnavailable);
+    }
+
+    let mut len = 0;
+    unsafe {
+        while *ptr.add(len) != 0 {
+            len += 1;
+        }
+    }
+
+    let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let text = String::from_utf16_lossy(slice);
+    unsafe {
+        GlobalUnlock(handle);
+    }
+
+    Ok(text)
+}
+
+#[cfg(windows)]
+fn clipboard_formats() -> Vec<u32> {
+    let mut formats = Vec::new();
+    let mut current = 0;
+    loop {
+        let next = unsafe { EnumClipboardFormats(current) };
+        if next == 0 {
+            break;
+        }
+        formats.push(next);
+        current = next;
+    }
+    formats
+}
+
+#[cfg(windows)]
+fn read_clipboard_format_bytes(format: u32) -> Option<Vec<u8>> {
+    let handle = unsafe { GetClipboardData(format) };
+    if handle == 0 {
+        return None;
+    }
+
+    let size = unsafe { GlobalSize(handle) };
+    if size == 0 {
+        return None;
+    }
+
+    let ptr = unsafe { GlobalLock(handle) } as *const u8;
+    if ptr.is_null() {
+        return None;
+    }
+
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, size) }.to_vec();
+    unsafe {
+        GlobalUnlock(handle);
+    }
+
+    Some(bytes)
+}
+
+#[cfg(windows)]
+fn global_alloc_from_bytes(bytes: &[u8]) -> Result<isize, PlatformError> {
+    let handle = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) };
+    if handle == 0 {
+        return Err(PlatformError::ClipboardUnavailable);
+    }
+
+    let target = unsafe { GlobalLock(handle) } as *mut u8;
+    if target.is_null() {
+        unsafe {
+            GlobalFree(handle);
+        }
+        return Err(PlatformError::ClipboardUnavailable);
+    }
+
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), target, bytes.len());
+        GlobalUnlock(handle);
+    }
+
+    Ok(handle)
+}
+
+fn string_to_null_terminated_utf16(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn utf16_to_le_bytes(input: &[u16]) -> Vec<u8> {
+    input
+        .iter()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect::<Vec<_>>()
+}
+
+#[cfg(test)]
+fn le_bytes_to_utf16(input: &[u8]) -> Vec<u16> {
+    input
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect()
+}
+
+#[cfg(test)]
+fn utf16_until_nul_to_string(input: &[u16]) -> String {
+    let len = input
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(input.len());
+    String::from_utf16_lossy(&input[..len])
+}
+
+#[cfg(windows)]
+fn keyboard_layouts() -> Vec<isize> {
+    let count = unsafe { GetKeyboardLayoutList(0, std::ptr::null_mut()) };
+    if count <= 0 {
+        return Vec::new();
+    }
+
+    let mut layouts = vec![0isize; count as usize];
+    let loaded = unsafe { GetKeyboardLayoutList(count, layouts.as_mut_ptr()) };
+    if loaded <= 0 {
+        return Vec::new();
+    }
+
+    layouts.truncate(loaded as usize);
+    layouts
+}
+
+#[cfg(not(windows))]
+fn keyboard_layouts() -> Vec<isize> {
+    Vec::new()
+}
+
+fn find_layout_by_language(layouts: &[isize], language_id: u16) -> Option<isize> {
+    layouts
+        .iter()
+        .copied()
+        .find(|layout| ((*layout as u32) & 0xFFFF) as u16 == language_id)
+}
+
+#[cfg(windows)]
+fn switch_foreground_layout(layout: isize) -> Result<(), PlatformError> {
+    let foreground = foreground_hwnd()?;
+    post_layout_change_to_foreground_controls(foreground, layout)?;
+
+    for delay_ms in [40, 120, 220, 500, 900] {
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        let foreground = foreground_hwnd()?;
+        let thread_id = window_thread_id(foreground)?;
+        if unsafe { GetKeyboardLayout(thread_id) } == layout {
+            return Ok(());
+        }
+        post_layout_change_to_foreground_controls(foreground, layout)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn switch_foreground_layout(_layout: isize) -> Result<(), PlatformError> {
+    Err(PlatformError::Unsupported)
+}
+
+#[cfg(windows)]
+fn post_layout_change(hwnd: isize, layout: isize) -> Result<(), PlatformError> {
+    let ok = unsafe { PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, layout) };
+    if ok == 0 {
+        return Err(PlatformError::Unsupported);
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn post_layout_change_to_foreground_controls(
+    hwnd: isize,
+    layout: isize,
+) -> Result<(), PlatformError> {
+    post_layout_change(hwnd, layout)?;
+    if let Some(focused) = focused_window(hwnd) {
+        if focused != hwnd {
+            let _ = post_layout_change(focused, layout);
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Default)]
+struct KeyboardControlHookState {
+    left_ctrl_down: bool,
+    right_ctrl_down: bool,
+    left_ctrl_used: bool,
+    right_ctrl_used: bool,
+    pause_down: bool,
+    scroll_lock_down: bool,
+    last_pause_at: Option<Instant>,
+    last_scroll_lock_at: Option<Instant>,
+    suppress_c_until: Option<Instant>,
+}
+
+impl KeyboardControlHookState {
+    fn handle_correction_hotkey(
+        &mut self,
+        vk_code: u32,
+        is_down: bool,
+        is_up: bool,
+    ) -> Option<stepler_core::CorrectionMode> {
+        match vk_code {
+            VK_PAUSE | VK_CANCEL => {
+                if is_down && !self.pause_down && Self::debounce_allows(self.last_pause_at) {
+                    self.pause_down = true;
+                    self.last_pause_at = Some(Instant::now());
+                    return Some(stepler_core::CorrectionMode::Pause);
+                }
+                if is_up {
+                    self.pause_down = false;
+                }
+            }
+            VK_SCROLL => {
+                if is_down
+                    && !self.scroll_lock_down
+                    && Self::debounce_allows(self.last_scroll_lock_at)
+                {
+                    self.scroll_lock_down = true;
+                    let now = Instant::now();
+                    self.last_scroll_lock_at = Some(now);
+                    self.suppress_c_until = Some(now + Duration::from_millis(1_500));
+                    return Some(stepler_core::CorrectionMode::ScrollLock);
+                }
+                if is_up {
+                    self.scroll_lock_down = false;
+                    self.suppress_c_until = Some(Instant::now() + Duration::from_millis(1_500));
+                }
+            }
+            _ => {}
+        }
+
+        None
+    }
+
+    fn should_suppress_companion_key(&mut self, vk_code: u32) -> bool {
+        if !is_scrolllock_companion_key(vk_code) {
+            return false;
+        }
+
+        let Some(until) = self.suppress_c_until else {
+            return false;
+        };
+        if Instant::now() <= until {
+            return true;
+        }
+
+        self.suppress_c_until = None;
+        false
+    }
+
+    fn debounce_allows(last_at: Option<Instant>) -> bool {
+        last_at
+            .map(|last_at| last_at.elapsed() >= Duration::from_millis(250))
+            .unwrap_or(true)
+    }
+
+    fn handle_key(
+        &mut self,
+        vk_code: u32,
+        is_down: bool,
+        is_up: bool,
+    ) -> Option<KeyboardControlAction> {
+        if is_down {
+            match vk_code {
+                VK_LCONTROL => {
+                    self.right_ctrl_used = true;
+                    self.right_ctrl_down = false;
+                    self.left_ctrl_down = true;
+                    self.left_ctrl_used = false;
+                }
+                VK_RCONTROL => {
+                    self.left_ctrl_used = true;
+                    self.left_ctrl_down = false;
+                    self.right_ctrl_down = true;
+                    self.right_ctrl_used = false;
+                }
+                VK_APPS | VK_CAPITAL => return Some(KeyboardControlAction::SwitchToNext),
+                _ => {
+                    if self.left_ctrl_down {
+                        self.left_ctrl_used = true;
+                    }
+                    if self.right_ctrl_down {
+                        self.right_ctrl_used = true;
+                    }
+                }
+            }
+        }
+
+        if is_up {
+            match vk_code {
+                VK_LCONTROL => {
+                    let action =
+                        (!self.left_ctrl_used).then_some(KeyboardControlAction::SwitchToRussian);
+                    self.left_ctrl_down = false;
+                    self.left_ctrl_used = false;
+                    return action;
+                }
+                VK_RCONTROL => {
+                    let action =
+                        (!self.right_ctrl_used).then_some(KeyboardControlAction::SwitchToEnglish);
+                    self.right_ctrl_down = false;
+                    self.right_ctrl_used = false;
+                    return action;
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+}
+
+#[cfg(windows)]
+fn should_suppress_keyboard_companion_event(vk_code: u32) -> bool {
+    KEYBOARD_CONTROL_STATE
+        .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
+        .lock()
+        .ok()
+        .is_some_and(|mut state| state.should_suppress_companion_key(vk_code))
+}
+
+#[cfg(windows)]
+fn is_scrolllock_companion_key(vk_code: u32) -> bool {
+    matches!(vk_code, VK_C | VK_HOME | VK_LEFT | VK_RIGHT)
+}
+
+static KEYBOARD_CONTROL_STATE: OnceLock<Mutex<KeyboardControlHookState>> = OnceLock::new();
+#[cfg(windows)]
+static KEYBOARD_CONTROL_HOOK: OnceLock<Mutex<isize>> = OnceLock::new();
+#[cfg(windows)]
+static KEYBOARD_CONTROL_THREAD_ID: OnceLock<u32> = OnceLock::new();
+
+#[cfg(windows)]
+fn install_keyboard_control_hook() -> Result<(), PlatformError> {
+    let thread_id = unsafe { GetCurrentThreadId() };
+    let _ = KEYBOARD_CONTROL_THREAD_ID.set(thread_id);
+    let hook = unsafe {
+        SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(low_level_keyboard_proc),
+            GetModuleHandleW(std::ptr::null()),
+            0,
+        )
+    };
+    if hook == 0 {
+        return Err(PlatformError::HotkeyUnavailable);
+    }
+
+    *KEYBOARD_CONTROL_HOOK
+        .get_or_init(|| Mutex::new(0))
+        .lock()
+        .map_err(|_| PlatformError::HotkeyUnavailable)? = hook;
+    Ok(())
+}
+
+#[cfg(windows)]
+struct KeyboardControlHookGuard;
+
+#[cfg(windows)]
+impl Drop for KeyboardControlHookGuard {
+    fn drop(&mut self) {
+        if let Some(hook) = KEYBOARD_CONTROL_HOOK.get() {
+            if let Ok(mut hook) = hook.lock() {
+                if *hook != 0 {
+                    unsafe {
+                        UnhookWindowsHookEx(*hook);
+                    }
+                    *hook = 0;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn low_level_keyboard_proc(
+    code: i32,
+    wparam: usize,
+    lparam: isize,
+) -> isize {
+    if code < 0 {
+        return CallNextHookEx(0, code, wparam, lparam);
+    }
+
+    let event = *(lparam as *const KbdLlHookStruct);
+    let vk_code = normalized_control_vk(event);
+    let is_down = matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+    let is_up = matches!(wparam as u32, WM_KEYUP | WM_SYSKEYUP);
+    if !(is_down || is_up) {
+        return CallNextHookEx(0, code, wparam, lparam);
+    }
+    if should_suppress_keyboard_companion_event(vk_code) {
+        return 1;
+    }
+    if should_ignore_keyboard_hook_event(event) {
+        return CallNextHookEx(0, code, wparam, lparam);
+    }
+
+    let (mode, action, suppress_key) = KEYBOARD_CONTROL_STATE
+        .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
+        .lock()
+        .ok()
+        .map(|mut state| {
+            let mode = state.handle_correction_hotkey(vk_code, is_down, is_up);
+            let suppress_key = state.should_suppress_companion_key(vk_code);
+            let action = state.handle_key(vk_code, is_down, is_up);
+            (mode, action, suppress_key)
+        })
+        .unwrap_or((None, None, false));
+
+    if std::env::var_os("STEPLER_DEBUG_KEYS").is_some() {
+        eprintln!(
+            "key: vk={} normalized={} scan={} flags=0x{:X} down={} up={} mode={:?} action={:?}",
+            event.vk_code, vk_code, event.scan_code, event.flags, is_down, is_up, mode, action
+        );
+    }
+
+    if suppress_key {
+        return 1;
+    }
+
+    if let Some(mode) = mode {
+        if let Some(thread_id) = KEYBOARD_CONTROL_THREAD_ID.get().copied() {
+            PostThreadMessageW(
+                thread_id,
+                WM_STEPLER_HOTKEY,
+                correction_mode_message_id(mode),
+                0,
+            );
+        }
+
+        return 1;
+    }
+
+    if matches!(vk_code, VK_PAUSE | VK_CANCEL | VK_SCROLL) {
+        return 1;
+    }
+
+    if let Some(action) = action {
+        if let Some(thread_id) = KEYBOARD_CONTROL_THREAD_ID.get().copied() {
+            PostThreadMessageW(
+                thread_id,
+                WM_STEPLER_KEYBOARD_CONTROL,
+                action.message_id(),
+                0,
+            );
+        }
+
+        if matches!(vk_code, VK_APPS | VK_CAPITAL) {
+            return 1;
+        }
+    }
+
+    CallNextHookEx(0, code, wparam, lparam)
+}
+
+#[cfg(windows)]
+fn normalized_control_vk(event: KbdLlHookStruct) -> u32 {
+    match event.vk_code {
+        VK_CONTROL if event.flags & LLKHF_EXTENDED != 0 => VK_RCONTROL,
+        VK_CONTROL => VK_LCONTROL,
+        other => other,
+    }
+}
+
+#[cfg(windows)]
+fn should_ignore_keyboard_hook_event(event: KbdLlHookStruct) -> bool {
+    event.flags & LLKHF_INJECTED != 0
+}
+
+#[cfg(windows)]
+struct ClipboardGuard;
+
+#[cfg(windows)]
+impl ClipboardGuard {
+    fn open() -> Result<Self, PlatformError> {
+        let opened = unsafe { OpenClipboard(0) };
+        if opened == 0 {
+            return Err(PlatformError::ClipboardUnavailable);
+        }
+
+        Ok(Self)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ClipboardGuard {
+    fn drop(&mut self) {
+        unsafe {
+            CloseClipboard();
+        }
+    }
+}
+
+#[cfg(windows)]
+fn register_hotkey(id: i32, virtual_key: u32) -> Result<(), PlatformError> {
+    let ok = unsafe { RegisterHotKey(0, id, MOD_NOREPEAT, virtual_key) };
+    if ok == 0 {
+        return Err(PlatformError::HotkeyUnavailable);
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+struct RegisteredHotkeyGuard;
+
+#[cfg(windows)]
+impl Drop for RegisteredHotkeyGuard {
+    fn drop(&mut self) {
+        unsafe {
+            UnregisterHotKey(0, HOTKEY_ID_PAUSE);
+            UnregisterHotKey(0, HOTKEY_ID_SCROLL_LOCK);
+        }
+    }
+}
+
+#[cfg(windows)]
+const WM_GETTEXT: u32 = 0x000D;
+#[cfg(windows)]
+const WM_GETTEXTLENGTH: u32 = 0x000E;
+#[cfg(windows)]
+const EM_GETSEL: u32 = 0x00B0;
+#[cfg(windows)]
+const EM_SETSEL: u32 = 0x00B1;
+#[cfg(windows)]
+const EM_REPLACESEL: u32 = 0x00C2;
+#[cfg(windows)]
+const CF_UNICODETEXT: u32 = 13;
+#[cfg(windows)]
+const GMEM_MOVEABLE: u32 = 0x0002;
+#[cfg(windows)]
+const WM_HOTKEY: u32 = 0x0312;
+#[cfg(windows)]
+const MOD_NOREPEAT: u32 = 0x4000;
+#[cfg(windows)]
+const INPUT_KEYBOARD: u32 = 1;
+#[cfg(windows)]
+const MAPVK_VK_TO_VSC_EX: u32 = 4;
+#[cfg(windows)]
+const VK_PAUSE: u32 = 0x13;
+#[cfg(windows)]
+const VK_CANCEL: u32 = 0x03;
+#[cfg(windows)]
+const VK_SCROLL: u32 = 0x91;
+#[cfg(windows)]
+const VK_HOME: u32 = 0x24;
+#[cfg(windows)]
+const VK_END: u32 = 0x23;
+const VK_C: u32 = 0x43;
+#[cfg(windows)]
+const VK_V: u32 = 0x56;
+#[cfg(windows)]
+const VK_BACK: u32 = 0x08;
+#[cfg(windows)]
+const VK_INSERT: u32 = 0x2D;
+#[cfg(windows)]
+const VK_DELETE: u32 = 0x2E;
+#[cfg(windows)]
+const VK_LEFT: u32 = 0x25;
+#[cfg(windows)]
+const VK_UP: u32 = 0x26;
+#[cfg(windows)]
+const VK_RIGHT: u32 = 0x27;
+#[cfg(windows)]
+const VK_DOWN: u32 = 0x28;
+#[cfg(windows)]
+const VK_PRIOR: u32 = 0x21;
+#[cfg(windows)]
+const VK_NEXT: u32 = 0x22;
+#[cfg(windows)]
+const VK_DIVIDE: u32 = 0x6F;
+#[cfg(windows)]
+const VK_NUMLOCK: u32 = 0x90;
+#[cfg(windows)]
+const HOTKEY_ID_PAUSE: i32 = 1;
+#[cfg(windows)]
+const HOTKEY_ID_SCROLL_LOCK: i32 = 2;
+const LANG_ENGLISH: u16 = 0x0409;
+const LANG_RUSSIAN: u16 = 0x0419;
+const VK_LCONTROL: u32 = 0xA2;
+const VK_RCONTROL: u32 = 0xA3;
+#[cfg(windows)]
+const VK_CONTROL: u32 = 0x11;
+#[cfg(windows)]
+const VK_LMENU: u32 = 0xA4;
+#[cfg(windows)]
+const VK_RMENU: u32 = 0xA5;
+#[cfg(windows)]
+const VK_MENU: u32 = 0x12;
+#[cfg(windows)]
+const VK_LSHIFT: u32 = 0xA0;
+#[cfg(windows)]
+const VK_RSHIFT: u32 = 0xA1;
+#[cfg(windows)]
+const VK_SHIFT: u32 = 0x10;
+const VK_APPS: u32 = 0x5D;
+const VK_CAPITAL: u32 = 0x14;
+#[cfg(windows)]
+const WM_INPUTLANGCHANGEREQUEST: u32 = 0x0050;
+#[cfg(windows)]
+const WM_STEPLER_KEYBOARD_CONTROL: u32 = 0x8001;
+#[cfg(windows)]
+const WM_STEPLER_HOTKEY: u32 = 0x8002;
+#[cfg(windows)]
+const WM_QUIT: u32 = 0x0012;
+#[cfg(windows)]
+const WH_KEYBOARD_LL: i32 = 13;
+#[cfg(windows)]
+const WM_KEYDOWN: u32 = 0x0100;
+#[cfg(windows)]
+const WM_KEYUP: u32 = 0x0101;
+#[cfg(windows)]
+const WM_SYSKEYDOWN: u32 = 0x0104;
+#[cfg(windows)]
+const WM_SYSKEYUP: u32 = 0x0105;
+#[cfg(windows)]
+const LLKHF_EXTENDED: u32 = 0x01;
+#[cfg(windows)]
+const LLKHF_INJECTED: u32 = 0x10;
+#[cfg(windows)]
+const KEYEVENTF_EXTENDEDKEY: u32 = 0x0001;
+#[cfg(windows)]
+const KEYEVENTF_KEYUP: u32 = 0x0002;
+#[cfg(windows)]
+const KEYEVENTF_SCANCODE: u32 = 0x0008;
+#[cfg(windows)]
+const KEYEVENTF_UNICODE: u32 = 0x0004;
+#[cfg(windows)]
+const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+#[cfg(windows)]
+const INVALID_HANDLE_VALUE: isize = -1isize;
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct Msg {
+    hwnd: isize,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+    time: u32,
+    pt: Point,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct KbdLlHookStruct {
+    vk_code: u32,
+    scan_code: u32,
+    flags: u32,
+    time: u32,
+    extra_info: usize,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct Input {
+    input_type: u32,
+    input: InputUnion,
+}
+
+#[cfg(windows)]
+impl Input {
+    fn keyboard_scan_code(vk: u32, key_up: bool) -> Self {
+        let scan_code = unsafe { MapVirtualKeyW(vk, MAPVK_VK_TO_VSC_EX) };
+        let extended = scan_code & 0xFF00 != 0 || is_extended_navigation_key(vk);
+        let mut flags = KEYEVENTF_SCANCODE;
+        if key_up {
+            flags |= KEYEVENTF_KEYUP;
+        }
+        if extended {
+            flags |= KEYEVENTF_EXTENDEDKEY;
+        }
+
+        Self {
+            input_type: INPUT_KEYBOARD,
+            input: InputUnion {
+                ki: KeybdInput {
+                    vk: 0,
+                    scan: (scan_code & 0xFF) as u16,
+                    flags,
+                    time: 0,
+                    extra_info: 0,
+                },
+            },
+        }
+    }
+
+    fn keyboard_virtual_key(vk: u32, key_up: bool) -> Self {
+        let mut flags = 0;
+        if key_up {
+            flags |= KEYEVENTF_KEYUP;
+        }
+        if is_extended_navigation_key(vk) || matches!(vk, VK_RCONTROL | VK_RMENU) {
+            flags |= KEYEVENTF_EXTENDEDKEY;
+        }
+
+        Self {
+            input_type: INPUT_KEYBOARD,
+            input: InputUnion {
+                ki: KeybdInput {
+                    vk: vk as u16,
+                    scan: 0,
+                    flags,
+                    time: 0,
+                    extra_info: 0,
+                },
+            },
+        }
+    }
+
+    fn keyboard_unicode(unit: u16, key_up: bool) -> Self {
+        let mut flags = KEYEVENTF_UNICODE;
+        if key_up {
+            flags |= KEYEVENTF_KEYUP;
+        }
+
+        Self {
+            input_type: INPUT_KEYBOARD,
+            input: InputUnion {
+                ki: KeybdInput {
+                    vk: 0,
+                    scan: unit,
+                    flags,
+                    time: 0,
+                    extra_info: 0,
+                },
+            },
+        }
+    }
+}
+
+#[cfg(windows)]
+fn is_extended_navigation_key(vk: u32) -> bool {
+    matches!(
+        vk,
+        VK_HOME
+            | VK_END
+            | VK_INSERT
+            | VK_DELETE
+            | VK_LEFT
+            | VK_RIGHT
+            | VK_UP
+            | VK_DOWN
+            | VK_PRIOR
+            | VK_NEXT
+            | VK_DIVIDE
+            | VK_NUMLOCK
+    )
+}
+
+#[cfg(windows)]
+#[repr(C)]
+union InputUnion {
+    ki: KeybdInput,
+    padding: [u8; 32],
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct KeybdInput {
+    vk: u16,
+    scan: u16,
+    flags: u32,
+    time: u32,
+    extra_info: usize,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Coord {
+    x: i16,
+    y: i16,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct SmallRect {
+    left: i16,
+    top: i16,
+    right: i16,
+    bottom: i16,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct ConsoleScreenBufferInfo {
+    size: Coord,
+    cursor_position: Coord,
+    attributes: u16,
+    window: SmallRect,
+    maximum_window_size: Coord,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct Rect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct GuiThreadInfo {
+    cb_size: u32,
+    flags: u32,
+    hwnd_active: isize,
+    hwnd_focus: isize,
+    hwnd_capture: isize,
+    hwnd_menu_owner: isize,
+    hwnd_move_size: isize,
+    hwnd_caret: isize,
+    rc_caret: Rect,
+}
+
+#[cfg(windows)]
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn GetForegroundWindow() -> isize;
+    fn GetClassNameW(hwnd: isize, class_name: *mut u16, max_count: i32) -> i32;
+    fn GetWindowTextLengthW(hwnd: isize) -> i32;
+    fn GetWindowTextW(hwnd: isize, text: *mut u16, max_count: i32) -> i32;
+    fn GetWindowThreadProcessId(hwnd: isize, process_id: *mut u32) -> u32;
+    fn GetGUIThreadInfo(thread_id: u32, gui_thread_info: *mut GuiThreadInfo) -> i32;
+    fn SendMessageW(hwnd: isize, msg: u32, wparam: usize, lparam: isize) -> isize;
+    fn OpenClipboard(hwnd_new_owner: isize) -> i32;
+    fn CloseClipboard() -> i32;
+    fn EmptyClipboard() -> i32;
+    fn EnumClipboardFormats(format: u32) -> u32;
+    fn GetClipboardData(format: u32) -> isize;
+    fn SetClipboardData(format: u32, mem: isize) -> isize;
+    fn GetClipboardSequenceNumber() -> u32;
+    fn RegisterHotKey(hwnd: isize, id: i32, modifiers: u32, virtual_key: u32) -> i32;
+    fn UnregisterHotKey(hwnd: isize, id: i32) -> i32;
+    fn GetMessageW(message: *mut Msg, hwnd: isize, min_filter: u32, max_filter: u32) -> i32;
+    fn PostMessageW(hwnd: isize, msg: u32, wparam: usize, lparam: isize) -> i32;
+    fn PostThreadMessageW(thread_id: u32, msg: u32, wparam: usize, lparam: isize) -> i32;
+    fn GetKeyboardLayout(thread_id: u32) -> isize;
+    fn GetKeyboardLayoutList(count: i32, layouts: *mut isize) -> i32;
+    fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
+    fn SetWindowsHookExW(
+        id_hook: i32,
+        hook_proc: Option<unsafe extern "system" fn(i32, usize, isize) -> isize>,
+        instance: isize,
+        thread_id: u32,
+    ) -> isize;
+    fn SendInput(count: u32, inputs: *mut Input, size: i32) -> u32;
+    fn CallNextHookEx(hook: isize, code: i32, wparam: usize, lparam: isize) -> isize;
+    fn UnhookWindowsHookEx(hook: isize) -> i32;
+    fn keybd_event(vk: u8, scan: u8, flags: u32, extra_info: usize);
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn AttachConsole(process_id: u32) -> i32;
+    fn FreeConsole() -> i32;
+    fn GetCurrentThreadId() -> u32;
+    fn GetModuleHandleW(module_name: *const u16) -> isize;
+    fn SetConsoleCtrlHandler(
+        handler: Option<unsafe extern "system" fn(u32) -> i32>,
+        add: i32,
+    ) -> i32;
+    fn GlobalAlloc(flags: u32, bytes: usize) -> isize;
+    fn GlobalLock(mem: isize) -> *mut std::ffi::c_void;
+    fn GlobalUnlock(mem: isize) -> i32;
+    fn GlobalFree(mem: isize) -> isize;
+    fn GlobalSize(mem: isize) -> usize;
+    fn GetConsoleScreenBufferInfo(
+        console_output: isize,
+        console_screen_buffer_info: *mut ConsoleScreenBufferInfo,
+    ) -> i32;
+    fn GetStdHandle(std_handle: u32) -> isize;
+    fn ReadConsoleOutputCharacterW(
+        console_output: isize,
+        character: *mut u16,
+        length: u32,
+        read_coord: Coord,
+        number_of_chars_read: *mut u32,
+    ) -> i32;
+}

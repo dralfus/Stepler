@@ -1,0 +1,137 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorrectionMode {
+    Pause,
+    ScrollLock,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextRange {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl TextRange {
+    pub const fn new(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+
+    pub const fn caret(offset: usize) -> Self {
+        Self {
+            start: offset,
+            end: offset,
+        }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.start == self.end
+    }
+}
+
+pub type SelectionRange = TextRange;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MethodId {
+    Win32EditMessages,
+    TerminalClipboardShortcut,
+    ConsoleBuffer,
+    PsReadLine,
+    WordCom,
+    UiAutomationText,
+    ClipboardSelection,
+    SendInput,
+}
+
+impl MethodId {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Win32EditMessages => "win32_edit_messages",
+            Self::TerminalClipboardShortcut => "terminal_clipboard_shortcut",
+            Self::ConsoleBuffer => "console_buffer",
+            Self::PsReadLine => "psreadline",
+            Self::WordCom => "word_com",
+            Self::UiAutomationText => "uia_text",
+            Self::ClipboardSelection => "clipboard_selection",
+            Self::SendInput => "send_input",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodBinding {
+    pub context_method: MethodId,
+    pub replace_methods: Vec<MethodId>,
+}
+
+impl MethodBinding {
+    pub fn new(context_method: MethodId, replace_methods: Vec<MethodId>) -> Self {
+        Self {
+            context_method,
+            replace_methods,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Capabilities {
+    pub can_replace_directly: bool,
+    pub can_read_selection: bool,
+    pub can_read_caret: bool,
+    pub method_binding: Option<MethodBinding>,
+}
+
+impl Default for Capabilities {
+    fn default() -> Self {
+        Self {
+            can_replace_directly: false,
+            can_read_selection: true,
+            can_read_caret: true,
+            method_binding: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextContext {
+    pub app_id: String,
+    pub window_id: String,
+    pub control_id: String,
+    pub text_snapshot: String,
+    pub caret_range: TextRange,
+    pub selection_range: Option<SelectionRange>,
+    pub capabilities: Capabilities,
+}
+
+impl TextContext {
+    pub fn new(text_snapshot: impl Into<String>) -> Self {
+        let text_snapshot = text_snapshot.into();
+        let end = text_snapshot.len();
+        Self {
+            app_id: String::new(),
+            window_id: String::new(),
+            control_id: String::new(),
+            text_snapshot,
+            caret_range: TextRange::caret(end),
+            selection_range: None,
+            capabilities: Capabilities::default(),
+        }
+    }
+
+    pub fn with_caret(mut self, caret_range: TextRange) -> Self {
+        self.caret_range = caret_range;
+        self
+    }
+
+    pub fn with_selection(mut self, selection_range: Option<SelectionRange>) -> Self {
+        self.selection_range = selection_range;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReplacementPlan {
+    pub range: TextRange,
+    pub replacement_text: String,
+    pub reason: String,
+    pub confidence: f32,
+    pub expected_before_text: String,
+}

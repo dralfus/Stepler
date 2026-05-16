@@ -1,0 +1,96 @@
+[
+  {
+    "id": "pause-last-word-k-dot-comma-jdm",
+    "source": "HotkeyHandler.Tests/PauseTransliterationHandlerTests.ConvertLayoutText_EnglishMistypedRussian_ToRussian",
+    "mode": "Pause",
+    "input": "k.,jdm",
+    "expected": "любовь",
+    "status": "active"
+  },
+  {
+    "id": "pause-round-trip-k-dot-comma-jdm",
+    "source": "HotkeyHandler.Tests/PauseTransliterationHandlerTests.ConvertLayoutText_RoundTrip_KDotCommaJdm_Works",
+    "mode": "Pause",
+    "input": "любовь",
+    "expected": "k.,jdm",
+    "status": "active"
+  },
+  {
+    "id": "pause-punctuation-chetyre-comma",
+    "source": "HotkeyHandler.Tests/PauseTransliterationHandlerTests.ConvertLayoutText_PunctuationMapping_ChetyreComma",
+    "mode": "Pause",
+    "input": "четыре,",
+    "expected": "xtnsht?",
+    "status": "active"
+  },
+  {
+    "id": "pause-selected-mixed-scripts",
+    "source": "HotkeyHandler.Tests/PauseTransliterationHandlerTests.ConvertSelectedText_MixedScripts_ConvertsEachTokenDirection",
+    "mode": "Pause",
+    "input": "раз два три. xtnsht?",
+    "expected": "hfp ldf nhb/ четыре,",
+    "status": "active"
+  },
+  {
+    "id": "scrolllock-mixed-russian-english-tail",
+    "source": "HotkeyHandler.UiTests/NotepadScrollLockSmokeTests.ScrollLock_NotepadOnly_ReplacesMistypedTailAndPreservesClipboard",
+    "mode": "ScrollLock",
+    "input": "вальс поле long ghbdtn vbh",
+    "expected": "вальс поле long привет мир",
+    "status": "active"
+  },
+  {
+    "id": "scrolllock-valid-english-prefix-short-function-phrase",
+    "source": "HotkeyHandler.Tests/PauseTransliterationHandlerTests.ConvertLikelyMistypedTokens_DoesNotConvertValidEnglishPrefixBeforeShortFunctionWordPhrase",
+    "mode": "ScrollLock",
+    "input": "created DESC d nf,kbwt exntyj",
+    "expected": "created DESC в таблице учтено",
+    "status": "active"
+  },
+  {
+    "id": "scrolllock-sql-keywords-english-suffix",
+    "source": "HotkeyHandler.Tests/PauseTransliterationHandlerTests.ConvertLikelyMistypedTokens_ConvertsMistypedRussianSuffixAfterSqlKeywords",
+    "mode": "ScrollLock",
+    "input": "ORDER BY скуфеув ВУЫС",
+    "expected": "ORDER BY created DESC",
+    "status": "active"
+  },
+  {
+    "id": "scrolllock-unknown-english-typed-russian-layout",
+    "source": "HotkeyHandler.Tests/PauseTransliterationHandlerTests.ConvertLikelyMistypedTokens_ConvertsUnknownEnglishWordTypedInRussianLayout",
+    "mode": "ScrollLock",
+    "input": "ыеи ьфекшч",
+    "expected": "stb matrix",
+    "status": "active"
+  },
+  {
+    "id": "bug-notepad-scrolllock-text-corruption",
+    "source": "HotkeyHandler/known_bugs.txt#1",
+    "mode": "ScrollLock",
+    "input": "раз два три. четыре, ",
+    "expected": "раз два три. четыре, ",
+    "status": "active",
+    "note": "Regression guard: valid text must not collapse to a single Latin character."
+  },
+  {
+    "id": "bug-scrolllock-multiline-range-corruption",
+    "source": "HotkeyHandler/known_bugs.txt#5",
+    "mode": "ScrollLock",
+    "input": "первая строка\nToday: ctujlyz [hjibq ltym/\nтретья строка",
+    "expected": "первая строка\nToday: сегодня хроший день.\nтретья строка",
+    "status": "expected_failure",
+    "note": "Historical multiline range corruption needs a dedicated Stepler range fixture before enabling as active."
+  },
+  {
+    "id": "bug-delayed-second-paste",
+    "source": "HotkeyHandler/known_bugs.txt#6",
+    "mode": "ScrollLock",
+    "input": "вальс поле long ghbdtn vbh",
+    "expected": "вальс поле long привет мир",
+    "status": "active",
+    "invariants": [
+      "clipboard_preserved",
+      "no_second_replacement_after_2500ms"
+    ]
+  }
+]

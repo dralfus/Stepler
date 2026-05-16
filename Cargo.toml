@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "crates/stepler-app",
+    "crates/stepler-cli",
+    "crates/stepler-core",
+    "crates/stepler-platform",
+    "crates/stepler-platform-windows",
+    "crates/stepler-testkit",
+    "crates/stepler-tray",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+publish = false

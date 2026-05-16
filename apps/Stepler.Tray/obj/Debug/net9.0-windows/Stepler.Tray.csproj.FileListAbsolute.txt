@@ -1,0 +1,14 @@
+F:\distr\system\Stepler\apps\Stepler.Tray\bin\Debug\net9.0-windows\Stepler.Tray.exe
+F:\distr\system\Stepler\apps\Stepler.Tray\bin\Debug\net9.0-windows\Stepler.Tray.deps.json
+F:\distr\system\Stepler\apps\Stepler.Tray\bin\Debug\net9.0-windows\Stepler.Tray.runtimeconfig.json
+F:\distr\system\Stepler\apps\Stepler.Tray\bin\Debug\net9.0-windows\Stepler.Tray.dll
+F:\distr\system\Stepler\apps\Stepler.Tray\bin\Debug\net9.0-windows\Stepler.Tray.pdb
+F:\distr\system\Stepler\apps\Stepler.Tray\obj\Debug\net9.0-windows\Stepler.Tray.GeneratedMSBuildEditorConfig.editorconfig
+F:\distr\system\Stepler\apps\Stepler.Tray\obj\Debug\net9.0-windows\Stepler.Tray.AssemblyInfoInputs.cache
+F:\distr\system\Stepler\apps\Stepler.Tray\obj\Debug\net9.0-windows\Stepler.Tray.AssemblyInfo.cs
+F:\distr\system\Stepler\apps\Stepler.Tray\obj\Debug\net9.0-windows\Stepler.Tray.csproj.CoreCompileInputs.cache
+F:\distr\system\Stepler\apps\Stepler.Tray\obj\Debug\net9.0-windows\Stepler.Tray.dll
+F:\distr\system\Stepler\apps\Stepler.Tray\obj\Debug\net9.0-windows\refint\Stepler.Tray.dll
+F:\distr\system\Stepler\apps\Stepler.Tray\obj\Debug\net9.0-windows\Stepler.Tray.pdb
+F:\distr\system\Stepler\apps\Stepler.Tray\obj\Debug\net9.0-windows\Stepler.Tray.genruntimeconfig.cache
+F:\distr\system\Stepler\apps\Stepler.Tray\obj\Debug\net9.0-windows\ref\Stepler.Tray.dll

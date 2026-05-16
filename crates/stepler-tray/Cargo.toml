@@ -1,0 +1,12 @@
+[package]
+name = "stepler-tray"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+stepler-app = { path = "../stepler-app" }
+stepler-core = { path = "../stepler-core" }
+stepler-platform = { path = "../stepler-platform" }
+stepler-platform-windows = { path = "../stepler-platform-windows" }

@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Stepler.Tray")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+1bc2e2a812adc397b1250f225764e2fea3df35c0")]
 [assembly: System.Reflection.AssemblyProductAttribute("Stepler.Tray")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Stepler.Tray")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

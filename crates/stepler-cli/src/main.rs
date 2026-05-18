@@ -315,18 +315,35 @@ fn run_hotkeys() {
     let mut runner =
         OperationRunner::new_with_clipboard(&foreground, &context_provider, &replacer, &clipboard);
     let log_path = std::path::Path::new("stepler_hotkey_log.jsonl");
+    let settings = RuntimeSettings::from_env();
 
     eprintln!("Stepler hotkey runner started.");
     eprintln!(
         "Registered: Pause, ScrollLock. Controls: LeftCtrl=RU, RightCtrl=EN, Menu/Caps=next."
     );
+    eprintln!(
+        "Settings: pause={} scrolllock={} ctrl_layout={} menu_caps={} risky_fallbacks={}",
+        settings.pause_enabled,
+        settings.scrolllock_enabled,
+        settings.ctrl_layout_enabled,
+        settings.menu_caps_enabled,
+        settings.risky_fallbacks_enabled
+    );
     eprintln!("Press Ctrl+C in this console to stop.");
     eprintln!("Log: {}", log_path.display());
 
     let result = message_loop_with_keyboard_controls(
-        |mode| handle_hotkey_event(mode, &mut runner, log_path),
+        |mode| {
+            if settings.hotkey_enabled(mode) {
+                handle_hotkey_event(mode, &mut runner, log_path);
+            } else {
+                eprintln!("{mode:?}: disabled");
+            }
+        },
         |action| {
-            if let Err(error) = layout_switcher.handle_action(action) {
+            if !settings.layout_action_enabled(action) {
+                eprintln!("{action:?}: disabled");
+            } else if let Err(error) = layout_switcher.handle_action(action) {
                 eprintln!("{action:?}: {error:?}");
             } else {
                 eprintln!("{action:?}: ok");
@@ -339,6 +356,57 @@ fn run_hotkeys() {
     if let Err(error) = result {
         eprintln!("hotkey runner error: {error:?}");
         std::process::exit(1);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeSettings {
+    pause_enabled: bool,
+    scrolllock_enabled: bool,
+    ctrl_layout_enabled: bool,
+    menu_caps_enabled: bool,
+    risky_fallbacks_enabled: bool,
+}
+
+impl RuntimeSettings {
+    fn from_env() -> Self {
+        Self {
+            pause_enabled: env_enabled("STEPLER_ENABLE_PAUSE", true),
+            scrolllock_enabled: env_enabled("STEPLER_ENABLE_SCROLLLOCK", true),
+            ctrl_layout_enabled: env_enabled("STEPLER_ENABLE_CTRL_LAYOUT", true),
+            menu_caps_enabled: env_enabled("STEPLER_ENABLE_MENU_CAPS_LAYOUT", true),
+            risky_fallbacks_enabled: std::env::var_os("STEPLER_ALLOW_RISKY_FALLBACKS").is_some(),
+        }
+    }
+
+    fn hotkey_enabled(self, mode: CorrectionMode) -> bool {
+        match mode {
+            CorrectionMode::Pause => self.pause_enabled,
+            CorrectionMode::ScrollLock => self.scrolllock_enabled,
+        }
+    }
+
+    fn layout_action_enabled(
+        self,
+        action: stepler_platform_windows::KeyboardControlAction,
+    ) -> bool {
+        use stepler_platform_windows::KeyboardControlAction;
+        match action {
+            KeyboardControlAction::SwitchToRussian | KeyboardControlAction::SwitchToEnglish => {
+                self.ctrl_layout_enabled
+            }
+            KeyboardControlAction::SwitchToNext => self.menu_caps_enabled,
+        }
+    }
+}
+
+fn env_enabled(name: &str, default: bool) -> bool {
+    match std::env::var(name) {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        ),
+        Err(_) => default,
     }
 }
 

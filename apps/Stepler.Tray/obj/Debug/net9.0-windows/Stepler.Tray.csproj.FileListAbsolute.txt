@@ -12,3 +12,4 @@ F:\distr\system\Stepler\apps\Stepler.Tray\obj\Debug\net9.0-windows\refint\Steple
 F:\distr\system\Stepler\apps\Stepler.Tray\obj\Debug\net9.0-windows\Stepler.Tray.pdb
 F:\distr\system\Stepler\apps\Stepler.Tray\obj\Debug\net9.0-windows\Stepler.Tray.genruntimeconfig.cache
 F:\distr\system\Stepler\apps\Stepler.Tray\obj\Debug\net9.0-windows\ref\Stepler.Tray.dll
+F:\distr\system\Stepler\apps\Stepler.Tray\obj\Debug\net9.0-windows\Stepler.Tray.sourcelink.json

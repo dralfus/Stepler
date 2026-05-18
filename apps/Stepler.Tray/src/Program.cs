@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -83,16 +84,26 @@ internal sealed class SteplerTrayForm : Form
     private readonly ToolStripMenuItem _statusItem;
     private readonly ToolStripMenuItem _toggleItem;
     private readonly ToolStripMenuItem _restartItem;
+    private readonly ToolStripMenuItem _pauseItem;
+    private readonly ToolStripMenuItem _scrollLockItem;
+    private readonly ToolStripMenuItem _ctrlLayoutItem;
+    private readonly ToolStripMenuItem _menuCapsLayoutItem;
+    private readonly ToolStripMenuItem _riskyFallbacksItem;
     private readonly ToolStripMenuItem _autostartItem;
     private readonly ToolStripMenuItem _openHotkeyLogItem;
     private readonly ToolStripMenuItem _openTrayLogItem;
     private ControlWindow? _controlWindow;
     private Process? _runner;
     private RunnerJob? _runnerJob;
+    private SteplerSettings _settings;
 
     public SteplerTrayForm()
     {
         _repoRoot = FindRepoRoot();
+        _settings = SteplerSettingsStore.Load();
+        File.AppendAllText(
+            Program.LogPath(),
+            $"{DateTimeOffset.Now:o} settings loaded path={SteplerSettingsStore.SettingsPath()} {JsonSerializer.Serialize(_settings)}{Environment.NewLine}");
 
         Text = "Stepler";
         ShowInTaskbar = false;
@@ -116,6 +127,36 @@ internal sealed class SteplerTrayForm : Form
         _restartItem = new ToolStripMenuItem("Перезапустить обработчик");
         _restartItem.Click += (_, _) => RestartRunner();
 
+        _pauseItem = new ToolStripMenuItem("Pause")
+        {
+            CheckOnClick = true,
+        };
+        _pauseItem.Click += (_, _) => UpdateSetting(settings => settings.PauseEnabled = _pauseItem.Checked);
+
+        _scrollLockItem = new ToolStripMenuItem("ScrollLock")
+        {
+            CheckOnClick = true,
+        };
+        _scrollLockItem.Click += (_, _) => UpdateSetting(settings => settings.ScrollLockEnabled = _scrollLockItem.Checked);
+
+        _ctrlLayoutItem = new ToolStripMenuItem("Left/Right Ctrl: RU/EN")
+        {
+            CheckOnClick = true,
+        };
+        _ctrlLayoutItem.Click += (_, _) => UpdateSetting(settings => settings.CtrlLayoutSwitchEnabled = _ctrlLayoutItem.Checked);
+
+        _menuCapsLayoutItem = new ToolStripMenuItem("Menu/Caps: следующая раскладка")
+        {
+            CheckOnClick = true,
+        };
+        _menuCapsLayoutItem.Click += (_, _) => UpdateSetting(settings => settings.MenuCapsSwitchEnabled = _menuCapsLayoutItem.Checked);
+
+        _riskyFallbacksItem = new ToolStripMenuItem("Risky fallback adapters")
+        {
+            CheckOnClick = true,
+        };
+        _riskyFallbacksItem.Click += (_, _) => UpdateSetting(settings => settings.RiskyFallbacksEnabled = _riskyFallbacksItem.Checked);
+
         _autostartItem = new ToolStripMenuItem("Автозапуск Windows");
         _autostartItem.Click += (_, _) => ToggleAutostart();
 
@@ -136,6 +177,13 @@ internal sealed class SteplerTrayForm : Form
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_toggleItem);
         menu.Items.Add(_restartItem);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(_pauseItem);
+        menu.Items.Add(_scrollLockItem);
+        menu.Items.Add(_ctrlLayoutItem);
+        menu.Items.Add(_menuCapsLayoutItem);
+        menu.Items.Add(_riskyFallbacksItem);
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_autostartItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_openHotkeyLogItem);
@@ -229,7 +277,7 @@ internal sealed class SteplerTrayForm : Form
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
-            });
+            }.WithSteplerSettings(_settings));
 
             if (_runner is not null)
             {
@@ -370,6 +418,24 @@ internal sealed class SteplerTrayForm : Form
         StartRunner();
     }
 
+    private void UpdateSetting(Action<SteplerSettings> update)
+    {
+        update(_settings);
+        SteplerSettingsStore.Save(_settings);
+        File.AppendAllText(
+            Program.LogPath(),
+            $"{DateTimeOffset.Now:o} settings saved {JsonSerializer.Serialize(_settings)}{Environment.NewLine}");
+
+        if (IsRunnerAlive())
+        {
+            RestartRunner();
+        }
+        else
+        {
+            UpdateMenuState();
+        }
+    }
+
     private bool IsRunnerAlive()
     {
         try
@@ -394,6 +460,11 @@ internal sealed class SteplerTrayForm : Form
         var running = IsRunnerAlive();
         _toggleItem.Text = running ? "Выключить обработчик" : "Включить обработчик";
         _restartItem.Enabled = running;
+        _pauseItem.Checked = _settings.PauseEnabled;
+        _scrollLockItem.Checked = _settings.ScrollLockEnabled;
+        _ctrlLayoutItem.Checked = _settings.CtrlLayoutSwitchEnabled;
+        _menuCapsLayoutItem.Checked = _settings.MenuCapsSwitchEnabled;
+        _riskyFallbacksItem.Checked = _settings.RiskyFallbacksEnabled;
         _autostartItem.Checked = AutostartManager.IsEnabled();
     }
 
@@ -502,6 +573,91 @@ internal static class AutostartManager
     private static string Quote(string path)
     {
         return $"\"{path}\"";
+    }
+}
+
+internal sealed class SteplerSettings
+{
+    public bool PauseEnabled { get; set; } = true;
+    public bool ScrollLockEnabled { get; set; } = true;
+    public bool CtrlLayoutSwitchEnabled { get; set; } = true;
+    public bool MenuCapsSwitchEnabled { get; set; } = true;
+    public bool RiskyFallbacksEnabled { get; set; }
+}
+
+internal static class SteplerSettingsStore
+{
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+    };
+
+    public static string SettingsPath()
+    {
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        return Path.Combine(appData, "Stepler", "settings.json");
+    }
+
+    public static SteplerSettings Load()
+    {
+        try
+        {
+            var path = SettingsPath();
+            if (!File.Exists(path))
+            {
+                var defaults = new SteplerSettings();
+                Save(defaults);
+                return defaults;
+            }
+
+            return JsonSerializer.Deserialize<SteplerSettings>(File.ReadAllText(path), JsonOptions)
+                ?? new SteplerSettings();
+        }
+        catch (Exception error)
+        {
+            File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} settings load error {error}{Environment.NewLine}");
+            return new SteplerSettings();
+        }
+    }
+
+    public static void Save(SteplerSettings settings)
+    {
+        var path = SettingsPath();
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        File.WriteAllText(path, JsonSerializer.Serialize(settings, JsonOptions));
+    }
+}
+
+internal static class ProcessStartInfoExtensions
+{
+    public static ProcessStartInfo WithSteplerSettings(
+        this ProcessStartInfo startInfo,
+        SteplerSettings settings)
+    {
+        startInfo.Environment["STEPLER_ENABLE_PAUSE"] = Bool(settings.PauseEnabled);
+        startInfo.Environment["STEPLER_ENABLE_SCROLLLOCK"] = Bool(settings.ScrollLockEnabled);
+        startInfo.Environment["STEPLER_ENABLE_CTRL_LAYOUT"] = Bool(settings.CtrlLayoutSwitchEnabled);
+        startInfo.Environment["STEPLER_ENABLE_MENU_CAPS_LAYOUT"] = Bool(settings.MenuCapsSwitchEnabled);
+        if (settings.RiskyFallbacksEnabled)
+        {
+            startInfo.Environment["STEPLER_ALLOW_RISKY_FALLBACKS"] = "1";
+        }
+        else
+        {
+            startInfo.Environment.Remove("STEPLER_ALLOW_RISKY_FALLBACKS");
+        }
+
+        return startInfo;
+    }
+
+    private static string Bool(bool value)
+    {
+        return value ? "1" : "0";
     }
 }
 
@@ -669,7 +825,7 @@ internal sealed class ControlWindow : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
-        Size = new Size(320, 190);
+        ClientSize = new Size(304, 178);
         StartPosition = FormStartPosition.Manual;
 
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 800, 600);
@@ -688,7 +844,7 @@ internal sealed class ControlWindow : Form
         var restartButton = Button("Перезапустить", 160, 52, restartRunner);
         var hotkeyLogButton = Button("Лог hotkeys", 16, 92, openHotkeyLog);
         var trayLogButton = Button("Лог tray", 160, 92, openTrayLog);
-        var exitButton = Button("Выход", 88, 132, exit);
+        var exitButton = Button("Выход", 88, 134, exit);
 
         Controls.AddRange(new Control[]
         {

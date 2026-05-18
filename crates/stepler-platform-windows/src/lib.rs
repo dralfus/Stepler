@@ -622,9 +622,14 @@ impl ClipboardSelectionMethod {
         let snapshot = capture_clipboard()?;
         let sequence_before = snapshot.sequence_number;
         send_key_chord(&[VK_CONTROL], VK_C);
-        let copied = wait_for_clipboard_text_change(sequence_before, Duration::from_millis(700))
-            .filter(|text| !text.trim().is_empty())
-            .ok_or(PlatformError::ReplacementUnavailable);
+        let copied = wait_for_clipboard_selection_text(
+            snapshot.text.as_deref(),
+            sequence_before,
+            Duration::from_millis(700),
+        )
+        .filter(|text| !text.trim().is_empty())
+        .filter(|text| !looks_like_hotkeyhandler_marker(text))
+        .ok_or(PlatformError::ReplacementUnavailable);
         let _ = restore_clipboard(snapshot);
         let text = copied?;
         let text_len = text.len();
@@ -670,6 +675,11 @@ impl ClipboardSelectionMethod {
             method: MethodId::ClipboardSelection.as_str().to_owned(),
         })
     }
+}
+
+fn looks_like_hotkeyhandler_marker(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.starts_with("__HKH_") || (trimmed.starts_with("__") && trimmed.contains("_MARKER_"))
 }
 
 #[cfg(windows)]
@@ -1453,6 +1463,38 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_control_state_ignores_layout_controls_during_win_combo() {
+        let mut state = KeyboardControlHookState::default();
+
+        assert_eq!(state.handle_key(VK_LWIN, true, false), None);
+        assert_eq!(state.handle_key(VK_LCONTROL, true, false), None);
+        assert_eq!(state.handle_key(VK_LCONTROL, false, true), None);
+        assert_eq!(state.handle_key(VK_LWIN, false, true), None);
+        assert_eq!(state.handle_key(VK_LCONTROL, true, false), None);
+        assert_eq!(state.handle_key(VK_LCONTROL, false, true), None);
+
+        state.suspend_layout_controls_until = Some(Instant::now() - Duration::from_millis(1));
+        assert_eq!(state.handle_key(VK_LCONTROL, true, false), None);
+        assert_eq!(
+            state.handle_key(VK_LCONTROL, false, true),
+            Some(KeyboardControlAction::SwitchToRussian)
+        );
+    }
+
+    #[test]
+    fn keyboard_control_state_recovers_from_missing_win_key_up() {
+        let mut state = KeyboardControlHookState::default();
+
+        assert_eq!(state.handle_key(VK_LWIN, true, false), None);
+        state.suspend_layout_controls_until = Some(Instant::now() - Duration::from_millis(1));
+        assert_eq!(state.handle_key(VK_LCONTROL, true, false), None);
+        assert_eq!(
+            state.handle_key(VK_LCONTROL, false, true),
+            Some(KeyboardControlAction::SwitchToRussian)
+        );
+    }
+
+    #[test]
     fn keyboard_control_state_emits_correction_hotkey_once_until_key_up() {
         let mut state = KeyboardControlHookState::default();
 
@@ -1545,6 +1587,17 @@ mod tests {
         assert_eq!(keyboard.vk, 0);
         assert_eq!(keyboard.scan, 'я' as u16);
         assert_eq!(keyboard.flags & KEYEVENTF_UNICODE, KEYEVENTF_UNICODE);
+    }
+
+    #[test]
+    fn hotkeyhandler_markers_are_not_user_selection_text() {
+        assert!(looks_like_hotkeyhandler_marker(
+            "__HKH_SELECTED_MARKER_cc58bf97238446389051bab0525c89da__"
+        ));
+        assert!(looks_like_hotkeyhandler_marker(
+            "__HKH_LEFT_TEXT_MARKER_cc58bf97238446389051bab0525c89da__"
+        ));
+        assert!(!looks_like_hotkeyhandler_marker("k.,jdm"));
     }
 
     #[cfg(windows)]
@@ -2523,6 +2576,33 @@ fn wait_for_clipboard_text_change(
 }
 
 #[cfg(windows)]
+fn wait_for_clipboard_selection_text(
+    text_before: Option<&str>,
+    sequence_before: Option<u32>,
+    timeout: Duration,
+) -> Option<String> {
+    let started = Instant::now();
+    let mut latest_text = None;
+    while started.elapsed() < timeout {
+        if let Ok(snapshot) = capture_clipboard() {
+            if let Some(text) = snapshot.text {
+                let sequence_changed = sequence_before
+                    .zip(snapshot.sequence_number)
+                    .is_none_or(|(before, after)| before != after);
+                let text_changed = text_before != Some(text.as_str());
+                if sequence_changed || text_changed {
+                    return Some(text);
+                }
+                latest_text = Some(text);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+
+    latest_text.filter(|text| text_before != Some(text.as_str()))
+}
+
+#[cfg(windows)]
 fn clipboard_snapshot_from_text(text: &str) -> ClipboardSnapshot {
     ClipboardSnapshot {
         text: Some(text.to_owned()),
@@ -3151,9 +3231,11 @@ struct KeyboardControlHookState {
     right_ctrl_used: bool,
     pause_down: bool,
     scroll_lock_down: bool,
+    win_down: bool,
     last_pause_at: Option<Instant>,
     last_scroll_lock_at: Option<Instant>,
     suppress_c_until: Option<Instant>,
+    suspend_layout_controls_until: Option<Instant>,
 }
 
 impl KeyboardControlHookState {
@@ -3224,6 +3306,30 @@ impl KeyboardControlHookState {
         is_down: bool,
         is_up: bool,
     ) -> Option<KeyboardControlAction> {
+        if matches!(vk_code, VK_LWIN | VK_RWIN) {
+            if is_down {
+                self.win_down = true;
+                self.suspend_layout_controls_until =
+                    Some(Instant::now() + Duration::from_millis(1_500));
+            }
+            if is_up {
+                self.win_down = false;
+                self.suspend_layout_controls_until =
+                    Some(Instant::now() + Duration::from_millis(1_500));
+            }
+            return None;
+        }
+
+        if self.win_down && self.layout_controls_are_suspended() {
+            return None;
+        }
+        if self.win_down {
+            self.win_down = false;
+        }
+        if self.layout_controls_are_suspended() {
+            return None;
+        }
+
         if is_down {
             match vk_code {
                 VK_LCONTROL => {
@@ -3271,6 +3377,18 @@ impl KeyboardControlHookState {
         }
 
         None
+    }
+
+    fn layout_controls_are_suspended(&mut self) -> bool {
+        let Some(until) = self.suspend_layout_controls_until else {
+            return false;
+        };
+        if Instant::now() <= until {
+            return true;
+        }
+
+        self.suspend_layout_controls_until = None;
+        false
     }
 }
 
@@ -3353,6 +3471,15 @@ unsafe extern "system" fn low_level_keyboard_proc(
     if !(is_down || is_up) {
         return CallNextHookEx(0, code, wparam, lparam);
     }
+    if is_windows_language_switch_key(vk_code) {
+        let _ = KEYBOARD_CONTROL_STATE
+            .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
+            .lock()
+            .map(|mut state| {
+                let _ = state.handle_key(vk_code, is_down, is_up);
+            });
+        return CallNextHookEx(0, code, wparam, lparam);
+    }
     if should_suppress_keyboard_companion_event(vk_code) {
         return 1;
     }
@@ -3384,6 +3511,9 @@ unsafe extern "system" fn low_level_keyboard_proc(
     }
 
     if let Some(mode) = mode {
+        if !correction_hotkey_enabled(mode) {
+            return CallNextHookEx(0, code, wparam, lparam);
+        }
         if let Some(thread_id) = KEYBOARD_CONTROL_THREAD_ID.get().copied() {
             PostThreadMessageW(
                 thread_id,
@@ -3401,6 +3531,9 @@ unsafe extern "system" fn low_level_keyboard_proc(
     }
 
     if let Some(action) = action {
+        if !layout_action_enabled(action) {
+            return CallNextHookEx(0, code, wparam, lparam);
+        }
         if let Some(thread_id) = KEYBOARD_CONTROL_THREAD_ID.get().copied() {
             PostThreadMessageW(
                 thread_id,
@@ -3430,6 +3563,44 @@ fn normalized_control_vk(event: KbdLlHookStruct) -> u32 {
 #[cfg(windows)]
 fn should_ignore_keyboard_hook_event(event: KbdLlHookStruct) -> bool {
     event.flags & LLKHF_INJECTED != 0
+}
+
+#[cfg(windows)]
+fn is_windows_language_switch_key(vk_code: u32) -> bool {
+    matches!(vk_code, VK_LWIN | VK_RWIN | VK_SPACE)
+}
+
+#[cfg(windows)]
+fn correction_hotkey_enabled(mode: stepler_core::CorrectionMode) -> bool {
+    match mode {
+        stepler_core::CorrectionMode::Pause => env_flag_enabled("STEPLER_ENABLE_PAUSE", true),
+        stepler_core::CorrectionMode::ScrollLock => {
+            env_flag_enabled("STEPLER_ENABLE_SCROLLLOCK", true)
+        }
+    }
+}
+
+#[cfg(windows)]
+fn layout_action_enabled(action: KeyboardControlAction) -> bool {
+    match action {
+        KeyboardControlAction::SwitchToRussian | KeyboardControlAction::SwitchToEnglish => {
+            env_flag_enabled("STEPLER_ENABLE_CTRL_LAYOUT", true)
+        }
+        KeyboardControlAction::SwitchToNext => {
+            env_flag_enabled("STEPLER_ENABLE_MENU_CAPS_LAYOUT", true)
+        }
+    }
+}
+
+#[cfg(windows)]
+fn env_flag_enabled(name: &str, default: bool) -> bool {
+    match std::env::var(name) {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        ),
+        Err(_) => default,
+    }
 }
 
 #[cfg(windows)]
@@ -3536,6 +3707,12 @@ const VK_NEXT: u32 = 0x22;
 const VK_DIVIDE: u32 = 0x6F;
 #[cfg(windows)]
 const VK_NUMLOCK: u32 = 0x90;
+#[cfg(windows)]
+const VK_SPACE: u32 = 0x20;
+#[cfg(windows)]
+const VK_LWIN: u32 = 0x5B;
+#[cfg(windows)]
+const VK_RWIN: u32 = 0x5C;
 #[cfg(windows)]
 const HOTKEY_ID_PAUSE: i32 = 1;
 #[cfg(windows)]

@@ -45,14 +45,27 @@ internal static class Program
 
     internal static string LogPath()
     {
-        return Path.Combine(AppContext.BaseDirectory, "Stepler.Tray.log");
+        return Path.Combine(LogDirectory(), "Stepler.Tray.log");
+    }
+
+    internal static string HotkeyLogPath()
+    {
+        return Path.Combine(LogDirectory(), "stepler_hotkey_log.jsonl");
+    }
+
+    internal static string LogDirectory()
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var directory = Path.Combine(localAppData, "Stepler", "logs");
+        Directory.CreateDirectory(directory);
+        return directory;
     }
 
     private static void StopExistingProcesses()
     {
         var currentId = Environment.ProcessId;
         File.AppendAllText(LogPath(), $"{DateTimeOffset.Now:o} stop requested current={currentId}{Environment.NewLine}");
-        foreach (var processName in new[] { "Stepler.Tray", "stepler-cli" })
+        foreach (var processName in new[] { "Stepler", "Stepler.Tray", "stepler-cli" })
         {
             foreach (var process in Process.GetProcessesByName(processName))
             {
@@ -96,6 +109,8 @@ internal sealed class SteplerTrayForm : Form
     private Process? _runner;
     private RunnerJob? _runnerJob;
     private SteplerSettings _settings;
+    private bool _stoppingRunner;
+    private bool _closing;
 
     public SteplerTrayForm()
     {
@@ -133,7 +148,7 @@ internal sealed class SteplerTrayForm : Form
         };
         _pauseItem.Click += (_, _) => UpdateSetting(settings => settings.PauseEnabled = _pauseItem.Checked);
 
-        _scrollLockItem = new ToolStripMenuItem("ScrollLock")
+        _scrollLockItem = new ToolStripMenuItem("Ctrl+Pause (умная строка)")
         {
             CheckOnClick = true,
         };
@@ -203,6 +218,7 @@ internal sealed class SteplerTrayForm : Form
         Load += (_, _) =>
         {
             _notifyIcon.Visible = true;
+            EnsurePowerShellProfileAdapter();
             StartRunner();
             File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} tray form ready handle={Handle}{Environment.NewLine}");
         };
@@ -213,6 +229,7 @@ internal sealed class SteplerTrayForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        _closing = true;
         StopRunner();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
@@ -248,36 +265,29 @@ internal sealed class SteplerTrayForm : Form
             return;
         }
 
-        if (_repoRoot is null)
-        {
-            SetStatus("Статус: ошибка - не найден repo root");
-            return;
-        }
-
-        var cliPath = Environment.GetEnvironmentVariable("STEPLER_CLI_PATH");
-        if (string.IsNullOrWhiteSpace(cliPath))
-        {
-            cliPath = Path.Combine(_repoRoot, "target", "debug", "stepler-cli.exe");
-        }
+        var cliPath = ResolveCliPath();
 
         if (!File.Exists(cliPath))
         {
             SetStatus("Статус: ошибка - stepler-cli.exe не найден");
+            File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} cli not found{Environment.NewLine}");
             return;
         }
 
+        var workingDirectory = Path.GetDirectoryName(cliPath) ?? AppContext.BaseDirectory;
         try
         {
             StopOrphanRunners(cliPath);
+            _stoppingRunner = false;
             _runner = Process.Start(new ProcessStartInfo
             {
                 FileName = cliPath,
                 Arguments = "run-hotkeys",
-                WorkingDirectory = _repoRoot,
+                WorkingDirectory = workingDirectory,
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
-            }.WithSteplerSettings(_settings));
+            }.WithSteplerSettings(_settings).WithSteplerRuntimePaths());
 
             if (_runner is not null)
             {
@@ -290,13 +300,38 @@ internal sealed class SteplerTrayForm : Form
             UpdateMenuState();
             File.AppendAllText(
                 Program.LogPath(),
-                $"{DateTimeOffset.Now:o} runner started pid={_runner?.Id.ToString() ?? "null"}{Environment.NewLine}");
+                $"{DateTimeOffset.Now:o} runner started pid={_runner?.Id.ToString() ?? "null"} cli={cliPath} cwd={workingDirectory}{Environment.NewLine}");
         }
         catch (Exception error)
         {
             File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} runner start error {error}{Environment.NewLine}");
             SetStatus($"Статус: ошибка запуска ({error.GetType().Name})");
             UpdateMenuState();
+        }
+    }
+
+    private void EnsurePowerShellProfileAdapter()
+    {
+        try
+        {
+            var adapterPath = Path.Combine(AppContext.BaseDirectory, "scripts", "Stepler.PSReadLine.ps1");
+            if (!File.Exists(adapterPath) && _repoRoot is not null)
+            {
+                adapterPath = Path.Combine(_repoRoot, "scripts", "Stepler.PSReadLine.ps1");
+            }
+
+            if (!File.Exists(adapterPath))
+            {
+                File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} psreadline profile skip adapter not found{Environment.NewLine}");
+                return;
+            }
+
+            PowerShellProfileManager.EnsureInstalled(adapterPath);
+            File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} psreadline profile installed adapter={adapterPath}{Environment.NewLine}");
+        }
+        catch (Exception error)
+        {
+            File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} psreadline profile install error {error}{Environment.NewLine}");
         }
     }
 
@@ -345,8 +380,18 @@ internal sealed class SteplerTrayForm : Form
                     _runner = null;
                     _runnerJob?.Dispose();
                     _runnerJob = null;
-                    SetStatus("Статус: обработчик остановлен");
-                    UpdateMenuState();
+                    if (!_stoppingRunner && !_closing)
+                    {
+                        SetStatus("Статус: обработчик упал, перезапуск...");
+                        UpdateMenuState();
+                        File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} runner auto restart after exit code={exitCode}{Environment.NewLine}");
+                        StartRunner();
+                    }
+                    else
+                    {
+                        SetStatus("Статус: обработчик остановлен");
+                        UpdateMenuState();
+                    }
                 }
             });
         }
@@ -379,6 +424,7 @@ internal sealed class SteplerTrayForm : Form
     {
         try
         {
+            _stoppingRunner = true;
             if (_runner is { HasExited: false })
             {
                 _runner.Kill(entireProcessTree: true);
@@ -496,13 +542,7 @@ internal sealed class SteplerTrayForm : Form
 
     private void OpenHotkeyLog()
     {
-        if (_repoRoot is null)
-        {
-            return;
-        }
-
-        var logPath = Path.Combine(_repoRoot, "stepler_hotkey_log.jsonl");
-        OpenFileInNotepad(logPath);
+        OpenFileInNotepad(Program.HotkeyLogPath());
     }
 
     private static void OpenFileInNotepad(string path)
@@ -544,6 +584,28 @@ internal sealed class SteplerTrayForm : Form
         var fallback = @"F:\distr\system\Stepler";
         return File.Exists(Path.Combine(fallback, "Cargo.toml")) ? fallback : null;
     }
+
+    private string ResolveCliPath()
+    {
+        var configured = Environment.GetEnvironmentVariable("STEPLER_CLI_PATH");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured;
+        }
+
+        var sideBySide = Path.Combine(AppContext.BaseDirectory, "stepler-cli.exe");
+        if (File.Exists(sideBySide))
+        {
+            return sideBySide;
+        }
+
+        if (_repoRoot is not null)
+        {
+            return Path.Combine(_repoRoot, "target", "debug", "stepler-cli.exe");
+        }
+
+        return sideBySide;
+    }
 }
 
 internal static class AutostartManager
@@ -573,6 +635,101 @@ internal static class AutostartManager
     private static string Quote(string path)
     {
         return $"\"{path}\"";
+    }
+}
+
+internal static class PowerShellProfileManager
+{
+    private const string BeginMarker = "# >>> Stepler PSReadLine adapter >>>";
+    private const string EndMarker = "# <<< Stepler PSReadLine adapter <<<";
+
+    public static void EnsureInstalled(string adapterPath)
+    {
+        foreach (var profilePath in ProfilePaths())
+        {
+            EnsureProfileBlock(profilePath, adapterPath);
+        }
+    }
+
+    private static IEnumerable<string> ProfilePaths()
+    {
+        var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        if (string.IsNullOrWhiteSpace(documents))
+        {
+            yield break;
+        }
+
+        yield return Path.Combine(documents, "PowerShell", "profile.ps1");
+        yield return Path.Combine(documents, "WindowsPowerShell", "profile.ps1");
+    }
+
+    private static void EnsureProfileBlock(string profilePath, string adapterPath)
+    {
+        var directory = Path.GetDirectoryName(profilePath);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var existing = File.Exists(profilePath) ? File.ReadAllText(profilePath) : string.Empty;
+        var block = BuildProfileBlock(adapterPath);
+        var next = ReplaceManagedBlock(existing, block);
+        if (!string.Equals(existing, next, StringComparison.Ordinal))
+        {
+            File.WriteAllText(profilePath, next);
+        }
+    }
+
+    private static string ReplaceManagedBlock(string existing, string block)
+    {
+        var begin = existing.IndexOf(BeginMarker, StringComparison.Ordinal);
+        var end = existing.IndexOf(EndMarker, StringComparison.Ordinal);
+        if (begin >= 0 && end >= begin)
+        {
+            end += EndMarker.Length;
+            var before = existing[..begin].TrimEnd();
+            var after = existing[end..].TrimStart();
+            return JoinProfileParts(before, block, after);
+        }
+
+        return JoinProfileParts(existing.TrimEnd(), block, string.Empty);
+    }
+
+    private static string JoinProfileParts(string before, string block, string after)
+    {
+        if (string.IsNullOrWhiteSpace(before) && string.IsNullOrWhiteSpace(after))
+        {
+            return block + Environment.NewLine;
+        }
+
+        if (string.IsNullOrWhiteSpace(after))
+        {
+            return before + Environment.NewLine + Environment.NewLine + block + Environment.NewLine;
+        }
+
+        if (string.IsNullOrWhiteSpace(before))
+        {
+            return block + Environment.NewLine + Environment.NewLine + after.TrimStart();
+        }
+
+        return before + Environment.NewLine + Environment.NewLine + block + Environment.NewLine + Environment.NewLine + after.TrimStart();
+    }
+
+    private static string BuildProfileBlock(string adapterPath)
+    {
+        var quotedAdapterPath = adapterPath.Replace("'", "''", StringComparison.Ordinal);
+        return string.Join(
+            Environment.NewLine,
+            BeginMarker,
+            "try {",
+            $"    $steplerPsReadLine = '{quotedAdapterPath}'",
+            "    if (Test-Path -LiteralPath $steplerPsReadLine) {",
+            "        Import-Module PSReadLine -ErrorAction SilentlyContinue",
+            "        . $steplerPsReadLine -Quiet",
+            "    }",
+            "} catch {",
+            "}",
+            EndMarker);
     }
 }
 
@@ -652,6 +809,12 @@ internal static class ProcessStartInfoExtensions
             startInfo.Environment.Remove("STEPLER_ALLOW_RISKY_FALLBACKS");
         }
 
+        return startInfo;
+    }
+
+    public static ProcessStartInfo WithSteplerRuntimePaths(this ProcessStartInfo startInfo)
+    {
+        startInfo.Environment["STEPLER_HOTKEY_LOG_PATH"] = Program.HotkeyLogPath();
         return startInfo;
     }
 
@@ -810,6 +973,7 @@ internal sealed class RunnerJob : IDisposable
 
 internal sealed class ControlWindow : Form
 {
+    private readonly Label _versionLabel;
     private readonly Label _statusLabel;
 
     public ControlWindow(
@@ -825,29 +989,39 @@ internal sealed class ControlWindow : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(304, 178);
+        ClientSize = new Size(304, 204);
         StartPosition = FormStartPosition.Manual;
 
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 800, 600);
         Location = new Point(Math.Max(0, area.Right - Width - 16), Math.Max(0, area.Bottom - Height - 16));
+
+        _versionLabel = new Label
+        {
+            AutoSize = false,
+            Text = $"Версия: {Application.ProductVersion}",
+            TextAlign = ContentAlignment.MiddleLeft,
+            Location = new Point(16, 10),
+            Size = new Size(280, 24),
+        };
 
         _statusLabel = new Label
         {
             AutoSize = false,
             Text = status,
             TextAlign = ContentAlignment.MiddleLeft,
-            Location = new Point(16, 12),
+            Location = new Point(16, 36),
             Size = new Size(280, 28),
         };
 
-        var toggleButton = Button("Вкл/выкл", 16, 52, toggleRunner);
-        var restartButton = Button("Перезапустить", 160, 52, restartRunner);
-        var hotkeyLogButton = Button("Лог hotkeys", 16, 92, openHotkeyLog);
-        var trayLogButton = Button("Лог tray", 160, 92, openTrayLog);
-        var exitButton = Button("Выход", 88, 134, exit);
+        var toggleButton = Button("Вкл/выкл", 16, 78, toggleRunner);
+        var restartButton = Button("Перезапустить", 160, 78, restartRunner);
+        var hotkeyLogButton = Button("Лог hotkeys", 16, 118, openHotkeyLog);
+        var trayLogButton = Button("Лог tray", 160, 118, openTrayLog);
+        var exitButton = Button("Выход", 88, 160, exit);
 
         Controls.AddRange(new Control[]
         {
+            _versionLabel,
             _statusLabel,
             toggleButton,
             restartButton,

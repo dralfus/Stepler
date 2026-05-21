@@ -36,7 +36,10 @@ pub enum MethodId {
     ConsoleBuffer,
     PsReadLine,
     WordCom,
+    UiAutomationEditableText,
+    UiAutomationDocumentText,
     UiAutomationText,
+    WebKeyboardSelection,
     ClipboardSelection,
     SendInput,
 }
@@ -49,7 +52,10 @@ impl MethodId {
             Self::ConsoleBuffer => "console_buffer",
             Self::PsReadLine => "psreadline",
             Self::WordCom => "word_com",
+            Self::UiAutomationEditableText => "uia_editable_text",
+            Self::UiAutomationDocumentText => "uia_document_text",
             Self::UiAutomationText => "uia_text",
+            Self::WebKeyboardSelection => "web_keyboard_selection",
             Self::ClipboardSelection => "clipboard_selection",
             Self::SendInput => "send_input",
         }

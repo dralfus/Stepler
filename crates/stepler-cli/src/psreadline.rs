@@ -8,6 +8,8 @@ pub struct PsReadLineRequest {
     pub mode: CorrectionMode,
     pub text_b64: String,
     pub cursor_utf16: usize,
+    pub selection_start_utf16: Option<usize>,
+    pub selection_length_utf16: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +35,13 @@ impl PsReadLineMethod {
             decode_utf16le_base64(&request.text_b64).map_err(PsReadLineError::InvalidText)?;
         let cursor_byte = utf16_offset_to_byte(&text, request.cursor_utf16)
             .ok_or(PsReadLineError::InvalidCursor)?;
-        let context = self.context(text, cursor_byte);
+        let selection_range = selection_range_from_utf16(
+            &text,
+            request.selection_start_utf16,
+            request.selection_length_utf16,
+        )
+        .ok_or(PsReadLineError::InvalidCursor)?;
+        let context = self.context(text, cursor_byte, selection_range);
 
         let plan = build_replacement_plan(&context, request.mode)
             .map_err(|error| PsReadLineError::Planning(format!("{error:?}")))?;
@@ -50,8 +58,11 @@ impl PsReadLineMethod {
             plan.replacement_text,
             &context.text_snapshot[plan.range.end..]
         );
-        let new_cursor_byte =
-            adjusted_cursor_after_replacement(cursor_byte, plan.range, plan.replacement_text.len());
+        let new_cursor_byte = if context.selection_range.is_some() {
+            plan.range.start + plan.replacement_text.len()
+        } else {
+            adjusted_cursor_after_replacement(cursor_byte, plan.range, plan.replacement_text.len())
+        };
         let new_cursor_utf16 = byte_offset_to_utf16(&new_text, new_cursor_byte);
 
         Ok(PsReadLinePlan {
@@ -75,17 +86,22 @@ impl PsReadLineMethod {
         })
     }
 
-    fn context(&self, text: String, cursor_byte: usize) -> TextContext {
+    fn context(
+        &self,
+        text: String,
+        cursor_byte: usize,
+        selection_range: Option<TextRange>,
+    ) -> TextContext {
         TextContext {
             app_id: String::from("PowerShell/PSReadLine"),
             window_id: String::from("psreadline"),
             control_id: String::from("psreadline-buffer"),
             text_snapshot: text,
-            caret_range: TextRange::caret(cursor_byte),
-            selection_range: None,
+            caret_range: TextRange::caret(selection_range.map_or(cursor_byte, |range| range.end)),
+            selection_range,
             capabilities: Capabilities {
                 can_replace_directly: true,
-                can_read_selection: false,
+                can_read_selection: selection_range.is_some(),
                 can_read_caret: true,
                 method_binding: Some(MethodBinding::new(
                     MethodId::PsReadLine,
@@ -118,6 +134,8 @@ pub fn self_test_lines() -> Result<Vec<String>, PsReadLineError> {
             mode,
             text_b64: encode_utf16le_base64(text),
             cursor_utf16,
+            selection_start_utf16: None,
+            selection_length_utf16: None,
         })?;
         if !plan.json.contains(expected_json_fragment) {
             return Err(PsReadLineError::Planning(format!(
@@ -128,6 +146,29 @@ pub fn self_test_lines() -> Result<Vec<String>, PsReadLineError> {
         lines.push(format!("{name}: ok"));
     }
     Ok(lines)
+}
+
+fn selection_range_from_utf16(
+    text: &str,
+    start: Option<usize>,
+    length: Option<usize>,
+) -> Option<Option<TextRange>> {
+    let Some(start) = start else {
+        return Some(None);
+    };
+    let length = length.unwrap_or(0);
+    if length == 0 {
+        return Some(None);
+    }
+
+    let end = start.checked_add(length)?;
+    let start_byte = utf16_offset_to_byte(text, start)?;
+    let end_byte = utf16_offset_to_byte(text, end)?;
+    if start_byte == end_byte {
+        return Some(None);
+    }
+
+    Some(Some(TextRange::new(start_byte, end_byte)))
 }
 
 fn adjusted_cursor_after_replacement(
@@ -306,12 +347,32 @@ mod tests {
                 mode: CorrectionMode::ScrollLock,
                 text_b64: encode_utf16le_base64("пше"),
                 cursor_utf16: 3,
+                selection_start_utf16: None,
+                selection_length_utf16: None,
             })
             .unwrap();
 
         assert!(plan.json.contains("\"replacement\":\"git\""));
         assert!(plan.json.contains("\"text\":\"git\""));
         assert!(plan.json.contains("\"cursor\":3"));
+    }
+
+    #[test]
+    fn psreadline_method_builds_selection_plan() {
+        let text = "echo ghbdtn vbh";
+        let plan = PsReadLineMethod
+            .plan(PsReadLineRequest {
+                mode: CorrectionMode::Pause,
+                text_b64: encode_utf16le_base64(text),
+                cursor_utf16: text.encode_utf16().count(),
+                selection_start_utf16: Some("echo ".encode_utf16().count()),
+                selection_length_utf16: Some("ghbdtn vbh".encode_utf16().count()),
+            })
+            .unwrap();
+
+        assert!(plan.json.contains("\"expected\":\"ghbdtn vbh\""));
+        assert!(plan.json.contains("\"replacement\":\"привет мир\""));
+        assert!(plan.json.contains("\"text\":\"echo привет мир\""));
     }
 
     #[test]

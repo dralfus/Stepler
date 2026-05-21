@@ -45,13 +45,3 @@ version = "0.1.0"
 dependencies = [
  "stepler-core",
 ]
-
-[[package]]
-name = "stepler-tray"
-version = "0.1.0"
-dependencies = [
- "stepler-app",
- "stepler-core",
- "stepler-platform",
- "stepler-platform-windows",
-]

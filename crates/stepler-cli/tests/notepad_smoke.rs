@@ -21,7 +21,7 @@ fn scrolllock_notepad_preserves_clipboard() {
     send_message(edit, EM_SETSEL, len, len);
     set_foreground(notepad.hwnd);
     thread::sleep(Duration::from_millis(250));
-    send_key(VK_SCROLL);
+    send_ctrl_pause();
     thread::sleep(Duration::from_millis(2_500));
 
     let after = clipboard_text();
@@ -177,11 +177,15 @@ fn send_message(hwnd: isize, message: u32, wparam: usize, lparam: usize) -> isiz
     unsafe { SendMessageW(hwnd, message, wparam, lparam as isize) }
 }
 
-fn send_key(vk: u8) {
+fn send_ctrl_pause() {
     unsafe {
-        keybd_event(vk, 0, 0, 0);
+        keybd_event(VK_CONTROL, 0, 0, 0);
+        thread::sleep(Duration::from_millis(30));
+        keybd_event(VK_PAUSE, 0x45, 0, 0);
         thread::sleep(Duration::from_millis(50));
-        keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
+        keybd_event(VK_PAUSE, 0x45, KEYEVENTF_KEYUP, 0);
+        thread::sleep(Duration::from_millis(30));
+        keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
     }
 }
 
@@ -283,7 +287,8 @@ struct GuiThreadInfo {
 const WM_SETTEXT: u32 = 0x000C;
 const WM_GETTEXTLENGTH: u32 = 0x000E;
 const EM_SETSEL: u32 = 0x00B1;
-const VK_SCROLL: u8 = 0x91;
+const VK_CONTROL: u8 = 0x11;
+const VK_PAUSE: u8 = 0x13;
 const KEYEVENTF_KEYUP: u32 = 0x0002;
 const CF_UNICODETEXT: u32 = 13;
 const GMEM_MOVEABLE: u32 = 0x0002;

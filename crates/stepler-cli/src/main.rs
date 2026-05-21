@@ -13,6 +13,7 @@ use stepler_platform::{ClipboardBackend, ClipboardSnapshot, TextContextProvider,
 use stepler_platform_windows::{
     focus_diagnostics, install_console_modifier_release_handler,
     message_loop_with_keyboard_controls, method_diagnostics, release_modifier_keys,
+    request_keyboard_control_action, try_forward_embedded_terminal_hotkey, KeyboardControlAction,
     WindowsClipboardBackend, WindowsForegroundProvider, WindowsLayoutSwitcher,
     WindowsTextContextProvider, WindowsTextReplacer,
 };
@@ -33,6 +34,14 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("psreadline-self-test") {
         psreadline_self_test();
+        return;
+    }
+    if args.first().map(String::as_str) == Some("switch-layout") {
+        switch_layout(&args);
+        return;
+    }
+    if args.first().map(String::as_str) == Some("trigger-layout-control") {
+        trigger_layout_control(&args);
         return;
     }
     if args.first().map(String::as_str) == Some("uia-fixture") {
@@ -61,6 +70,7 @@ fn main() {
         std::thread::sleep(delay);
     }
 
+    set_active_correction_mode(mode);
     let provider = WindowsTextContextProvider;
     let replacer = WindowsTextReplacer;
     let clipboard = WindowsClipboardBackend;
@@ -103,6 +113,15 @@ fn main() {
                         let _ = guard_clipboard_from_snapshot(&clipboard, before);
                     }
                 }
+                let layout_result = switch_layout_after_replacement(
+                    &WindowsLayoutSwitcher::new(),
+                    &plan.expected_before_text,
+                    &plan.replacement_text,
+                    layout_hwnd_hint(&context.window_id, &context.control_id),
+                );
+                if let Some(layout_result) = layout_result {
+                    println!("layout: {layout_result}");
+                }
                 println!("apply: {result:?}");
             }
             Err(error) => {
@@ -116,6 +135,77 @@ fn main() {
             }
         }
     }
+}
+
+fn switch_layout(args: &[String]) {
+    let Some(target) = args.get(1).map(String::as_str) else {
+        eprintln!(
+            "usage: stepler-cli switch-layout <russian|english> [--hwnd <decimal|0xhex|hwnd:hex>]"
+        );
+        std::process::exit(2);
+    };
+    let switcher = WindowsLayoutSwitcher::new();
+    let target_hwnd = arg_value(args, "--hwnd").and_then(parse_hwnd_arg);
+    let result = match target.to_ascii_lowercase().as_str() {
+        "russian" | "ru" => {
+            if let Some(hwnd) = target_hwnd {
+                switcher.switch_window_to_russian(hwnd)
+            } else {
+                switcher.switch_to_russian()
+            }
+        }
+        "english" | "en" => {
+            if let Some(hwnd) = target_hwnd {
+                switcher.switch_window_to_english(hwnd)
+            } else {
+                switcher.switch_to_english()
+            }
+        }
+        _ => {
+            eprintln!("usage: stepler-cli switch-layout <russian|english> [--hwnd <decimal|0xhex|hwnd:hex>]");
+            std::process::exit(2);
+        }
+    };
+    if let Err(error) = result {
+        eprintln!("switch-layout error: {error:?}");
+        std::process::exit(1);
+    }
+}
+
+fn trigger_layout_control(args: &[String]) {
+    let Some(target) = args.get(1).map(String::as_str) else {
+        eprintln!("usage: stepler-cli trigger-layout-control <russian|english>");
+        std::process::exit(2);
+    };
+    let action = match target.to_ascii_lowercase().as_str() {
+        "russian" | "ru" => stepler_platform_windows::KeyboardControlAction::SwitchToRussian,
+        "english" | "en" => stepler_platform_windows::KeyboardControlAction::SwitchToEnglish,
+        _ => {
+            eprintln!("usage: stepler-cli trigger-layout-control <russian|english>");
+            std::process::exit(2);
+        }
+    };
+    if let Err(error) = request_keyboard_control_action(action) {
+        eprintln!("trigger-layout-control error: {error:?}");
+        std::process::exit(1);
+    }
+}
+
+fn parse_hwnd_arg(value: &str) -> Option<isize> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(hex) = value.strip_prefix("hwnd:") {
+        return isize::from_str_radix(hex, 16).ok();
+    }
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        return isize::from_str_radix(hex, 16).ok();
+    }
+    value.parse::<isize>().ok()
 }
 
 fn uia_fixture() {
@@ -140,7 +230,7 @@ $textbox.TextWrapping = 'NoWrap'
 $textbox.Height = 42
 $hint = New-Object System.Windows.Controls.TextBlock
 $hint.Margin = '0,12,0,0'
-$hint.Text = 'Manual UIAutomationText fixture. Type text here, then press Pause or ScrollLock while stepler hotkeys are running.'
+$hint.Text = 'Manual UIAutomationText fixture. Type text here, then press Pause or Ctrl+Pause while stepler hotkeys are running.'
 $hint.TextWrapping = 'Wrap'
 $panel.Children.Add($textbox) | Out-Null
 $panel.Children.Add($hint) | Out-Null
@@ -208,7 +298,7 @@ fn psreadline_plan(args: &[String]) {
         Some(value) if value == "scrolllock" => CorrectionMode::ScrollLock,
         _ => {
             eprintln!(
-                "usage: stepler-cli psreadline-plan --mode <pause|scrolllock> --text-b64 <utf16le-base64> --cursor <utf16-index>"
+                "usage: stepler-cli psreadline-plan --mode <pause|scrolllock> --text-b64 <utf16le-base64> --cursor <utf16-index> [--selection-start <utf16-index> --selection-length <utf16-length>]"
             );
             std::process::exit(2);
         }
@@ -229,6 +319,10 @@ fn psreadline_plan(args: &[String]) {
         mode,
         text_b64: text_b64.to_owned(),
         cursor_utf16,
+        selection_start_utf16: arg_value(args, "--selection-start")
+            .and_then(|value| value.parse().ok()),
+        selection_length_utf16: arg_value(args, "--selection-length")
+            .and_then(|value| value.parse().ok()),
     };
     match PsReadLineMethod.plan(request) {
         Ok(plan) => println!("{}", plan.json),
@@ -285,13 +379,25 @@ fn diagnose_focus(args: &[String]) {
                         probe.reason
                     );
                 }
+                if let Some(uia) = info.uia_focus {
+                    println!(
+                        "uia_focus: name={:?} control_type={} automation_id={:?} class_name={:?} framework_id={:?} keyboard_focus={} keyboard_focusable={}",
+                        uia.name,
+                        uia.control_type,
+                        uia.automation_id,
+                        uia.class_name,
+                        uia.framework_id,
+                        uia.has_keyboard_focus,
+                        uia.is_keyboard_focusable
+                    );
+                }
                 println!(
-                    "selected: context={:?} replacement={:?}",
+                    "resolver_first: context={:?} replacement={:?}",
                     info.selected_context_method, info.selected_replacement_method
                 );
                 println!(
-                    "context: method={:?} error={:?}",
-                    info.context_method, info.context_error
+                    "context: method={:?} error={:?} skipped={}",
+                    info.context_method, info.context_error, info.context_skipped
                 );
             }
             Err(error) => {
@@ -314,12 +420,12 @@ fn run_hotkeys() {
     let layout_switcher = WindowsLayoutSwitcher::new();
     let mut runner =
         OperationRunner::new_with_clipboard(&foreground, &context_provider, &replacer, &clipboard);
-    let log_path = std::path::Path::new("stepler_hotkey_log.jsonl");
+    let log_path = hotkey_log_path();
     let settings = RuntimeSettings::from_env();
 
     eprintln!("Stepler hotkey runner started.");
     eprintln!(
-        "Registered: Pause, ScrollLock. Controls: LeftCtrl=RU, RightCtrl=EN, Menu/Caps=next."
+        "Registered: Pause, Ctrl+Pause. Controls: LeftCtrl=RU, RightCtrl=EN, Menu/Caps=next."
     );
     eprintln!(
         "Settings: pause={} scrolllock={} ctrl_layout={} menu_caps={} risky_fallbacks={}",
@@ -335,7 +441,7 @@ fn run_hotkeys() {
     let result = message_loop_with_keyboard_controls(
         |mode| {
             if settings.hotkey_enabled(mode) {
-                handle_hotkey_event(mode, &mut runner, log_path);
+                handle_hotkey_event(mode, &mut runner, &layout_switcher, log_path.as_path());
             } else {
                 eprintln!("{mode:?}: disabled");
             }
@@ -410,9 +516,17 @@ fn env_enabled(name: &str, default: bool) -> bool {
     }
 }
 
+fn hotkey_log_path() -> std::path::PathBuf {
+    match std::env::var_os("STEPLER_HOTKEY_LOG_PATH") {
+        Some(value) if !value.is_empty() => std::path::PathBuf::from(value),
+        _ => std::path::PathBuf::from("stepler_hotkey_log.jsonl"),
+    }
+}
+
 fn handle_hotkey_event<F, C, R, B>(
     mode: CorrectionMode,
     runner: &mut OperationRunner<'_, F, C, R, B>,
+    layout_switcher: &WindowsLayoutSwitcher,
     log_path: &std::path::Path,
 ) where
     F: stepler_platform::ForegroundProvider,
@@ -421,12 +535,42 @@ fn handle_hotkey_event<F, C, R, B>(
     B: stepler_platform::ClipboardBackend,
 {
     let started = Instant::now();
+    set_active_correction_mode(mode);
     release_modifier_keys();
+    if matches!(try_forward_embedded_terminal_hotkey(mode), Ok(true)) {
+        eprintln!("{mode:?}: forwarded to embedded terminal");
+        let event = OperationLogEvent {
+            operation_id: String::from("embedded-terminal"),
+            trigger: LogTrigger::from(mode),
+            state: OperationState::Completed,
+            app: Some(String::from("embedded_terminal")),
+            provider: Some(String::from("WindowsTextContextProvider")),
+            replacer: Some(String::from("embedded_terminal_passthrough")),
+            range: None,
+            expected_before_text: Some(String::from("forwarded_to_psreadline")),
+            replacement_text: None,
+            clipboard_used: false,
+            duration_ms: started.elapsed().as_millis(),
+            timings: Vec::new(),
+        };
+        append_log(log_path, &event.to_json_line());
+        release_modifier_keys();
+        return;
+    }
     let result = runner.handle_hotkey(mode);
     release_modifier_keys();
 
     match &result {
         Ok(outcome) => {
+            let layout_result = switch_layout_after_replacement(
+                layout_switcher,
+                &outcome.plan.expected_before_text,
+                &outcome.plan.replacement_text,
+                layout_hwnd_hint(&outcome.context.window_id, &outcome.context.control_id),
+            );
+            if let Some(layout_result) = &layout_result {
+                eprintln!("layout after correction: {layout_result}");
+            }
             if let Some(report) = &outcome.clipboard_guard {
                 log_clipboard_guard(log_path, report);
                 if report.donor_marker_seen {
@@ -479,6 +623,108 @@ fn handle_hotkey_event<F, C, R, B>(
             eprintln!("{mode:?}: {error:?}");
         }
     }
+}
+
+fn set_active_correction_mode(mode: CorrectionMode) {
+    let value = match mode {
+        CorrectionMode::Pause => "pause",
+        CorrectionMode::ScrollLock => "scrolllock",
+    };
+    std::env::set_var("STEPLER_ACTIVE_CORRECTION_MODE", value);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesiredLayout {
+    Russian,
+    English,
+}
+
+fn switch_layout_after_replacement(
+    layout_switcher: &WindowsLayoutSwitcher,
+    expected_before_text: &str,
+    replacement_text: &str,
+    hwnd_hint: Option<isize>,
+) -> Option<String> {
+    let Some(layout) = desired_layout_after_replacement(expected_before_text, replacement_text)
+    else {
+        return None;
+    };
+
+    let action = match layout {
+        DesiredLayout::Russian => KeyboardControlAction::SwitchToRussian,
+        DesiredLayout::English => KeyboardControlAction::SwitchToEnglish,
+    };
+    let control_result = request_keyboard_control_action(action);
+    std::thread::sleep(Duration::from_millis(20));
+
+    let window_result = hwnd_hint.map(|hwnd| match layout {
+        DesiredLayout::Russian => layout_switcher.switch_window_to_russian(hwnd),
+        DesiredLayout::English => layout_switcher.switch_window_to_english(hwnd),
+    });
+    let foreground_result = match layout {
+        DesiredLayout::Russian => layout_switcher.switch_to_russian(),
+        DesiredLayout::English => layout_switcher.switch_to_english(),
+    };
+
+    if control_result.is_ok()
+        || window_result.as_ref().is_some_and(Result::is_ok)
+        || foreground_result.is_ok()
+    {
+        return Some(format!("switched_to_{layout:?}"));
+    }
+
+    if let Err(error) = foreground_result {
+        eprintln!("layout after correction warning: {error:?}");
+        if let Some(Err(window_error)) = window_result {
+            eprintln!("layout after correction window warning: {window_error:?}");
+        }
+        if let Err(control_error) = control_result {
+            eprintln!("layout after correction control warning: {control_error:?}");
+        }
+        return Some(format!("switch_failed_{error:?}"));
+    }
+    Some(format!("switch_failed_{layout:?}"))
+}
+
+fn desired_layout_after_replacement(
+    expected_before_text: &str,
+    replacement_text: &str,
+) -> Option<DesiredLayout> {
+    if expected_before_text == replacement_text {
+        return None;
+    }
+    let russian = replacement_text
+        .chars()
+        .filter(|ch| is_russian_letter(*ch))
+        .count();
+    let english = replacement_text
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .count();
+    match russian.cmp(&english) {
+        std::cmp::Ordering::Greater => Some(DesiredLayout::Russian),
+        std::cmp::Ordering::Less => Some(DesiredLayout::English),
+        std::cmp::Ordering::Equal => None,
+    }
+}
+
+fn is_russian_letter(ch: char) -> bool {
+    matches!(ch, 'а'..='я' | 'А'..='Я' | 'ё' | 'Ё')
+}
+
+fn layout_hwnd_hint(window_id: &str, control_id: &str) -> Option<isize> {
+    parse_last_hwnd_id(control_id).or_else(|| parse_last_hwnd_id(window_id))
+}
+
+fn parse_last_hwnd_id(value: &str) -> Option<isize> {
+    let index = value.rfind("hwnd:")?;
+    let hex = value[index + "hwnd:".len()..]
+        .split(|ch: char| !ch.is_ascii_hexdigit())
+        .next()?;
+    if hex.is_empty() {
+        return None;
+    }
+    isize::from_str_radix(hex, 16).ok()
 }
 
 fn log_clipboard_guard(path: &std::path::Path, report: &ClipboardGuardReport) {
@@ -569,6 +815,22 @@ fn append_log(path: &std::path::Path, line: &str) {
 }
 
 fn format_operation_error(error: &OperationError) -> String {
+    if let OperationError::CorrectionWithContext(correction, context) = error {
+        let method = context
+            .capabilities
+            .method_binding
+            .as_ref()
+            .map(|binding| binding.context_method.as_str())
+            .unwrap_or("unknown");
+        return format!(
+            "Correction({correction:?}); method={method}; control={}; caret={}..{}; selection={:?}; text_preview={}",
+            context.control_id,
+            context.caret_range.start,
+            context.caret_range.end,
+            context.selection_range,
+            log_preview(&context.text_snapshot, 120)
+        );
+    }
     format!("{error:?}")
 }
 

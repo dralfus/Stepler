@@ -29,7 +29,7 @@ $env:Path="$env:USERPROFILE\.cargo\bin;$env:Path"
 cargo run -p stepler-cli -- pause --delay 3 --apply
 ```
 
-Для `ScrollLock`:
+Для `Ctrl+Pause`:
 
 ```powershell
 cargo run -p stepler-cli -- scrolllock --delay 3 --apply
@@ -63,7 +63,9 @@ cargo run -p stepler-cli -- diagnose-focus --delay 3
 cargo build -p stepler-cli
 ```
 
-Затем в нужной PowerShell-сессии загрузить adapter:
+В обычном режиме tray автоматически добавляет загрузчик adapter-а в user profile PowerShell при запуске Stepler. Новые PowerShell-сессии должны иметь команду `Get-SteplerPsReadLineStatus` без ручного dot-source.
+
+Для диагностики или старого уже открытого окна PowerShell adapter можно загрузить вручную:
 
 ```powershell
 . F:\distr\system\Stepler\scripts\Stepler.PSReadLine.ps1
@@ -71,7 +73,7 @@ cargo build -p stepler-cli
 
 Для автозагрузки можно добавить эту строку в `$PROFILE` после сборки `stepler-cli`.
 
-Важно: PSReadLine может регистрировать только клавиши из `System.ConsoleKey`. `Pause` поддерживается, а `ScrollLock` в этом enum отсутствует, поэтому операция ScrollLock в PSReadLine adapter по умолчанию назначена на `Ctrl+Pause`. При необходимости можно выбрать другой chord; если передать неподдерживаемый chord, скрипт предупредит и вернется к безопасному fallback:
+Важно: PSReadLine может регистрировать только клавиши из `System.ConsoleKey`. `Pause` поддерживается, поэтому операция умного режима строки в PSReadLine adapter по умолчанию назначена на `Ctrl+Pause`. При необходимости можно выбрать другой chord; если передать неподдерживаемый chord, скрипт предупредит и вернется к безопасному fallback:
 
 ```powershell
 . F:\distr\system\Stepler\scripts\Stepler.PSReadLine.ps1 -ScrollLockChord F8
@@ -108,7 +110,7 @@ cargo run -p stepler-cli -- run-hotkeys
 
 1. Скопировать любой контрольный текст в clipboard, например `COPYME`.
 2. Ввести в prompt `ghbdtn vbh`, не нажимая Enter.
-3. Нажать `ScrollLock`.
+3. Нажать `Ctrl+Pause`.
 4. Проверить, что строка стала `привет мир`, команда не прервалась, а `Ctrl+V` вставляет исходный clipboard.
 
 Watched UI-тест старого terminal fallback для воспроизведения ровно в активном окне пользователя:
@@ -127,10 +129,16 @@ cargo test -p stepler-cli --test terminal_smoke watched_active_terminal_scrolllo
 cargo run -p stepler-cli -- run-hotkeys
 ```
 
-Он перехватывает `Pause` и `ScrollLock` через low-level keyboard hook, блокирует исходное нажатие, вызывает тот же pipeline, что CLI-smoke, и пишет JSONL-лог:
+Он перехватывает `Pause` и `Ctrl+Pause` через low-level keyboard hook, блокирует исходное нажатие, вызывает тот же pipeline, что CLI-smoke, и пишет JSONL-лог:
 
 ```text
 stepler_hotkey_log.jsonl
+```
+
+При запуске из tray путь лога задается через `STEPLER_HOTKEY_LOG_PATH` и по умолчанию находится здесь:
+
+```text
+%LOCALAPPDATA%\Stepler\logs\stepler_hotkey_log.jsonl
 ```
 
 Остановить runner можно через `Ctrl+C` в его консоли.

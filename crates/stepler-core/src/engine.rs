@@ -48,6 +48,20 @@ fn build_pause_plan(context: &TextContext) -> Result<ReplacementPlan, Correction
 }
 
 fn build_scroll_lock_plan(context: &TextContext) -> Result<ReplacementPlan, CorrectionError> {
+    if let Some(range) = context.selection_range.filter(|range| !range.is_empty()) {
+        let expected = slice_by_range(&context.text_snapshot, range)?;
+        if expected.trim().is_empty() {
+            return Err(CorrectionError::NoTextToReplace);
+        }
+        return Ok(ReplacementPlan {
+            range,
+            replacement_text: convert_selected_text(expected),
+            reason: String::from("scrolllock_selection_layout_conversion"),
+            confidence: 1.0,
+            expected_before_text: expected.to_owned(),
+        });
+    }
+
     let scan_end = token_end_at_or_after_caret(&context.text_snapshot, context.caret_range.start);
     if !context.text_snapshot.is_char_boundary(scan_end) {
         return Err(CorrectionError::InvalidRange);
@@ -95,8 +109,20 @@ fn word_range_before_or_around_caret(text: &str, caret: usize) -> TextRange {
         return TextRange::caret(caret);
     }
 
-    let mut start = caret;
     let mut end = caret;
+    let mut word_end = caret;
+
+    while word_end > 0 {
+        let Some((prev_index, prev_ch)) = text[..word_end].char_indices().next_back() else {
+            break;
+        };
+        if prev_ch == '\r' || prev_ch == '\n' || !prev_ch.is_whitespace() {
+            break;
+        }
+        word_end = prev_index;
+    }
+
+    let mut start = word_end;
 
     while start > 0 {
         let Some((prev_index, prev_ch)) = text[..start].char_indices().next_back() else {
@@ -108,14 +134,20 @@ fn word_range_before_or_around_caret(text: &str, caret: usize) -> TextRange {
         start = prev_index;
     }
 
-    while end < text.len() {
-        let Some(next_ch) = text[end..].chars().next() else {
-            break;
-        };
-        if next_ch.is_whitespace() {
-            break;
+    if start == word_end {
+        return TextRange::caret(caret);
+    }
+
+    if word_end == caret {
+        while end < text.len() {
+            let Some(next_ch) = text[end..].chars().next() else {
+                break;
+            };
+            if next_ch.is_whitespace() {
+                break;
+            }
+            end += next_ch.len_utf8();
         }
-        end += next_ch.len_utf8();
     }
 
     TextRange::new(start, end)

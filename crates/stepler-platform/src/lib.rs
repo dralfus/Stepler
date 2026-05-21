@@ -11,6 +11,7 @@ pub enum PlatformError {
     ClipboardUnavailable,
     HotkeyUnavailable,
     ReplacementUnavailable,
+    ReplacementUnavailableReason(String),
     PreflightFailed,
 }
 
@@ -125,13 +126,20 @@ pub struct AppPolicy {
 impl AppPolicy {
     pub fn matches(&self, target: &ForegroundTarget) -> bool {
         self.app_matcher == "*"
-            || self.app_matcher.eq_ignore_ascii_case(&target.app_class)
-            || self.app_matcher.eq_ignore_ascii_case(&target.focused_class)
+            || matcher_matches(&self.app_matcher, &target.app_class)
+            || matcher_matches(&self.app_matcher, &target.focused_class)
             || target
                 .process_name
                 .as_ref()
-                .is_some_and(|process| self.app_matcher.eq_ignore_ascii_case(process))
+                .is_some_and(|process| matcher_matches(&self.app_matcher, process))
     }
+}
+
+fn matcher_matches(matcher: &str, value: &str) -> bool {
+    value.eq_ignore_ascii_case(matcher)
+        || value
+            .get(..matcher.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(matcher))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,9 +277,59 @@ pub fn default_app_policies() -> Vec<AppPolicy> {
             allow_risky_methods: false,
         },
         AppPolicy {
+            app_matcher: String::from("Chrome_WidgetWin"),
+            preferred_context_methods: vec![
+                MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationEditableText,
+            ],
+            preferred_replace_methods: vec![
+                MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationEditableText,
+            ],
+            forbidden_methods: vec![
+                MethodId::Win32EditMessages,
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationText,
+                MethodId::TerminalClipboardShortcut,
+                MethodId::ClipboardSelection,
+                MethodId::SendInput,
+            ],
+            allow_risky_methods: false,
+        },
+        AppPolicy {
+            app_matcher: String::from("MozillaWindowClass"),
+            preferred_context_methods: vec![
+                MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationEditableText,
+            ],
+            preferred_replace_methods: vec![
+                MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationEditableText,
+            ],
+            forbidden_methods: vec![
+                MethodId::Win32EditMessages,
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationText,
+                MethodId::TerminalClipboardShortcut,
+                MethodId::ClipboardSelection,
+                MethodId::SendInput,
+            ],
+            allow_risky_methods: false,
+        },
+        AppPolicy {
             app_matcher: String::from("WINWORD"),
-            preferred_context_methods: vec![MethodId::WordCom, MethodId::UiAutomationText],
-            preferred_replace_methods: vec![MethodId::WordCom, MethodId::UiAutomationText],
+            preferred_context_methods: vec![
+                MethodId::WordCom,
+                MethodId::UiAutomationEditableText,
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationText,
+            ],
+            preferred_replace_methods: vec![
+                MethodId::WordCom,
+                MethodId::UiAutomationEditableText,
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationText,
+            ],
             forbidden_methods: vec![
                 MethodId::Win32EditMessages,
                 MethodId::TerminalClipboardShortcut,
@@ -281,8 +339,18 @@ pub fn default_app_policies() -> Vec<AppPolicy> {
         },
         AppPolicy {
             app_matcher: String::from("OpusApp"),
-            preferred_context_methods: vec![MethodId::WordCom, MethodId::UiAutomationText],
-            preferred_replace_methods: vec![MethodId::WordCom, MethodId::UiAutomationText],
+            preferred_context_methods: vec![
+                MethodId::WordCom,
+                MethodId::UiAutomationEditableText,
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationText,
+            ],
+            preferred_replace_methods: vec![
+                MethodId::WordCom,
+                MethodId::UiAutomationEditableText,
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationText,
+            ],
             forbidden_methods: vec![
                 MethodId::Win32EditMessages,
                 MethodId::TerminalClipboardShortcut,
@@ -299,7 +367,10 @@ pub fn default_app_policy() -> AppPolicy {
         app_matcher: String::from("*"),
         preferred_context_methods: vec![
             MethodId::Win32EditMessages,
+            MethodId::UiAutomationEditableText,
+            MethodId::UiAutomationDocumentText,
             MethodId::UiAutomationText,
+            MethodId::WebKeyboardSelection,
             MethodId::ConsoleBuffer,
             MethodId::PsReadLine,
             MethodId::ClipboardSelection,
@@ -307,7 +378,10 @@ pub fn default_app_policy() -> AppPolicy {
         ],
         preferred_replace_methods: vec![
             MethodId::Win32EditMessages,
+            MethodId::UiAutomationEditableText,
+            MethodId::UiAutomationDocumentText,
             MethodId::UiAutomationText,
+            MethodId::WebKeyboardSelection,
             MethodId::ConsoleBuffer,
             MethodId::PsReadLine,
             MethodId::ClipboardSelection,
@@ -401,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn resolver_blocks_risky_unknown_fallback_by_default() {
+    fn resolver_forbids_generic_clipboard_for_browser_policy() {
         let resolver = MethodResolver::default();
         let target = target("Chrome_WidgetWin_1", "Chrome_RenderWidgetHostHWND");
         let probes = vec![MethodProbe::risky(
@@ -413,7 +487,7 @@ mod tests {
 
         assert_eq!(
             error,
-            ResolveError::RiskyMethodBlocked(MethodId::ClipboardSelection)
+            ResolveError::ForbiddenByPolicy(MethodId::ClipboardSelection)
         );
     }
 
@@ -447,6 +521,40 @@ mod tests {
         assert_eq!(
             error,
             ResolveError::ForbiddenByPolicy(MethodId::ClipboardSelection)
+        );
+    }
+
+    #[test]
+    fn resolver_prefers_web_keyboard_for_browser_like_classes() {
+        let resolver = MethodResolver::default();
+        let target = target("Chrome_WidgetWin_1", "Chrome_WidgetWin_1");
+        let probes = vec![
+            MethodProbe::safe(MethodId::WebKeyboardSelection, "web keyboard"),
+            MethodProbe::safe(MethodId::UiAutomationDocumentText, "document selection"),
+            MethodProbe::safe(MethodId::UiAutomationText, "uia text"),
+            MethodProbe::safe(MethodId::UiAutomationEditableText, "editable text"),
+        ];
+
+        let decision = resolver.resolve(&target, &probes).unwrap();
+
+        assert_eq!(decision.context_method, MethodId::WebKeyboardSelection);
+        assert_eq!(decision.replacement_method, MethodId::WebKeyboardSelection);
+    }
+
+    #[test]
+    fn resolver_forbids_uia_document_for_browser_policy() {
+        let resolver = MethodResolver::default();
+        let target = target("Chrome_WidgetWin_1", "Chrome_WidgetWin_1");
+        let probes = vec![MethodProbe::safe(
+            MethodId::UiAutomationDocumentText,
+            "document selection",
+        )];
+
+        let error = resolver.resolve(&target, &probes).unwrap_err();
+
+        assert_eq!(
+            error,
+            ResolveError::ForbiddenByPolicy(MethodId::UiAutomationDocumentText)
         );
     }
 

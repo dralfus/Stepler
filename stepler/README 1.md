@@ -40,7 +40,7 @@ Stepler не стремится писать отдельный большой �
 
 - `Win32EditMessages` - чтение/замена обычных Win32 edit controls через `WM_GETTEXT`, `EM_GETSEL`, `EM_REPLACESEL`.
 - `UIAutomationEditableText` - строгий UI Automation adapter для focused `ControlType.Edit` с writable `ValuePattern` и `TextPattern`.
-- `UIAutomationDocumentText` - adapter для web/document surfaces через UIA `TextPattern`: работает с выделенным текстом и, если UIA безопасно отдает collapsed caret range, с текстом слева от курсора.
+- `UIAutomationDocumentText` - selection-only adapter для web/document surfaces через UIA `TextPattern`.
 - `UIAutomationText` - базовый UIA text/value adapter для совместимых controls.
 - `WordCom` - Word object model; также используется для Outlook desktop через WordEditor.
 - `PSReadLine` - безопасная работа с буфером ввода PowerShell.
@@ -62,10 +62,10 @@ Risky/fallback методы по умолчанию не должны включ
 | Microsoft Word desktop | `P`, `CP`, выделение, диапазон слева от курсора | `WordCom` |
 | Microsoft Outlook desktop compose | WordEditor в письме, ожидаемый путь поддержки | `WordCom` через Outlook WordEditor |
 | Windows Settings / Feedback Hub / WPF TextBox fixture | caret-aware замена в editable UIA поле | `UIAutomationEditableText` / `UIAutomationText` |
-| Confluence / JIRA в Chrome/Firefox | выделенный текст в web editor; no-selection только если UIA проходит strict caret preflight | `UIAutomationDocumentText` |
+| Confluence / JIRA в Chrome/Firefox | выделенный текст в web editor | `UIAutomationDocumentText` |
 | Browser-like / Electron-like окна без безопасного text API | fail-closed, risky методы только явно | policy + diagnostics |
 
-Для web/document editor-ов no-selection режим включается только через `UIAutomationDocumentText` caret preflight: UIA должен вернуть стабильный collapsed range, Stepler выделяет ровно рассчитанный диапазон слева от caret и перед вводом проверяет совпадение текста.
+Для Confluence/JIRA текущий безопасный web-путь является selection-only: без выделения Stepler не пытается угадывать слово у caret, чтобы не удалить лишний текст в web editor.
 
 ## Структура проекта
 

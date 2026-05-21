@@ -71,7 +71,7 @@ fn watched_powershell_scrolllock_repro_visible_window() {
     paste_text_to_window(powershell.hwnd, "пше");
     thread::sleep(Duration::from_millis(500));
     set_clipboard_text("COPYME");
-    send_key(VK_SCROLL);
+    send_real_chord(&[VK_CONTROL], VK_PAUSE);
 
     let hold_secs = std::env::var("STEPLER_WATCH_HOLD_SECS")
         .ok()
@@ -844,7 +844,7 @@ const VK_NUMLOCK: u16 = 0x90;
 const VK_C: u16 = 0x43;
 const VK_V: u16 = 0x56;
 const VK_RETURN: u16 = 0x0D;
-const VK_SCROLL: u16 = 0x91;
+const VK_PAUSE: u16 = 0x13;
 const CF_UNICODETEXT: u32 = 13;
 const GMEM_MOVEABLE: u32 = 0x0002;
 const ENGLISH_LAYOUT: isize = 0x0409_0409;

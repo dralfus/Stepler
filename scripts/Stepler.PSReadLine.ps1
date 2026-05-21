@@ -1,11 +1,21 @@
 param(
-    [string] $SteplerCli = (Join-Path $PSScriptRoot '..\target\debug\stepler-cli.exe'),
-    [string] $PauseChord = 'Ctrl+F11',
-    [string] $ScrollLockChord = 'Ctrl+F12',
-    [string[]] $AdditionalPauseChords = @(),
-    [string[]] $AdditionalScrollLockChords = @(),
+    [string] $SteplerCli = $null,
+    [string] $PauseChord = 'Pause',
+    [string] $ScrollLockChord = 'Ctrl+Pause',
+    [string[]] $AdditionalPauseChords = @('Ctrl+F11'),
+    [string[]] $AdditionalScrollLockChords = @('Ctrl+F12'),
     [switch] $Quiet
 )
+
+if ([string]::IsNullOrWhiteSpace($SteplerCli)) {
+    $distCli = Join-Path $PSScriptRoot '..\stepler-cli.exe'
+    $debugCli = Join-Path $PSScriptRoot '..\target\debug\stepler-cli.exe'
+    if (Test-Path -LiteralPath $distCli) {
+        $SteplerCli = $distCli
+    } else {
+        $SteplerCli = $debugCli
+    }
+}
 
 if (-not (Test-Path -LiteralPath $SteplerCli)) {
     throw "stepler-cli.exe not found at '$SteplerCli'. Build it first: cargo build -p stepler-cli"
@@ -13,6 +23,17 @@ if (-not (Test-Path -LiteralPath $SteplerCli)) {
 
 if (-not ('Microsoft.PowerShell.PSConsoleReadLine' -as [type])) {
     throw "PSReadLine is not loaded. Import-Module PSReadLine and load this adapter from an interactive PowerShell session."
+}
+
+if (-not ('SteplerUser32' -as [type])) {
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class SteplerUser32 {
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+}
+'@
 }
 
 $script:SteplerCli = (Resolve-Path -LiteralPath $SteplerCli).Path
@@ -27,8 +48,8 @@ function Resolve-SteplerPsReadLineChord {
     )
 
     $keyName = ($Chord -split '\+')[-1]
-    $parsed = $null
-    if ([System.Enum]::TryParse([System.ConsoleKey], $keyName, $true, [ref] $parsed)) {
+    $knownKey = [System.Enum]::GetNames([System.ConsoleKey]) | Where-Object { $_ -ieq $keyName } | Select-Object -First 1
+    if ($knownKey) {
         return $Chord
     }
 
@@ -51,6 +72,14 @@ function Invoke-SteplerPsReadLineCorrection {
     $line = $null
     $cursor = 0
     [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref] $line, [ref] $cursor)
+    $selectionStart = 0
+    $selectionLength = 0
+    try {
+        [Microsoft.PowerShell.PSConsoleReadLine]::GetSelectionState([ref] $selectionStart, [ref] $selectionLength)
+    } catch {
+        $selectionStart = 0
+        $selectionLength = 0
+    }
 
     if ([string]::IsNullOrWhiteSpace($line)) {
         return
@@ -58,7 +87,11 @@ function Invoke-SteplerPsReadLineCorrection {
 
     $textBytes = [System.Text.Encoding]::Unicode.GetBytes($line)
     $textBase64 = [Convert]::ToBase64String($textBytes)
-    $output = & $script:SteplerCli psreadline-plan --mode $Mode --text-b64 $textBase64 --cursor $cursor 2>$null
+    $args = @('psreadline-plan', '--mode', $Mode, '--text-b64', $textBase64, '--cursor', $cursor)
+    if ($selectionLength -gt 0) {
+        $args += @('--selection-start', $selectionStart, '--selection-length', $selectionLength)
+    }
+    $output = & $script:SteplerCli @args 2>$null
 
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($output)) {
         return
@@ -88,6 +121,141 @@ function Invoke-SteplerPsReadLineCorrection {
         # Older PSReadLine versions may not expose SetCursorPosition. In that case,
         # leaving the cursor at the end is safer than mutating the terminal buffer.
     }
+
+    $replacementText = if ($null -ne $plan.replacement_text) {
+        [string] $plan.replacement_text
+    } else {
+        [string] $plan.replacement
+    }
+
+    $targetLayout = Get-SteplerTargetLayout -Text $replacementText
+    if ($targetLayout) {
+        Invoke-SteplerLayoutSwitch -TargetLayout $targetLayout -TargetHwnd ([SteplerUser32]::GetForegroundWindow())
+    }
+}
+
+function Invoke-SteplerLayoutSwitch {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('russian', 'english')]
+        [string] $TargetLayout,
+
+        [Parameter(Mandatory)]
+        [IntPtr] $TargetHwnd
+    )
+
+    $hwndValue = $TargetHwnd.ToInt64().ToString()
+    $psResult = Set-SteplerPowerShellInputLanguage -TargetLayout $TargetLayout
+    Write-SteplerPsReadLineLog -Message "layout ps target=$TargetLayout hwnd=$hwndValue result=$psResult"
+
+    $controlOutput = & $script:SteplerCli trigger-layout-control $TargetLayout 2>&1
+    $controlExitCode = $LASTEXITCODE
+    Write-SteplerPsReadLineLog -Message "layout control target=$TargetLayout hwnd=$hwndValue exit=$controlExitCode output=$controlOutput"
+
+    $syncOutput = & $script:SteplerCli switch-layout $TargetLayout --hwnd $hwndValue 2>&1
+    $syncExitCode = $LASTEXITCODE
+    Write-SteplerPsReadLineLog -Message "layout sync target=$TargetLayout hwnd=$hwndValue exit=$syncExitCode output=$syncOutput"
+
+    $encodedCli = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($script:SteplerCli))
+    $encodedLayout = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($TargetLayout))
+    $encodedHwnd = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($hwndValue))
+    $script = @"
+`$cli = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('$encodedCli'))
+`$layout = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('$encodedLayout'))
+`$hwnd = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('$encodedHwnd'))
+Start-Sleep -Milliseconds 120
+& `$cli trigger-layout-control `$layout 2>`$null | Out-Null
+& `$cli switch-layout `$layout --hwnd `$hwnd 2>`$null | Out-Null
+`$exit1 = `$LASTEXITCODE
+Start-Sleep -Milliseconds 260
+& `$cli trigger-layout-control `$layout 2>`$null | Out-Null
+& `$cli switch-layout `$layout --hwnd `$hwnd 2>`$null | Out-Null
+`$exit2 = `$LASTEXITCODE
+`$log = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Stepler\logs\psreadline_layout.log'
+`$dir = Split-Path -Parent `$log
+New-Item -ItemType Directory -Force -Path `$dir | Out-Null
+Add-Content -LiteralPath `$log -Value ("{0:o} layout delayed target={1} hwnd={2} exit1={3} exit2={4}" -f [DateTimeOffset]::Now, `$layout, `$hwnd, `$exit1, `$exit2)
+"@
+    Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList @(
+        '-NoLogo',
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        $script
+    ) | Out-Null
+}
+
+function Set-SteplerPowerShellInputLanguage {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('russian', 'english')]
+        [string] $TargetLayout
+    )
+
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        $targetPrefix = if ($TargetLayout -eq 'russian') { 'ru' } else { 'en' }
+        $target = [System.Windows.Forms.InputLanguage]::InstalledInputLanguages |
+            Where-Object { $_.Culture.TwoLetterISOLanguageName -ieq $targetPrefix } |
+            Select-Object -First 1
+
+        if ($null -eq $target) {
+            return 'missing'
+        }
+
+        $before = [System.Windows.Forms.InputLanguage]::CurrentInputLanguage
+        [System.Windows.Forms.InputLanguage]::CurrentInputLanguage = $target
+        Start-Sleep -Milliseconds 15
+        $after = [System.Windows.Forms.InputLanguage]::CurrentInputLanguage
+        return ("before={0}/{1}; after={2}/{3}; target={4}/{5}" -f
+            $before.Culture.Name,
+            $before.Handle.ToInt64(),
+            $after.Culture.Name,
+            $after.Handle.ToInt64(),
+            $target.Culture.Name,
+            $target.Handle.ToInt64())
+    } catch {
+        return "error=$($_.Exception.Message)"
+    }
+}
+
+function Write-SteplerPsReadLineLog {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Message
+    )
+
+    try {
+        $log = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Stepler\logs\psreadline_layout.log'
+        $dir = Split-Path -Parent $log
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        Add-Content -LiteralPath $log -Value ("{0:o} {1}" -f [DateTimeOffset]::Now, $Message)
+    } catch {
+    }
+}
+
+function Get-SteplerTargetLayout {
+    param(
+        [AllowNull()]
+        [string] $Text
+    )
+
+    if ([string]::IsNullOrEmpty($Text)) {
+        return $null
+    }
+
+    $russianCount = ([regex]::Matches($Text, '\p{IsCyrillic}')).Count
+    $englishCount = ([regex]::Matches($Text, '[A-Za-z]')).Count
+
+    if ($russianCount -gt $englishCount) {
+        return 'russian'
+    }
+    if ($englishCount -gt $russianCount) {
+        return 'english'
+    }
+
+    return $null
 }
 
 $script:SteplerPauseChord = Resolve-SteplerPsReadLineChord -Chord $PauseChord -FallbackChord 'Ctrl+F11'
@@ -153,6 +321,10 @@ function Disable-SteplerPsReadLine {
     $script:SteplerPsReadLineEnabled = $false
 
     Remove-Item Function:\Invoke-SteplerPsReadLineCorrection -ErrorAction SilentlyContinue
+    Remove-Item Function:\Invoke-SteplerLayoutSwitch -ErrorAction SilentlyContinue
+    Remove-Item Function:\Set-SteplerPowerShellInputLanguage -ErrorAction SilentlyContinue
+    Remove-Item Function:\Write-SteplerPsReadLineLog -ErrorAction SilentlyContinue
+    Remove-Item Function:\Get-SteplerTargetLayout -ErrorAction SilentlyContinue
     Remove-Item Function:\Resolve-SteplerPsReadLineChord -ErrorAction SilentlyContinue
 
     if (-not $KeepStatusCommand) {

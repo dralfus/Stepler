@@ -127,7 +127,7 @@ k.,jdm
 1. Method adapters:
    - `Win32EditMessages`;
    - `UIAutomationEditableText` - строгий adapter для focused `ControlType.Edit` с writable `ValuePattern` и `TextPattern`;
-   - `UIAutomationDocumentText` - строгий adapter для web/document `TextPattern`: выделенный текст и caret-range fallback при стабильном collapsed UIA range;
+   - `UIAutomationDocumentText` - строгий selection-only adapter для web/document `TextPattern`;
    - `UIAutomationText`;
    - `ClipboardSelection` - risky fallback для уже выделенного текста через copy/paste с обязательным восстановлением буфера;
    - `SendInput` - risky write-only fallback для ввода Unicode-текста в текущее выделение, не используется как context provider;

@@ -34,6 +34,7 @@ pub struct ClipboardGuardReport {
 pub enum OperationError {
     Platform(PlatformError),
     Correction(CorrectionError),
+    CorrectionWithContext(CorrectionError, TextContext),
     Transaction(TransactionError),
     ForegroundChanged,
 }
@@ -142,7 +143,8 @@ where
             .transition_to(OperationState::ContextCaptured)
             .map_err(OperationError::Transaction)?;
 
-        let plan = build_replacement_plan(&context, mode).map_err(OperationError::Correction)?;
+        let plan = build_replacement_plan(&context, mode)
+            .map_err(|error| OperationError::CorrectionWithContext(error, context.clone()))?;
         transaction
             .transition_to(OperationState::PlanBuilt)
             .map_err(OperationError::Transaction)?;

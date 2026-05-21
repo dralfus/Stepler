@@ -43,6 +43,26 @@ mod tests {
     }
 
     #[test]
+    fn pause_builds_plan_for_word_before_trailing_space() {
+        let context = TextContext::new("hello k.,jdm ").with_caret(TextRange::caret(13));
+
+        let plan = build_replacement_plan(&context, CorrectionMode::Pause).unwrap();
+
+        assert_eq!(plan.range, TextRange::new(6, 13));
+        assert_eq!(plan.replacement_text, "любовь ");
+        assert_eq!(plan.expected_before_text, "k.,jdm ");
+    }
+
+    #[test]
+    fn pause_does_not_cross_line_break_for_trailing_space_lookup() {
+        let context = TextContext::new("k.,jdm\n").with_caret(TextRange::caret(7));
+
+        let err = build_replacement_plan(&context, CorrectionMode::Pause).unwrap_err();
+
+        assert_eq!(err, CorrectionError::NoTextToReplace);
+    }
+
+    #[test]
     fn pause_returns_none_when_no_word_is_available() {
         let context = TextContext::new("   ").with_caret(TextRange::caret(3));
 
@@ -74,6 +94,17 @@ mod tests {
         assert_eq!(plan.range, TextRange::new(0, "k.,jdm".len()));
         assert_eq!(plan.expected_before_text, "k.,jdm");
         assert_eq!(plan.replacement_text, "любовь");
+    }
+
+    #[test]
+    fn scrolllock_builds_plan_for_selected_text_like_pause() {
+        let context = TextContext::new("ghbdtn vbh").with_selection(Some(TextRange::new(0, 10)));
+
+        let plan = build_replacement_plan(&context, CorrectionMode::ScrollLock).unwrap();
+
+        assert_eq!(plan.range, TextRange::new(0, 10));
+        assert_eq!(plan.expected_before_text, "ghbdtn vbh");
+        assert_eq!(plan.replacement_text, "привет мир");
     }
 
     #[test]

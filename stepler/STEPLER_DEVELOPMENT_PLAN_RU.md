@@ -94,7 +94,7 @@ Foreground target
 1. Method adapters - реальные техники доступа:
    - v `Win32EditMessages`;
    - v `UIAutomationEditableText` (strict focused editable UIA element);
-   - v `UIAutomationDocumentText` (UIA TextPattern document surface: selection + strict caret-range fallback);
+   - v `UIAutomationDocumentText` (selection-only UIA TextPattern document surface);
    - v `UIAutomationText`;
    - v `ClipboardSelection` (risky fallback: работает только с уже выделенным текстом через clipboard copy/paste);
    - v `SendInput` (risky replacement fallback: ввод Unicode-текста в текущее выделение, не умеет читать контекст);

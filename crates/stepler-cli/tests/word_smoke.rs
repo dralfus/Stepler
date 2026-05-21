@@ -99,7 +99,7 @@ fn word_global_hotkeys_replace_pause_and_scrolllock_text() {
 
     for _ in 0..5 {
         word.replace_text("пше");
-        send_key(VK_SCROLL);
+        send_ctrl_pause();
         thread::sleep(Duration::from_millis(1_500));
         assert_eq!(
             word.read_text(),
@@ -428,7 +428,7 @@ fn set_foreground(hwnd: isize) {
 
 fn send_key(vk: u8) {
     let scan = match vk {
-        VK_PAUSE | VK_SCROLL => 0x45,
+        VK_PAUSE => 0x45,
         _ => 0,
     };
     unsafe {
@@ -438,8 +438,20 @@ fn send_key(vk: u8) {
     }
 }
 
+fn send_ctrl_pause() {
+    unsafe {
+        keybd_event(VK_CONTROL, 0, 0, 0);
+        thread::sleep(Duration::from_millis(30));
+        keybd_event(VK_PAUSE, 0x45, 0, 0);
+        thread::sleep(Duration::from_millis(50));
+        keybd_event(VK_PAUSE, 0x45, KEYEVENTF_KEYUP, 0);
+        thread::sleep(Duration::from_millis(30));
+        keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
+    }
+}
+
+const VK_CONTROL: u8 = 0x11;
 const VK_PAUSE: u8 = 0x13;
-const VK_SCROLL: u8 = 0x91;
 const KEYEVENTF_KEYUP: u32 = 0x0002;
 
 const GET_WORD_PROCESS_COUNT: &str = r#"

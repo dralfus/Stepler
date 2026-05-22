@@ -20,26 +20,50 @@ internal static class Program
 
         try
         {
+            SafeLog($"tray process start pid={Environment.ProcessId}");
             using var mutex = new Mutex(initiallyOwned: true, "Stepler.TrayHost", out var ownsMutex);
             if (!ownsMutex)
             {
+                SafeLog($"tray already running pid={Environment.ProcessId}");
                 return;
             }
 
-            File.AppendAllText(LogPath(), $"{DateTimeOffset.Now:o} tray main start{Environment.NewLine}");
+            SafeLog($"tray main start pid={Environment.ProcessId}");
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             ApplicationConfiguration.Initialize();
             Application.ThreadException += (_, error) =>
-                File.AppendAllText(LogPath(), $"{DateTimeOffset.Now:o} tray thread exception {error.Exception}{Environment.NewLine}");
+                SafeLog($"tray thread exception {error.Exception}");
             AppDomain.CurrentDomain.UnhandledException += (_, error) =>
-                File.AppendAllText(LogPath(), $"{DateTimeOffset.Now:o} tray unhandled exception {error.ExceptionObject}{Environment.NewLine}");
+                SafeLog($"tray unhandled exception terminating={error.IsTerminating} {error.ExceptionObject}");
             Application.ApplicationExit += (_, _) =>
-                File.AppendAllText(LogPath(), $"{DateTimeOffset.Now:o} tray application exit{Environment.NewLine}");
+                SafeLog("tray application exit");
             Application.Run(new SteplerTrayForm());
-            File.AppendAllText(LogPath(), $"{DateTimeOffset.Now:o} tray main stop{Environment.NewLine}");
+            SafeLog("tray main stop");
         }
         catch (Exception error)
         {
-            File.AppendAllText(LogPath(), $"{DateTimeOffset.Now:o} tray fatal {error}{Environment.NewLine}");
+            SafeLog($"tray fatal {error}");
+        }
+    }
+
+    internal static void SafeLog(string message)
+    {
+        var line = $"{DateTimeOffset.Now:o} {message}{Environment.NewLine}";
+        try
+        {
+            File.AppendAllText(LogPath(), line);
+        }
+        catch
+        {
+            try
+            {
+                var fallbackPath = Path.Combine(Path.GetTempPath(), "Stepler.Tray.fallback.log");
+                File.AppendAllText(fallbackPath, line);
+            }
+            catch
+            {
+                // Last-resort diagnostic logging must never crash the tray host.
+            }
         }
     }
 
@@ -64,7 +88,7 @@ internal static class Program
     private static void StopExistingProcesses()
     {
         var currentId = Environment.ProcessId;
-        File.AppendAllText(LogPath(), $"{DateTimeOffset.Now:o} stop requested current={currentId}{Environment.NewLine}");
+        SafeLog($"stop requested current={currentId}");
         foreach (var processName in new[] { "Stepler", "Stepler.Tray", "stepler-cli" })
         {
             foreach (var process in Process.GetProcessesByName(processName))
@@ -77,11 +101,11 @@ internal static class Program
                     }
 
                     process.Kill(entireProcessTree: true);
-                    File.AppendAllText(LogPath(), $"{DateTimeOffset.Now:o} stopped {processName} pid={process.Id}{Environment.NewLine}");
+                    SafeLog($"stopped {processName} pid={process.Id}");
                 }
                 catch (Exception error)
                 {
-                    File.AppendAllText(LogPath(), $"{DateTimeOffset.Now:o} stop failed {processName} pid={process.Id} {error.GetType().Name}{Environment.NewLine}");
+                    SafeLog($"stop failed {processName} pid={process.Id} {error.GetType().Name}");
                     // Best-effort emergency stop.
                 }
             }
@@ -116,9 +140,7 @@ internal sealed class SteplerTrayForm : Form
     {
         _repoRoot = FindRepoRoot();
         _settings = SteplerSettingsStore.Load();
-        File.AppendAllText(
-            Program.LogPath(),
-            $"{DateTimeOffset.Now:o} settings loaded path={SteplerSettingsStore.SettingsPath()} {JsonSerializer.Serialize(_settings)}{Environment.NewLine}");
+        Program.SafeLog($"settings loaded path={SteplerSettingsStore.SettingsPath()} {JsonSerializer.Serialize(_settings)}");
 
         Text = "Stepler";
         ShowInTaskbar = false;
@@ -220,10 +242,10 @@ internal sealed class SteplerTrayForm : Form
             _notifyIcon.Visible = true;
             EnsurePowerShellProfileAdapter();
             StartRunner();
-            File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} tray form ready handle={Handle}{Environment.NewLine}");
+            Program.SafeLog($"tray form ready handle={Handle}");
         };
         FormClosed += (_, _) =>
-            File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} tray form closed{Environment.NewLine}");
+            Program.SafeLog("tray form closed");
         Shown += (_, _) => Hide();
     }
 
@@ -270,7 +292,7 @@ internal sealed class SteplerTrayForm : Form
         if (!File.Exists(cliPath))
         {
             SetStatus("Статус: ошибка - stepler-cli.exe не найден");
-            File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} cli not found{Environment.NewLine}");
+            Program.SafeLog("cli not found");
             return;
         }
 
@@ -298,13 +320,11 @@ internal sealed class SteplerTrayForm : Form
 
             SetStatus(_runner is null ? "Статус: ошибка запуска" : "Статус: работает");
             UpdateMenuState();
-            File.AppendAllText(
-                Program.LogPath(),
-                $"{DateTimeOffset.Now:o} runner started pid={_runner?.Id.ToString() ?? "null"} cli={cliPath} cwd={workingDirectory}{Environment.NewLine}");
+            Program.SafeLog($"runner started pid={_runner?.Id.ToString() ?? "null"} cli={cliPath} cwd={workingDirectory}");
         }
         catch (Exception error)
         {
-            File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} runner start error {error}{Environment.NewLine}");
+            Program.SafeLog($"runner start error {error}");
             SetStatus($"Статус: ошибка запуска ({error.GetType().Name})");
             UpdateMenuState();
         }
@@ -322,16 +342,16 @@ internal sealed class SteplerTrayForm : Form
 
             if (!File.Exists(adapterPath))
             {
-                File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} psreadline profile skip adapter not found{Environment.NewLine}");
+                Program.SafeLog("psreadline profile skip adapter not found");
                 return;
             }
 
             PowerShellProfileManager.EnsureInstalled(adapterPath);
-            File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} psreadline profile installed adapter={adapterPath}{Environment.NewLine}");
+            Program.SafeLog($"psreadline profile installed adapter={adapterPath}");
         }
         catch (Exception error)
         {
-            File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} psreadline profile install error {error}{Environment.NewLine}");
+            Program.SafeLog($"psreadline profile install error {error}");
         }
     }
 
@@ -342,13 +362,13 @@ internal sealed class SteplerTrayForm : Form
             _runnerJob?.Dispose();
             _runnerJob = RunnerJob.CreateKillOnClose();
             _runnerJob.Assign(runner);
-            File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} runner job attached pid={runner.Id}{Environment.NewLine}");
+            Program.SafeLog($"runner job attached pid={runner.Id}");
         }
         catch (Exception error)
         {
             _runnerJob?.Dispose();
             _runnerJob = null;
-            File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} runner job attach failed pid={runner.Id} {error}{Environment.NewLine}");
+            Program.SafeLog($"runner job attach failed pid={runner.Id} {error}");
         }
     }
 
@@ -364,7 +384,7 @@ internal sealed class SteplerTrayForm : Form
             // Process state may already be gone.
         }
 
-        File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} runner exited code={exitCode}{Environment.NewLine}");
+        Program.SafeLog($"runner exited code={exitCode}");
         if (!IsHandleCreated || IsDisposed)
         {
             return;
@@ -384,7 +404,7 @@ internal sealed class SteplerTrayForm : Form
                     {
                         SetStatus("Статус: обработчик упал, перезапуск...");
                         UpdateMenuState();
-                        File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} runner auto restart after exit code={exitCode}{Environment.NewLine}");
+                        Program.SafeLog($"runner auto restart after exit code={exitCode}");
                         StartRunner();
                     }
                     else
@@ -468,9 +488,7 @@ internal sealed class SteplerTrayForm : Form
     {
         update(_settings);
         SteplerSettingsStore.Save(_settings);
-        File.AppendAllText(
-            Program.LogPath(),
-            $"{DateTimeOffset.Now:o} settings saved {JsonSerializer.Serialize(_settings)}{Environment.NewLine}");
+        Program.SafeLog($"settings saved {JsonSerializer.Serialize(_settings)}");
 
         if (IsRunnerAlive())
         {
@@ -531,7 +549,7 @@ internal sealed class SteplerTrayForm : Form
         }
         catch (Exception error)
         {
-            File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} autostart error {error}{Environment.NewLine}");
+            Program.SafeLog($"autostart error {error}");
             MessageBox.Show(
                 "Не удалось изменить автозапуск. Подробности записаны в лог tray.",
                 "Stepler",
@@ -563,7 +581,7 @@ internal sealed class SteplerTrayForm : Form
         }
         catch (Exception error)
         {
-            File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} open log error {error}{Environment.NewLine}");
+            Program.SafeLog($"open log error {error}");
         }
     }
 
@@ -597,6 +615,15 @@ internal sealed class SteplerTrayForm : Form
         if (File.Exists(sideBySide))
         {
             return sideBySide;
+        }
+
+        if (_repoRoot is not null)
+        {
+            var releaseDist = Path.Combine(_repoRoot, "dist", "Stepler", "stepler-cli.exe");
+            if (File.Exists(releaseDist))
+            {
+                return releaseDist;
+            }
         }
 
         if (_repoRoot is not null)
@@ -772,7 +799,7 @@ internal static class SteplerSettingsStore
         }
         catch (Exception error)
         {
-            File.AppendAllText(Program.LogPath(), $"{DateTimeOffset.Now:o} settings load error {error}{Environment.NewLine}");
+            Program.SafeLog($"settings load error {error}");
             return new SteplerSettings();
         }
     }

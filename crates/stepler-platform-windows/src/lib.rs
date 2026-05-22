@@ -121,7 +121,6 @@ fn is_embedded_terminal_uia_focus(focus: &WindowsUiaFocusDiagnostics) -> bool {
     focus
         .class_name
         .eq_ignore_ascii_case("xterm-helper-textarea")
-        || focus.name.eq_ignore_ascii_case("Terminal input")
 }
 
 impl RegisteredHotkey {
@@ -639,12 +638,17 @@ impl TerminalClipboardShortcutMethod {
         app_class: &str,
         focused_class: &str,
     ) -> Result<TextContext, PlatformError> {
-        let left_text = read_terminal_left_text()?;
+        let captured = read_terminal_left_text()?;
+        let left_text = captured.text;
         let text_len = left_text.len();
         Ok(TextContext {
             app_id: format!("{app_class}/{focused_class}"),
             window_id: hwnd_id(foreground),
-            control_id: format!("terminal:{}", hwnd_id(focused)),
+            control_id: format!(
+                "terminal:{}:{}",
+                hwnd_id(focused),
+                captured.selection_kind.id()
+            ),
             text_snapshot: left_text,
             caret_range: TextRange::caret(text_len),
             selection_range: None,
@@ -673,7 +677,12 @@ impl TerminalClipboardShortcutMethod {
         let replacement =
             replace_range_text(&context.text_snapshot, plan.range, &plan.replacement_text)
                 .ok_or(PlatformError::PreflightFailed)?;
-        send_key_chord(&[VK_LSHIFT], VK_HOME);
+        match TerminalSelectionKind::from_control_id(&context.control_id) {
+            TerminalSelectionKind::LeftOfCaret => send_key_chord(&[VK_LSHIFT], VK_HOME),
+            TerminalSelectionKind::PreviousWord => {
+                send_key_chord(&[VK_CONTROL, VK_LSHIFT], VK_LEFT);
+            }
+        }
         std::thread::sleep(Duration::from_millis(40));
         restore_clipboard(clipboard_snapshot_from_text(&replacement))?;
         send_terminal_shortcut_with_english_layout(&[VK_CONTROL, VK_SHIFT], VK_V);
@@ -1905,6 +1914,24 @@ mod tests {
     }
 
     #[test]
+    fn classic_console_is_not_psreadline_passthrough_terminal() {
+        assert!(is_psreadline_passthrough_terminal_class(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass"
+        ));
+        assert!(!is_psreadline_passthrough_terminal_class(
+            "ConsoleWindowClass",
+            "ConsoleWindowClass"
+        ));
+    }
+
+    #[test]
+    fn cmd_terminal_title_is_detected() {
+        assert!(is_cmd_terminal_title("C:\\WINDOWS\\system32\\cmd.exe"));
+        assert!(!is_cmd_terminal_title("PowerShell 7 (x64)"));
+    }
+
+    #[test]
     fn context_capabilities_carry_method_binding() {
         let capabilities = Capabilities {
             can_replace_directly: true,
@@ -3035,7 +3062,20 @@ fn foreground_is_terminal() -> bool {
     let focused = focused_window(foreground).unwrap_or(foreground);
     let app_class = window_class_name(foreground).unwrap_or_default();
     let focused_class = window_class_name(focused).unwrap_or_default();
-    is_supported_terminal_class(&app_class, &focused_class)
+    let title = window_title(foreground).unwrap_or_default();
+    if is_cmd_terminal_title(&title) {
+        return false;
+    }
+    is_psreadline_passthrough_terminal_class(&app_class, &focused_class)
+}
+
+fn is_psreadline_passthrough_terminal_class(app_class: &str, focused_class: &str) -> bool {
+    app_class == "CASCADIA_HOSTING_WINDOW_CLASS"
+        || focused_class == "Windows.UI.Input.InputSite.WindowClass"
+}
+
+fn is_cmd_terminal_title(title: &str) -> bool {
+    title.to_ascii_lowercase().contains("cmd.exe")
 }
 
 fn is_word_target(target: &ForegroundTarget) -> bool {
@@ -4237,22 +4277,155 @@ try {
 "#;
 
 #[cfg(windows)]
-fn read_terminal_left_text() -> Result<String, PlatformError> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TerminalSelectionCapture {
+    text: String,
+    selection_kind: TerminalSelectionKind,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalSelectionKind {
+    LeftOfCaret,
+    PreviousWord,
+}
+
+#[cfg(windows)]
+impl TerminalSelectionKind {
+    fn id(self) -> &'static str {
+        match self {
+            Self::LeftOfCaret => "left",
+            Self::PreviousWord => "word",
+        }
+    }
+
+    fn from_control_id(control_id: &str) -> Self {
+        if control_id.ends_with(":word") {
+            Self::PreviousWord
+        } else {
+            Self::LeftOfCaret
+        }
+    }
+}
+
+#[cfg(windows)]
+fn read_terminal_left_text() -> Result<TerminalSelectionCapture, PlatformError> {
     let snapshot = capture_clipboard()?;
-    let sequence_before = snapshot.sequence_number;
-
-    send_key_chord(&[VK_LSHIFT], VK_HOME);
-    std::thread::sleep(Duration::from_millis(40));
-    send_terminal_shortcut_with_english_layout(&[VK_CONTROL, VK_SHIFT], VK_C);
-
-    let copied = wait_for_clipboard_text_change(sequence_before, Duration::from_millis(700));
+    let captured = copy_terminal_selection_checked(&snapshot, TerminalSelectionKind::LeftOfCaret)
+        .or_else(|| {
+            copy_terminal_selection_checked(&snapshot, TerminalSelectionKind::PreviousWord)
+        });
     let restore_result = restore_clipboard(snapshot);
-    send_key(VK_END);
+    clear_terminal_selection_state();
     restore_result?;
 
+    captured.ok_or_else(|| {
+        PlatformError::ReplacementUnavailableReason(String::from(
+            "terminal_capture_empty:left,word",
+        ))
+    })
+}
+
+#[cfg(windows)]
+fn copy_terminal_selection_checked(
+    snapshot: &ClipboardSnapshot,
+    selection_kind: TerminalSelectionKind,
+) -> Option<TerminalSelectionCapture> {
+    send_key(VK_END);
+    std::thread::sleep(Duration::from_millis(20));
+    match selection_kind {
+        TerminalSelectionKind::LeftOfCaret => send_key_chord(&[VK_LSHIFT], VK_HOME),
+        TerminalSelectionKind::PreviousWord => send_key_chord(&[VK_CONTROL, VK_LSHIFT], VK_LEFT),
+    }
+    std::thread::sleep(Duration::from_millis(60));
+
+    let marker = format!(
+        "__STEPLER_TERMINAL_COPY_MARKER_{}_{}__",
+        snapshot.sequence_number.unwrap_or(0),
+        selection_kind.id()
+    );
+    let copied = copy_current_terminal_selection_with_variants(&marker, selection_kind);
+    clear_terminal_selection_state();
+
     copied
+        .map(|text| text.trim_end_matches(['\r', '\n']).to_owned())
         .filter(|text| !text.trim().is_empty())
-        .ok_or(PlatformError::ReplacementUnavailable)
+        .filter(|text| !looks_like_hotkeyhandler_marker(text))
+        .map(|text| TerminalSelectionCapture {
+            text,
+            selection_kind,
+        })
+}
+
+#[cfg(windows)]
+fn copy_current_terminal_selection_with_variants(
+    marker: &str,
+    selection_kind: TerminalSelectionKind,
+) -> Option<String> {
+    for variant in TerminalCopyVariant::all() {
+        let _ = restore_clipboard(clipboard_snapshot_from_text(marker));
+        release_modifier_keys();
+        std::thread::sleep(Duration::from_millis(15));
+        variant.send();
+        let copied = wait_for_clipboard_text_different_from(marker, Duration::from_millis(450));
+        append_hotkey_signal_log(&format!(
+            "terminal_copy variant={} selection={} copied={}",
+            variant.id(),
+            selection_kind.id(),
+            copied
+                .as_ref()
+                .map(|text| text.encode_utf16().count().to_string())
+                .unwrap_or_else(|| String::from("none"))
+        ));
+        if copied.is_some() {
+            return copied;
+        }
+    }
+
+    None
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalCopyVariant {
+    CtrlShiftC,
+    CtrlInsert,
+    CtrlC,
+}
+
+#[cfg(windows)]
+impl TerminalCopyVariant {
+    fn all() -> [Self; 3] {
+        [Self::CtrlShiftC, Self::CtrlInsert, Self::CtrlC]
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::CtrlShiftC => "ctrl_shift_c",
+            Self::CtrlInsert => "ctrl_insert",
+            Self::CtrlC => "ctrl_c",
+        }
+    }
+
+    fn send(self) {
+        match self {
+            Self::CtrlShiftC => {
+                send_terminal_shortcut_with_english_layout(&[VK_CONTROL, VK_SHIFT], VK_C)
+            }
+            Self::CtrlInsert => send_key_chord_virtual(&[VK_CONTROL], VK_INSERT),
+            Self::CtrlC => send_terminal_shortcut_with_english_layout(&[VK_CONTROL], VK_C),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn clear_terminal_selection_state() {
+    release_modifier_keys();
+    send_key(VK_ESCAPE);
+    std::thread::sleep(Duration::from_millis(10));
+    send_key(VK_END);
+    std::thread::sleep(Duration::from_millis(10));
+    release_modifier_keys();
 }
 
 #[cfg(windows)]
@@ -4358,28 +4531,6 @@ fn preview_for_error(text: &str, limit: usize) -> String {
         preview.push_str("...");
     }
     preview.replace('\r', "\\r").replace('\n', "\\n")
-}
-
-#[cfg(windows)]
-fn wait_for_clipboard_text_change(
-    sequence_before: Option<u32>,
-    timeout: Duration,
-) -> Option<String> {
-    let started = Instant::now();
-    while started.elapsed() < timeout {
-        if let Ok(snapshot) = capture_clipboard() {
-            let sequence_changed = sequence_before
-                .zip(snapshot.sequence_number)
-                .is_none_or(|(before, after)| before != after);
-            if sequence_changed {
-                if let Some(text) = snapshot.text {
-                    return Some(text);
-                }
-            }
-        }
-        std::thread::sleep(Duration::from_millis(15));
-    }
-    None
 }
 
 #[cfg(windows)]
@@ -5936,6 +6087,8 @@ const VK_C: u32 = 0x43;
 const VK_V: u32 = 0x56;
 #[cfg(windows)]
 const VK_BACK: u32 = 0x08;
+#[cfg(windows)]
+const VK_ESCAPE: u32 = 0x1B;
 #[cfg(windows)]
 const VK_INSERT: u32 = 0x2D;
 #[cfg(windows)]

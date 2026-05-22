@@ -623,6 +623,7 @@ fn handle_hotkey_event<F, C, R, B>(
             eprintln!("{mode:?}: {error:?}");
         }
     }
+    release_modifier_keys();
 }
 
 fn set_active_correction_mode(mode: CorrectionMode) {

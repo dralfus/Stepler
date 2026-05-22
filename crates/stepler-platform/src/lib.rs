@@ -128,6 +128,7 @@ impl AppPolicy {
         self.app_matcher == "*"
             || matcher_matches(&self.app_matcher, &target.app_class)
             || matcher_matches(&self.app_matcher, &target.focused_class)
+            || title_matches(&self.app_matcher, &target.title)
             || target
                 .process_name
                 .as_ref()
@@ -140,6 +141,13 @@ fn matcher_matches(matcher: &str, value: &str) -> bool {
         || value
             .get(..matcher.len())
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case(matcher))
+}
+
+fn title_matches(matcher: &str, title: &str) -> bool {
+    matcher_matches(matcher, title)
+        || title
+            .to_ascii_lowercase()
+            .contains(&matcher.to_ascii_lowercase())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,6 +276,13 @@ pub fn default_app_policies() -> Vec<AppPolicy> {
             preferred_replace_methods: vec![MethodId::ConsoleBuffer],
             forbidden_methods: vec![MethodId::TerminalClipboardShortcut],
             allow_risky_methods: false,
+        },
+        AppPolicy {
+            app_matcher: String::from("cmd.exe"),
+            preferred_context_methods: vec![MethodId::TerminalClipboardShortcut],
+            preferred_replace_methods: vec![MethodId::TerminalClipboardShortcut],
+            forbidden_methods: vec![MethodId::PsReadLine],
+            allow_risky_methods: true,
         },
         AppPolicy {
             app_matcher: String::from("CASCADIA_HOSTING_WINDOW_CLASS"),
@@ -471,6 +486,28 @@ mod tests {
         assert_eq!(
             error,
             ResolveError::ForbiddenByPolicy(MethodId::TerminalClipboardShortcut)
+        );
+    }
+
+    #[test]
+    fn resolver_allows_terminal_clipboard_for_cmd_inside_windows_terminal() {
+        let resolver = MethodResolver::default();
+        let mut target = target(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass",
+        );
+        target.title = String::from("C:\\WINDOWS\\system32\\cmd.exe");
+        let probes = vec![MethodProbe::risky(
+            MethodId::TerminalClipboardShortcut,
+            "terminal shortcut",
+        )];
+
+        let decision = resolver.resolve(&target, &probes).unwrap();
+
+        assert_eq!(decision.context_method, MethodId::TerminalClipboardShortcut);
+        assert_eq!(
+            decision.replacement_method,
+            MethodId::TerminalClipboardShortcut
         );
     }
 

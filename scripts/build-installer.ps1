@@ -1,6 +1,8 @@
 param(
     [string]$Configuration = "Release",
-    [string]$Runtime = "win-x64"
+    [string]$Runtime = "win-x64",
+    [string]$BuildVersion = "",
+    [string]$FileVersion = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,7 +39,7 @@ if (-not $isccCandidates) {
 $isccPath = $isccCandidates[0]
 
 Write-Host "Building release payload..." -ForegroundColor Cyan
-& $releaseScript -Configuration $Configuration -Runtime $Runtime -DistDir $distDir
+& $releaseScript -Configuration $Configuration -Runtime $Runtime -DistDir $distDir -BuildVersion $BuildVersion -FileVersion $FileVersion
 
 $exePath = Join-Path $distDir "Stepler.exe"
 if (-not (Test-Path $exePath)) {

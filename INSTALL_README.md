@@ -1,59 +1,68 @@
-# Stepler Installation Guide
+# Установка Stepler
 
-## Installer
+## Инсталлятор
 
-Build the installer:
+Собрать инсталлятор:
 
 ```powershell
 cd F:\distr\system\Stepler
 .\scripts\build-installer.ps1
 ```
 
-The output is:
+Результат:
 
 ```text
-SetupOutput\SteplerSetup-0.1.0.exe
+SetupOutput\SteplerSetup-<version>.exe
 ```
 
-Run the installer as administrator. It installs Stepler to:
+По умолчанию версия получает штамп сборки, например `0.1.0-alpha.20260523.1234`.
+Эта же версия отображается в окне управления Stepler над статусом и записывается в `BUILD_INFO.txt`.
+
+Можно задать версию вручную:
+
+```powershell
+.\scripts\build-installer.ps1 -BuildVersion 0.1.0-alpha.20260523.1234
+```
+
+Запустите инсталлятор от администратора. Он устанавливает Stepler в:
 
 ```text
 C:\Program Files\Stepler
 ```
 
-## What The Installer Does
+## Что Делает Инсталлятор
 
-- copies `Stepler.exe`, `stepler-cli.exe`, runtime files, and `scripts\Stepler.PSReadLine.ps1`;
-- creates Start Menu and optional Desktop shortcuts;
-- registers `App Paths\Stepler.exe`, so `Stepler.exe` can be resolved by Windows;
-- closes old `Stepler.exe`, `Stepler.Tray.exe`, and `stepler-cli.exe` processes before update;
-- removes the previous installed version before installing the new one;
-- offers to launch Stepler after install.
+- копирует `Stepler.exe`, `stepler-cli.exe`, runtime-файлы, `BUILD_INFO.txt` и `scripts\Stepler.PSReadLine.ps1`;
+- создает ярлыки в Start Menu и, опционально, на Desktop;
+- регистрирует `App Paths\Stepler.exe`, чтобы Windows могла находить `Stepler.exe`;
+- закрывает старые процессы `Stepler.exe`, `Stepler.Tray.exe` и `stepler-cli.exe` перед обновлением;
+- удаляет предыдущую установленную версию перед установкой новой;
+- предлагает запустить Stepler после установки.
 
-## Runtime Files
+## Runtime-Файлы
 
-Settings:
+Настройки:
 
 ```text
 %APPDATA%\Stepler\settings.json
 ```
 
-Logs:
+Логи:
 
 ```text
 %LOCALAPPDATA%\Stepler\logs\Stepler.Tray.log
 %LOCALAPPDATA%\Stepler\logs\stepler_hotkey_log.jsonl
 ```
 
-## PowerShell Adapter
+## PowerShell-Адаптер
 
-The installer copies the PSReadLine adapter to:
+Инсталлятор копирует PSReadLine-адаптер в:
 
 ```text
 C:\Program Files\Stepler\scripts\Stepler.PSReadLine.ps1
 ```
 
-Manual load in PowerShell:
+Ручная загрузка в PowerShell:
 
 ```powershell
 Import-Module PSReadLine
@@ -61,14 +70,14 @@ Import-Module PSReadLine
 Get-SteplerPsReadLineStatus
 ```
 
-## Requirements
+## Требования
 
 - Windows 10/11.
-- .NET 9 Desktop Runtime, because the current installer is framework-dependent.
-- Microsoft Word is optional and only needed for Word COM support.
+- .NET 9 Desktop Runtime, потому что текущий инсталлятор framework-dependent.
+- Microsoft Word опционален и нужен только для Word COM support.
 
-## Uninstall
+## Удаление
 
-Use Windows Settings -> Apps -> Installed apps -> Stepler -> Uninstall.
+Используйте Windows Settings -> Apps -> Installed apps -> Stepler -> Uninstall.
 
-The uninstaller removes installed files and shortcuts. User settings and logs under `%APPDATA%`/`%LOCALAPPDATA%` are intentionally left for diagnostics and future reinstall continuity.
+Деинсталлятор удаляет установленные файлы и ярлыки. Пользовательские настройки и логи в `%APPDATA%`/`%LOCALAPPDATA%` намеренно остаются для диагностики и последующих переустановок.

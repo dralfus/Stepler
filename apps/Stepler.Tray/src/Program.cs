@@ -118,6 +118,7 @@ internal sealed class SteplerTrayForm : Form
     private readonly NotifyIcon _notifyIcon;
     private readonly Icon _appIcon;
     private readonly string? _repoRoot;
+    private readonly ToolStripMenuItem _versionItem;
     private readonly ToolStripMenuItem _statusItem;
     private readonly ToolStripMenuItem _toggleItem;
     private readonly ToolStripMenuItem _restartItem;
@@ -152,6 +153,11 @@ internal sealed class SteplerTrayForm : Form
         Opacity = 0;
 
         _appIcon = SteplerIcon.Create();
+
+        _versionItem = new ToolStripMenuItem($"Версия: {Application.ProductVersion}")
+        {
+            Enabled = false,
+        };
 
         _statusItem = new ToolStripMenuItem("Статус: запуск...")
         {
@@ -204,12 +210,13 @@ internal sealed class SteplerTrayForm : Form
         _openTrayLogItem.Click += (_, _) => OpenFileInNotepad(Program.LogPath());
 
         var showItem = new ToolStripMenuItem("Показать окно управления");
-        showItem.Click += (_, _) => ShowControlWindow();
+        showItem.Click += (_, _) => BeginInvoke((Action)ShowControlWindow);
 
         var exitItem = new ToolStripMenuItem("Выход");
         exitItem.Click += (_, _) => Close();
 
         var menu = new ContextMenuStrip();
+        menu.Items.Add(_versionItem);
         menu.Items.Add(_statusItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_toggleItem);
@@ -264,8 +271,7 @@ internal sealed class SteplerTrayForm : Form
         if (_controlWindow is { IsDisposed: false })
         {
             _controlWindow.UpdateStatus(_statusItem.Text ?? "Stepler");
-            _controlWindow.Show();
-            _controlWindow.Activate();
+            ShowAndFocusControlWindow(_controlWindow);
             return;
         }
 
@@ -276,7 +282,21 @@ internal sealed class SteplerTrayForm : Form
             OpenHotkeyLog,
             () => OpenFileInNotepad(Program.LogPath()),
             Close);
-        _controlWindow.Show();
+        ShowAndFocusControlWindow(_controlWindow);
+    }
+
+    private static void ShowAndFocusControlWindow(ControlWindow window)
+    {
+        if (window.WindowState == FormWindowState.Minimized)
+        {
+            window.WindowState = FormWindowState.Normal;
+        }
+
+        window.Show();
+        window.TopMost = true;
+        window.TopMost = false;
+        window.BringToFront();
+        window.Activate();
     }
 
     private void StartRunner()

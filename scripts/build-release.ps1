@@ -1,7 +1,9 @@
 param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
-    [string]$DistDir = ""
+    [string]$DistDir = "",
+    [string]$BuildVersion = "",
+    [string]$FileVersion = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,8 +16,26 @@ if ([string]::IsNullOrWhiteSpace($DistDir)) {
     $DistDir = Join-Path $repoRoot "dist\Stepler"
 }
 
+if ([string]::IsNullOrWhiteSpace($BuildVersion)) {
+    $BuildVersion = "0.1.0-alpha.$(Get-Date -Format 'yyyyMMdd.HHmm')"
+}
+
+if ([string]::IsNullOrWhiteSpace($FileVersion)) {
+    $daysSinceEpoch = [int]([DateTime]::UtcNow.Date - [DateTime]'2026-01-01').TotalDays
+    if ($daysSinceEpoch -lt 0) {
+        $daysSinceEpoch = 0
+    }
+    if ($daysSinceEpoch -gt 65535) {
+        $daysSinceEpoch = $daysSinceEpoch % 65535
+    }
+    $FileVersion = "0.1.0.$daysSinceEpoch"
+}
+
 $distPath = [System.IO.Path]::GetFullPath($DistDir)
 $distScriptsPath = Join-Path $distPath "scripts"
+
+Write-Host "Build version: $BuildVersion"
+Write-Host "File version:  $FileVersion"
 
 Write-Host "Building stepler-cli ($Configuration)..."
 cargo build -p stepler-cli --release
@@ -35,7 +55,12 @@ dotnet publish ".\apps\Stepler.Tray\Stepler.Tray.csproj" `
     -c $Configuration `
     -r $Runtime `
     --self-contained false `
-    -o $distPath
+    -o $distPath `
+    -p:Version=$BuildVersion `
+    -p:InformationalVersion=$BuildVersion `
+    -p:FileVersion=$FileVersion `
+    -p:AssemblyVersion=0.1.0.0 `
+    -p:IncludeSourceRevisionInInformationalVersion=false
 
 Write-Host "Copying runtime files..."
 New-Item -ItemType Directory -Force -Path $distPath | Out-Null
@@ -44,8 +69,23 @@ New-Item -ItemType Directory -Force -Path $distScriptsPath | Out-Null
 Copy-Item ".\target\release\stepler-cli.exe" (Join-Path $distPath "stepler-cli.exe") -Force
 Copy-Item ".\scripts\Stepler.PSReadLine.ps1" (Join-Path $distScriptsPath "Stepler.PSReadLine.ps1") -Force
 
+$buildInfo = @"
+Stepler build
+
+BuildVersion: $BuildVersion
+FileVersion: $FileVersion
+Configuration: $Configuration
+Runtime: $Runtime
+BuiltAt: $((Get-Date).ToString("yyyy-MM-dd HH:mm:ss zzz"))
+"@
+
+Set-Content -Path (Join-Path $distPath "BUILD_INFO.txt") -Value $buildInfo -Encoding UTF8
+
 $readme = @"
 Stepler alpha build
+
+Version:
+  $BuildVersion
 
 Run:
   Stepler.exe
@@ -54,6 +94,7 @@ Included:
   Stepler.exe              tray-only Windows UI
   stepler-cli.exe          hotkey runner and diagnostics
   scripts\Stepler.PSReadLine.ps1
+  BUILD_INFO.txt
 
 Logs:
   %LOCALAPPDATA%\Stepler\logs\Stepler.Tray.log

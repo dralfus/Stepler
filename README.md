@@ -12,6 +12,52 @@ Stepler - Windows-утилита для исправления текста, н�
 
 Для PowerShell используется PSReadLine adapter. После запуска tray Stepler автоматически добавляет загрузчик adapter-а в user profile PowerShell; новые окна PowerShell должны работать без ручной команды `. scripts\Stepler.PSReadLine.ps1`.
 
+## Требования для PowerShell
+
+PowerShell не поддерживается через общий terminal clipboard fallback. Для PowerShell используется отдельный безопасный `PSReadLine` adapter: он читает текущую строку через `PSConsoleReadLine.GetBufferState`, строит план замены через `stepler-cli psreadline-plan` и применяет результат через `RevertLine` + `Insert`.
+
+Чтобы `Pause` и `Ctrl+Pause` работали в PowerShell/Windows Terminal, должны выполняться условия:
+
+- В интерактивной сессии PowerShell должен быть загружен модуль `PSReadLine`.
+- Скрипт `scripts\Stepler.PSReadLine.ps1` должен быть загружен в текущую сессию PowerShell. Tray Stepler пытается автоматически добавить загрузку в PowerShell profile пользователя.
+- Execution policy должна разрешать запуск profile scripts. Обычно достаточно:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
+- После изменения profile или execution policy уже открытые окна PowerShell нужно перезапустить или вручную выполнить:
+
+```powershell
+. $PROFILE
+Get-SteplerPsReadLineStatus
+```
+
+Проверка состояния:
+
+```powershell
+Get-ExecutionPolicy -List
+$PROFILE
+Test-Path $PROFILE
+Get-SteplerPsReadLineStatus
+Get-PSReadLineKeyHandler -Bound |
+  Where-Object { $_.Key -match 'Pause|F11|F12' -or $_.BriefDescription -match 'Stepler' }
+```
+
+Если `$PROFILE` указывает в `OneDrive\Documents`, а Windows Defender Controlled Folder Access включен, Stepler может быть заблокирован при попытке создать или изменить profile. В этом случае Windows Security показывает уведомление о запрете изменения защищенной папки. Возможные решения:
+
+- создать `$PROFILE` вручную и добавить загрузку `Stepler.PSReadLine.ps1`;
+- разрешить `Stepler.exe` в Windows Security -> Virus & threat protection -> Ransomware protection -> Allow an app through Controlled folder access;
+- отключить OneDrive backup/sync для папки Documents, чтобы PowerShell profile вернулся в обычный локальный путь.
+
+Ручная загрузка adapter-а в текущем окне PowerShell:
+
+```powershell
+Import-Module PSReadLine
+. "D:\distr\System\Stepler\Stepler\dist\Stepler\scripts\Stepler.PSReadLine.ps1"
+Get-SteplerPsReadLineStatus
+```
+
 ## Умная конвертация
 
 `Pause` делает прямое преобразование раскладки для выбранного фрагмента: например `k.,jdm` -> `любовь`, `привет мир` -> `ghbdtn vbh`.

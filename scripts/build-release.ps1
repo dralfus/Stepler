@@ -68,6 +68,7 @@ New-Item -ItemType Directory -Force -Path $distScriptsPath | Out-Null
 
 Copy-Item ".\target\release\stepler-cli.exe" (Join-Path $distPath "stepler-cli.exe") -Force
 Copy-Item ".\scripts\Stepler.PSReadLine.ps1" (Join-Path $distScriptsPath "Stepler.PSReadLine.ps1") -Force
+Copy-Item ".\scripts\Stepler.SSHReadline.bash" (Join-Path $distScriptsPath "Stepler.SSHReadline.bash") -Force
 
 $buildInfo = @"
 Stepler build
@@ -94,6 +95,7 @@ Included:
   Stepler.exe              tray-only Windows UI
   stepler-cli.exe          hotkey runner and diagnostics
   scripts\Stepler.PSReadLine.ps1
+  scripts\Stepler.SSHReadline.bash
   BUILD_INFO.txt
 
 Logs:
@@ -106,6 +108,12 @@ PowerShell PSReadLine adapter:
   Manual fallback:
     Import-Module PSReadLine
     . <this folder>\scripts\Stepler.PSReadLine.ps1
+
+SSH Bash/readline adapter:
+  Copy scripts\Stepler.SSHReadline.bash to the Linux host and source it from ~/.bashrc.
+  Set STEPLER_ENABLE_SSH_REMOTE_ADAPTER=1 before starting Stepler to forward Pause/Ctrl+Pause
+  as private readline sequences in SSH tabs. Without this opt-in Stepler only suppresses the
+  unsafe terminal hotkeys.
 
 Main shortcuts:
   Pause                    convert current word/selection

@@ -694,20 +694,49 @@ internal static class PowerShellProfileManager
     {
         foreach (var profilePath in ProfilePaths())
         {
-            EnsureProfileBlock(profilePath, adapterPath);
+            try
+            {
+                EnsureProfileBlock(profilePath, adapterPath);
+            }
+            catch (Exception error)
+            {
+                Program.SafeLog($"psreadline profile path skipped path={profilePath} error={error.GetType().Name}: {error.Message}");
+            }
         }
     }
 
     private static IEnumerable<string> ProfilePaths()
     {
-        var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-        if (string.IsNullOrWhiteSpace(documents))
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in CandidateProfilePaths())
         {
-            yield break;
+            if (seen.Add(path))
+            {
+                yield return path;
+            }
+        }
+    }
+
+    private static IEnumerable<string> CandidateProfilePaths()
+    {
+        var myDocuments = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        if (!string.IsNullOrWhiteSpace(myDocuments))
+        {
+            yield return Path.Combine(myDocuments, "PowerShell", "profile.ps1");
+            yield return Path.Combine(myDocuments, "PowerShell", "Microsoft.PowerShell_profile.ps1");
+            yield return Path.Combine(myDocuments, "WindowsPowerShell", "profile.ps1");
+            yield return Path.Combine(myDocuments, "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1");
         }
 
-        yield return Path.Combine(documents, "PowerShell", "profile.ps1");
-        yield return Path.Combine(documents, "WindowsPowerShell", "profile.ps1");
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(userProfile))
+        {
+            var documents = Path.Combine(userProfile, "Documents");
+            yield return Path.Combine(documents, "PowerShell", "profile.ps1");
+            yield return Path.Combine(documents, "PowerShell", "Microsoft.PowerShell_profile.ps1");
+            yield return Path.Combine(documents, "WindowsPowerShell", "profile.ps1");
+            yield return Path.Combine(documents, "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1");
+        }
     }
 
     private static void EnsureProfileBlock(string profilePath, string adapterPath)

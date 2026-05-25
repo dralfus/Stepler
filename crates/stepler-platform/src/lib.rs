@@ -112,6 +112,19 @@ impl MethodProbe {
             reason: reason.into(),
         }
     }
+
+    pub fn unsupported(method_id: MethodId, reason: impl Into<String>) -> Self {
+        Self {
+            method_id,
+            safety: ProbeSafety::Unsupported,
+            confidence: 0,
+            requires_clipboard: false,
+            requires_focus_stability: false,
+            can_preflight: false,
+            can_verify: false,
+            reason: reason.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -304,6 +317,27 @@ pub fn default_app_policies() -> Vec<AppPolicy> {
             forbidden_methods: vec![
                 MethodId::Win32EditMessages,
                 MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationText,
+                MethodId::TerminalClipboardShortcut,
+                MethodId::ClipboardSelection,
+                MethodId::SendInput,
+            ],
+            allow_risky_methods: false,
+        },
+        AppPolicy {
+            app_matcher: String::from("Chrome_Yandex_WidgetWin"),
+            preferred_context_methods: vec![
+                MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationEditableText,
+            ],
+            preferred_replace_methods: vec![
+                MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationEditableText,
+            ],
+            forbidden_methods: vec![
+                MethodId::Win32EditMessages,
                 MethodId::UiAutomationText,
                 MethodId::TerminalClipboardShortcut,
                 MethodId::ClipboardSelection,
@@ -576,6 +610,24 @@ mod tests {
 
         assert_eq!(decision.context_method, MethodId::WebKeyboardSelection);
         assert_eq!(decision.replacement_method, MethodId::WebKeyboardSelection);
+    }
+
+    #[test]
+    fn resolver_allows_uia_document_for_yandex_browser_policy() {
+        let resolver = MethodResolver::default();
+        let target = target("Chrome_Yandex_WidgetWin_1", "Chrome_Yandex_WidgetWin_1");
+        let probes = vec![MethodProbe::safe(
+            MethodId::UiAutomationDocumentText,
+            "document text",
+        )];
+
+        let decision = resolver.resolve(&target, &probes).unwrap();
+
+        assert_eq!(decision.context_method, MethodId::UiAutomationDocumentText);
+        assert_eq!(
+            decision.replacement_method,
+            MethodId::UiAutomationDocumentText
+        );
     }
 
     #[test]

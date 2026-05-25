@@ -699,6 +699,22 @@ impl TerminalClipboardShortcutMethod {
 
 #[cfg(windows)]
 #[derive(Debug, Default, Clone, Copy)]
+struct SshTerminalMethod;
+
+#[cfg(windows)]
+impl SshTerminalMethod {
+    fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
+        is_ssh_terminal_target(target).then(|| {
+            MethodProbe::unsupported(
+                MethodId::SshTerminal,
+                "ssh terminal detected; no safe local line-editing API",
+            )
+        })
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Default, Clone, Copy)]
 struct ClipboardSelectionMethod;
 
 #[cfg(windows)]
@@ -1932,6 +1948,52 @@ mod tests {
     }
 
     #[test]
+    fn ssh_terminal_title_is_detected_without_matching_powershell() {
+        assert!(is_ssh_terminal_title("vpnuser"));
+        assert!(is_ssh_terminal_title("root@example"));
+        assert!(is_ssh_terminal_title("ssh user@example"));
+        assert!(!is_ssh_terminal_title("Windows PowerShell"));
+        assert!(!is_ssh_terminal_title("PowerShell 7 (x64)"));
+        assert!(!is_ssh_terminal_title("C:\\WINDOWS\\system32\\cmd.exe"));
+    }
+
+    #[test]
+    fn terminal_passthrough_keeps_only_local_powershell_forwardable() {
+        assert_eq!(
+            terminal_passthrough_for_window(
+                "CASCADIA_HOSTING_WINDOW_CLASS",
+                "Windows.UI.Input.InputSite.WindowClass",
+                "Windows PowerShell"
+            ),
+            TerminalPassthrough::PsReadLine
+        );
+        assert_eq!(
+            terminal_passthrough_for_window(
+                "CASCADIA_HOSTING_WINDOW_CLASS",
+                "Windows.UI.Input.InputSite.WindowClass",
+                "vpnuser"
+            ),
+            TerminalPassthrough::Ssh
+        );
+        assert_eq!(
+            terminal_passthrough_for_window(
+                "CASCADIA_HOSTING_WINDOW_CLASS",
+                "Windows.UI.Input.InputSite.WindowClass",
+                "PowerShell ssh user@example"
+            ),
+            TerminalPassthrough::Ssh
+        );
+        assert_eq!(
+            terminal_passthrough_for_window(
+                "CASCADIA_HOSTING_WINDOW_CLASS",
+                "Windows.UI.Input.InputSite.WindowClass",
+                ""
+            ),
+            TerminalPassthrough::UnknownTerminal
+        );
+    }
+
+    #[test]
     fn context_capabilities_carry_method_binding() {
         let capabilities = Capabilities {
             can_replace_directly: true,
@@ -2027,6 +2089,25 @@ mod tests {
         assert_eq!(probe.method_id, MethodId::TerminalClipboardShortcut);
         assert_eq!(probe.safety, stepler_platform::ProbeSafety::Risky);
         assert!(probe.requires_clipboard);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ssh_terminal_method_probes_ssh_title_as_unsupported() {
+        let target = ForegroundTarget {
+            app_class: String::from("CASCADIA_HOSTING_WINDOW_CLASS"),
+            focused_class: String::from("Windows.UI.Input.InputSite.WindowClass"),
+            title: String::from("vpnuser"),
+            process_name: None,
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("hwnd:2"),
+        };
+
+        let probe = SshTerminalMethod.probe(&target).unwrap();
+
+        assert_eq!(probe.method_id, MethodId::SshTerminal);
+        assert_eq!(probe.safety, stepler_platform::ProbeSafety::Unsupported);
+        assert!(!probe.requires_clipboard);
     }
 
     #[cfg(windows)]
@@ -2139,6 +2220,24 @@ mod tests {
         assert_eq!(probe.method_id, MethodId::WebKeyboardSelection);
         assert_eq!(probe.safety, stepler_platform::ProbeSafety::Safe);
         assert!(probe.requires_clipboard);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn yandex_chrome_widget_is_browser_like() {
+        let target = ForegroundTarget {
+            app_class: String::from("Chrome_Yandex_WidgetWin_1"),
+            focused_class: String::from("Chrome_Yandex_WidgetWin_1"),
+            title: String::from("OneDrive"),
+            process_name: Some(String::from("browser")),
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("hwnd:2"),
+        };
+
+        assert!(is_browser_like_target(&target));
+        assert!(WebKeyboardSelectionMethod.probe(&target).is_some());
+        assert!(ClipboardSelectionMethod.probe(&target).is_none());
+        assert!(SendInputMethod.probe(&target).is_none());
     }
 
     #[cfg(windows)]
@@ -2861,6 +2960,9 @@ fn windows_method_probes(target: &ForegroundTarget) -> Vec<MethodProbe> {
     if let Some(probe) = ConsoleBufferMethod.probe(target) {
         probes.push(probe);
     }
+    if let Some(probe) = SshTerminalMethod.probe(target) {
+        probes.push(probe);
+    }
     if let Some(probe) = WordComMethod.probe(target) {
         probes.push(probe);
     } else if let Some(probe) = TerminalClipboardShortcutMethod.probe(target) {
@@ -3055,18 +3157,50 @@ fn is_supported_terminal_class(app_class: &str, focused_class: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn foreground_is_terminal() -> bool {
+fn foreground_terminal_passthrough() -> TerminalPassthrough {
+    let Ok(foreground) = foreground_hwnd() else {
+        return TerminalPassthrough::None;
+    };
+    let focused = focused_window(foreground).unwrap_or(foreground);
+    let app_class = window_class_name(foreground).unwrap_or_default();
+    let focused_class = window_class_name(focused).unwrap_or_default();
+    let title = window_title(foreground).unwrap_or_default();
+    let passthrough = terminal_passthrough_for_window(&app_class, &focused_class, &title);
+    append_hotkey_signal_log(&format!(
+        "hook_terminal_detect kind={passthrough:?} app={app_class:?} focused={focused_class:?} title={title:?}"
+    ));
+    passthrough
+}
+
+fn terminal_passthrough_for_window(
+    app_class: &str,
+    focused_class: &str,
+    title: &str,
+) -> TerminalPassthrough {
+    if is_cmd_terminal_title(&title) {
+        return TerminalPassthrough::None;
+    }
+    if is_ssh_terminal_title(&title) {
+        return TerminalPassthrough::Ssh;
+    }
+    if is_psreadline_passthrough_terminal_class(&app_class, &focused_class) {
+        if is_local_psreadline_terminal_title(&title) {
+            return TerminalPassthrough::PsReadLine;
+        }
+        return TerminalPassthrough::UnknownTerminal;
+    }
+    TerminalPassthrough::None
+}
+
+#[cfg(windows)]
+fn terminal_focus_is_supported() -> bool {
     let Ok(foreground) = foreground_hwnd() else {
         return false;
     };
     let focused = focused_window(foreground).unwrap_or(foreground);
     let app_class = window_class_name(foreground).unwrap_or_default();
     let focused_class = window_class_name(focused).unwrap_or_default();
-    let title = window_title(foreground).unwrap_or_default();
-    if is_cmd_terminal_title(&title) {
-        return false;
-    }
-    is_psreadline_passthrough_terminal_class(&app_class, &focused_class)
+    is_supported_terminal_class(&app_class, &focused_class)
 }
 
 fn is_psreadline_passthrough_terminal_class(app_class: &str, focused_class: &str) -> bool {
@@ -3074,8 +3208,52 @@ fn is_psreadline_passthrough_terminal_class(app_class: &str, focused_class: &str
         || focused_class == "Windows.UI.Input.InputSite.WindowClass"
 }
 
+fn is_ssh_terminal_target(target: &ForegroundTarget) -> bool {
+    is_psreadline_passthrough_terminal_class(&target.app_class, &target.focused_class)
+        && is_ssh_terminal_title(&target.title)
+}
+
 fn is_cmd_terminal_title(title: &str) -> bool {
     title.to_ascii_lowercase().contains("cmd.exe")
+}
+
+fn is_local_psreadline_terminal_title(title: &str) -> bool {
+    let title = title.to_ascii_lowercase();
+    if title.trim().is_empty()
+        || title.contains('@')
+        || title.contains("ssh")
+        || title.contains("vpn")
+        || title.contains("root")
+        || title.contains("linux")
+        || title.contains("ubuntu")
+        || title.contains("debian")
+    {
+        return false;
+    }
+
+    title == "windows powershell"
+        || title.starts_with("windows powershell ")
+        || title.starts_with("powershell ")
+        || title.starts_with("pwsh ")
+        || title.starts_with("powershell 7")
+}
+
+fn is_ssh_terminal_title(title: &str) -> bool {
+    let title = title.trim().to_ascii_lowercase();
+    if title.is_empty()
+        || is_local_psreadline_terminal_title(&title)
+        || is_cmd_terminal_title(&title)
+    {
+        return false;
+    }
+
+    title.contains("ssh")
+        || title.contains('@')
+        || title.starts_with("vpn")
+        || title.starts_with("root")
+        || title.starts_with("ubuntu")
+        || title.starts_with("debian")
+        || title.starts_with("linux")
 }
 
 fn is_word_target(target: &ForegroundTarget) -> bool {
@@ -3130,12 +3308,14 @@ fn is_browser_like_class_or_process(
     let process_name = process_name.unwrap_or_default().to_ascii_lowercase();
 
     app_class.starts_with("chrome_widgetwin")
+        || app_class.starts_with("chrome_yandex_widgetwin")
         || focused_class.starts_with("chrome_widgetwin")
+        || focused_class.starts_with("chrome_yandex_widgetwin")
         || app_class == "mozillawindowclass"
         || focused_class == "mozillawindowclass"
         || matches!(
             process_name.as_str(),
-            "chrome" | "msedge" | "firefox" | "codex" | "code" | "windsurf"
+            "chrome" | "browser" | "msedge" | "firefox" | "codex" | "code" | "windsurf"
         )
 }
 
@@ -4695,6 +4875,15 @@ fn send_terminal_shortcut_with_english_layout(modifiers: &[u32], key: u32) {
 }
 
 #[cfg(windows)]
+fn send_ssh_terminal_sequence(mode: stepler_core::CorrectionMode) {
+    let sequence = match mode {
+        stepler_core::CorrectionMode::Pause => "\u{1b}[777;1u",
+        stepler_core::CorrectionMode::ScrollLock => "\u{1b}[777;2u",
+    };
+    let _ = send_unicode_text(sequence);
+}
+
+#[cfg(windows)]
 fn send_key_chord_with_mode(modifiers: &[u32], key: u32, mode: KeyboardInputMode) {
     let mut events = Vec::new();
     events.extend(
@@ -5755,6 +5944,14 @@ enum TerminalPauseHandling {
     TranslateToCtrlF12,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalPassthrough {
+    None,
+    PsReadLine,
+    Ssh,
+    UnknownTerminal,
+}
+
 #[cfg(windows)]
 fn should_suppress_keyboard_companion_event(vk_code: u32) -> bool {
     KEYBOARD_CONTROL_STATE
@@ -5834,21 +6031,78 @@ unsafe extern "system" fn low_level_keyboard_proc(
     if !(is_down || is_up) {
         return CallNextHookEx(0, code, wparam, lparam);
     }
-    if matches!(vk_code, VK_PAUSE | VK_CANCEL) && foreground_is_terminal() {
-        let handling = KEYBOARD_CONTROL_STATE
-            .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
-            .lock()
-            .ok()
-            .map(|mut state| state.handle_terminal_pause_key(vk_code, is_down, is_up))
-            .unwrap_or(TerminalPauseHandling::PassThrough);
-        match handling {
-            TerminalPauseHandling::PassThrough => {
-                return CallNextHookEx(0, code, wparam, lparam);
-            }
-            TerminalPauseHandling::Suppress => return 1,
-            TerminalPauseHandling::TranslateToCtrlF12 => {
-                send_key_virtual(VK_F12);
-                return 1;
+    if matches!(vk_code, VK_PAUSE | VK_CANCEL) {
+        let terminal_passthrough = foreground_terminal_passthrough();
+        if terminal_passthrough == TerminalPassthrough::None && terminal_focus_is_supported() {
+            append_hotkey_signal_log(&format!(
+                "hook_terminal_conservative_suppressed vk={vk_code} down={is_down} up={is_up}"
+            ));
+            return 1;
+        }
+        if terminal_passthrough == TerminalPassthrough::Ssh
+            && is_down
+            && env_flag_enabled("STEPLER_ENABLE_SSH_REMOTE_ADAPTER", false)
+        {
+            let mode = KEYBOARD_CONTROL_STATE
+                .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
+                .lock()
+                .ok()
+                .map(|mut state| {
+                    let ctrl_down = state.left_ctrl_down || state.right_ctrl_down;
+                    state.pause_down = true;
+                    state.left_ctrl_used |= state.left_ctrl_down;
+                    state.right_ctrl_used |= state.right_ctrl_down;
+                    if ctrl_down {
+                        stepler_core::CorrectionMode::ScrollLock
+                    } else {
+                        stepler_core::CorrectionMode::Pause
+                    }
+                })
+                .unwrap_or(stepler_core::CorrectionMode::Pause);
+            append_hotkey_signal_log(&format!(
+                "hook_ssh_terminal_forwarded mode={mode:?} vk={vk_code} down={is_down} up={is_up}"
+            ));
+            send_ssh_terminal_sequence(mode);
+            return 1;
+        }
+        if matches!(
+            terminal_passthrough,
+            TerminalPassthrough::Ssh | TerminalPassthrough::UnknownTerminal
+        ) {
+            append_hotkey_signal_log(&format!(
+                "hook_terminal_suppressed kind={terminal_passthrough:?} vk={vk_code} down={is_down} up={is_up}"
+            ));
+            let _ = KEYBOARD_CONTROL_STATE
+                .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
+                .lock()
+                .map(|mut state| {
+                    if is_down {
+                        state.pause_down = true;
+                        state.left_ctrl_used |= state.left_ctrl_down;
+                        state.right_ctrl_used |= state.right_ctrl_down;
+                    }
+                    if is_up {
+                        state.pause_down = false;
+                    }
+                });
+            return 1;
+        }
+        if terminal_passthrough == TerminalPassthrough::PsReadLine {
+            let handling = KEYBOARD_CONTROL_STATE
+                .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
+                .lock()
+                .ok()
+                .map(|mut state| state.handle_terminal_pause_key(vk_code, is_down, is_up))
+                .unwrap_or(TerminalPauseHandling::PassThrough);
+            match handling {
+                TerminalPauseHandling::PassThrough => {
+                    return CallNextHookEx(0, code, wparam, lparam);
+                }
+                TerminalPauseHandling::Suppress => return 1,
+                TerminalPauseHandling::TranslateToCtrlF12 => {
+                    send_key_virtual(VK_F12);
+                    return 1;
+                }
             }
         }
     }

@@ -33,6 +33,7 @@ pub type SelectionRange = TextRange;
 pub enum MethodId {
     Win32EditMessages,
     TerminalClipboardShortcut,
+    SshTerminal,
     ConsoleBuffer,
     PsReadLine,
     WordCom,
@@ -49,6 +50,7 @@ impl MethodId {
         match self {
             Self::Win32EditMessages => "win32_edit_messages",
             Self::TerminalClipboardShortcut => "terminal_clipboard_shortcut",
+            Self::SshTerminal => "ssh_terminal",
             Self::ConsoleBuffer => "console_buffer",
             Self::PsReadLine => "psreadline",
             Self::WordCom => "word_com",

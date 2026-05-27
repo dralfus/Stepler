@@ -280,6 +280,9 @@ pub fn release_modifier_keys() {
         VK_RSHIFT,
         VK_SHIFT,
     ] {
+        if !should_release_modifier_key(key) {
+            continue;
+        }
         unsafe {
             keybd_event(key as u8, 0, KEYEVENTF_KEYUP, 0);
         }
@@ -297,13 +300,24 @@ pub fn release_modifier_keys() {
     ]
     .iter()
     .copied()
+    .filter(|key| should_release_modifier_key(*key))
     .map(|key| KeyboardInputEvent::new(key, true, KeyboardInputMode::VirtualKey))
     .collect::<Vec<_>>();
-    let _ = send_keyboard_input(&events);
+    if !events.is_empty() {
+        let _ = send_keyboard_input(&events);
+    }
 }
 
 #[cfg(not(windows))]
 pub fn release_modifier_keys() {}
+
+#[cfg(windows)]
+fn should_release_modifier_key(vk: u32) -> bool {
+    match vk {
+        VK_LMENU | VK_RMENU | VK_MENU => (unsafe { GetAsyncKeyState(vk as i32) }) < 0,
+        _ => true,
+    }
+}
 
 impl KeyboardControlAction {
     fn message_id(self) -> usize {
@@ -949,9 +963,19 @@ impl WordComMethod {
 
         let abs_start = base + byte_offset_to_utf16(&context.text_snapshot, plan.range.start);
         let abs_end = base + byte_offset_to_utf16(&context.text_snapshot, plan.range.end);
+        let original_caret =
+            base + byte_offset_to_utf16(&context.text_snapshot, context.caret_range.end);
+        let replacement_delta = plan.replacement_text.encode_utf16().count() as isize
+            - plan.expected_before_text.encode_utf16().count() as isize;
+        let target_caret = if context.caret_range.end >= plan.range.end {
+            original_caret.saturating_add_signed(replacement_delta)
+        } else {
+            original_caret
+        };
         let env = [
             ("STEPLER_WORD_START", abs_start.to_string()),
             ("STEPLER_WORD_END", abs_end.to_string()),
+            ("STEPLER_WORD_CARET", target_caret.to_string()),
             (
                 "STEPLER_WORD_EXPECTED_B64",
                 encode_utf16le_base64(&plan.expected_before_text),
@@ -993,7 +1017,7 @@ struct WebKeyboardSelectionMethod;
 #[cfg(windows)]
 impl WebKeyboardSelectionMethod {
     fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
-        if !is_browser_like_target(target) {
+        if !is_browser_like_target(target) && !is_notepad_like_target(target) {
             return None;
         }
 
@@ -1986,6 +2010,7 @@ mod tests {
         assert!(is_ssh_terminal_title("root@example"));
         assert!(is_ssh_terminal_title("ssh user@example"));
         assert!(!is_ssh_terminal_title("Windows PowerShell"));
+        assert!(!is_ssh_terminal_title("PowerShell"));
         assert!(!is_ssh_terminal_title("PowerShell 7 (x64)"));
         assert!(!is_ssh_terminal_title("C:\\WINDOWS\\system32\\cmd.exe"));
     }
@@ -1997,6 +2022,14 @@ mod tests {
                 "CASCADIA_HOSTING_WINDOW_CLASS",
                 "Windows.UI.Input.InputSite.WindowClass",
                 "Windows PowerShell"
+            ),
+            TerminalPassthrough::PsReadLine
+        );
+        assert_eq!(
+            terminal_passthrough_for_window(
+                "CASCADIA_HOSTING_WINDOW_CLASS",
+                "Windows.UI.Input.InputSite.WindowClass",
+                "PowerShell"
             ),
             TerminalPassthrough::PsReadLine
         );
@@ -3265,6 +3298,8 @@ fn is_local_psreadline_terminal_title(title: &str) -> bool {
     }
 
     title == "windows powershell"
+        || title == "powershell"
+        || title == "pwsh"
         || title.starts_with("windows powershell ")
         || title.starts_with("powershell ")
         || title.starts_with("pwsh ")
@@ -3324,6 +3359,18 @@ fn is_browser_like_target(target: &ForegroundTarget) -> bool {
         &target.focused_class,
         target.process_name.as_deref(),
     )
+}
+
+fn is_notepad_like_target(target: &ForegroundTarget) -> bool {
+    let app_class = target.app_class.to_ascii_lowercase();
+    let focused_class = target.focused_class.to_ascii_lowercase();
+    let process_name = target
+        .process_name
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    process_name == "notepad" || app_class.contains("notepad") || focused_class.contains("notepad")
 }
 
 fn allow_uia_document_caret_fallback(target: &ForegroundTarget) -> bool {
@@ -3587,6 +3634,7 @@ function ConvertTo-B64([string] $Text) {
 }
 $start = [int] $env:STEPLER_WORD_START
 $end = [int] $env:STEPLER_WORD_END
+$targetCaret = [int] $env:STEPLER_WORD_CARET
 $expected = From-B64 $env:STEPLER_WORD_EXPECTED_B64
 $replacement = From-B64 $env:STEPLER_WORD_REPLACEMENT_B64
 $word = [Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application')
@@ -3603,7 +3651,7 @@ try {
     $rightBefore = Strip-WordRangeMarkers ([string] $document.Range($end, $end + 1).Text)
 } catch { }
 $range.Text = $replacement
-$caret = $start + $replacement.Length
+$caret = $targetCaret
 $word.Selection.SetRange($caret, $caret)
 Start-Sleep -Milliseconds 140
 $rightAfter = ''
@@ -3701,6 +3749,7 @@ function ConvertTo-B64([string] $Text) {
 }
 $start = [int] $env:STEPLER_WORD_START
 $end = [int] $env:STEPLER_WORD_END
+$targetCaret = [int] $env:STEPLER_WORD_CARET
 $expected = From-B64 $env:STEPLER_WORD_EXPECTED_B64
 $replacement = From-B64 $env:STEPLER_WORD_REPLACEMENT_B64
 $outlook = [Runtime.InteropServices.Marshal]::GetActiveObject('Outlook.Application')
@@ -3730,7 +3779,7 @@ try {
     $rightBefore = Strip-WordRangeMarkers ([string] $document.Range($end, $end + 1).Text)
 } catch { }
 $range.Text = $replacement
-$caret = $start + $replacement.Length
+$caret = $targetCaret
 $word.Selection.SetRange($caret, $caret)
 Start-Sleep -Milliseconds 140
 $rightAfter = ''
@@ -6727,6 +6776,7 @@ unsafe extern "system" {
     fn CallNextHookEx(hook: isize, code: i32, wparam: usize, lparam: isize) -> isize;
     fn UnhookWindowsHookEx(hook: isize) -> i32;
     fn keybd_event(vk: u8, scan: u8, flags: u32, extra_info: usize);
+    fn GetAsyncKeyState(virtual_key: i32) -> i16;
 }
 
 #[cfg(windows)]

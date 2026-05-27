@@ -1021,31 +1021,29 @@ impl WebKeyboardSelectionMethod {
             let snapshot = capture_clipboard_text_only()?;
             let scrolllock_mode = active_correction_mode_is_scrolllock();
 
-            if !scrolllock_mode {
-                let selected = copy_selected_text_checked(&snapshot, Duration::from_millis(160))
-                    .filter(|text| !text.trim().is_empty())
-                    .filter(|text| !looks_like_hotkeyhandler_marker(text));
-                if let Some(text) = selected {
-                    let text_len = text.len();
-                    let _ = restore_clipboard_text_only(&snapshot);
-                    return Ok(TextContext {
-                        app_id: format!("{app_class}/{focused_class}"),
-                        window_id: hwnd_id(foreground),
-                        control_id: format!("web-keyboard-selection-selected:{}", hwnd_id(focused)),
-                        text_snapshot: text,
-                        caret_range: TextRange::caret(text_len),
-                        selection_range: Some(TextRange::new(0, text_len)),
-                        capabilities: Capabilities {
-                            can_replace_directly: false,
-                            can_read_selection: true,
-                            can_read_caret: true,
-                            method_binding: Some(MethodBinding::new(
-                                MethodId::WebKeyboardSelection,
-                                vec![MethodId::WebKeyboardSelection],
-                            )),
-                        },
-                    });
-                }
+            let selected = copy_selected_text_checked(&snapshot, Duration::from_millis(220))
+                .filter(|text| !text.trim().is_empty())
+                .filter(|text| !looks_like_hotkeyhandler_marker(text));
+            if let Some(text) = selected {
+                let text_len = text.len();
+                let _ = restore_clipboard_text_only(&snapshot);
+                return Ok(TextContext {
+                    app_id: format!("{app_class}/{focused_class}"),
+                    window_id: hwnd_id(foreground),
+                    control_id: format!("web-keyboard-selection-selected:{}", hwnd_id(focused)),
+                    text_snapshot: text,
+                    caret_range: TextRange::caret(text_len),
+                    selection_range: Some(TextRange::new(0, text_len)),
+                    capabilities: Capabilities {
+                        can_replace_directly: false,
+                        can_read_selection: true,
+                        can_read_caret: true,
+                        method_binding: Some(MethodBinding::new(
+                            MethodId::WebKeyboardSelection,
+                            vec![MethodId::WebKeyboardSelection],
+                        )),
+                    },
+                });
             }
 
             if scrolllock_mode {
@@ -1253,37 +1251,72 @@ impl WebKeyboardSelectionMethod {
         plan: &ReplacementPlan,
     ) -> Result<ApplyReplacementResult, PlatformError> {
         let actual_before = slice_by_range(&context.text_snapshot, plan.range)
-            .ok_or(PlatformError::PreflightFailed)?
+            .ok_or_else(|| {
+                PlatformError::ReplacementUnavailableReason(String::from(
+                    "web_keyboard_preflight invalid_range",
+                ))
+            })?
             .to_owned();
-        if actual_before != plan.expected_before_text
-            || plan.range.end != context.text_snapshot.len()
-        {
-            return Err(PlatformError::PreflightFailed);
+        if actual_before != plan.expected_before_text {
+            return Err(PlatformError::ReplacementUnavailableReason(format!(
+                "web_keyboard_preflight plan_expected={} actual_range={}",
+                preview_for_error(&plan.expected_before_text, 40),
+                preview_for_error(&actual_before, 40)
+            )));
+        }
+        let expected_foreground = parse_hwnd_id(&context.window_id).ok_or_else(|| {
+            PlatformError::ReplacementUnavailableReason(String::from(
+                "web_keyboard_preflight invalid_hwnd",
+            ))
+        })?;
+        if foreground_hwnd()? != expected_foreground {
+            return Err(PlatformError::ReplacementUnavailableReason(String::from(
+                "web_keyboard_preflight foreground_changed",
+            )));
         }
 
-        let expected_foreground =
-            parse_hwnd_id(&context.window_id).ok_or(PlatformError::PreflightFailed)?;
-        if foreground_hwnd()? != expected_foreground {
-            return Err(PlatformError::PreflightFailed);
+        if context.selection_range.is_some() {
+            send_unicode_text(&plan.replacement_text)?;
+            return Ok(ApplyReplacementResult {
+                applied: true,
+                actual_before_text: Some(actual_before),
+                actual_after_text: Some(plan.replacement_text.clone()),
+                method: MethodId::WebKeyboardSelection.as_str().to_owned(),
+            });
         }
+
+        let replace_entire_context = plan.range.end != context.text_snapshot.len();
+        let replacement_text = if replace_entire_context {
+            let mut rebuilt = String::with_capacity(
+                context.text_snapshot.len() - actual_before.len() + plan.replacement_text.len(),
+            );
+            rebuilt.push_str(&context.text_snapshot[..plan.range.start]);
+            rebuilt.push_str(&plan.replacement_text);
+            rebuilt.push_str(&context.text_snapshot[plan.range.end..]);
+            rebuilt
+        } else {
+            plan.replacement_text.clone()
+        };
+        let expected_selection = if replace_entire_context {
+            context.text_snapshot.as_str()
+        } else {
+            actual_before.as_str()
+        };
 
         let snapshot = capture_clipboard_text_only()?;
         let use_line_selection = is_web_keyboard_line_context(&context.control_id)
             && context.selection_range.is_none()
-            && plan.range.start == 0;
-        let mut selected = if context.selection_range.is_some() {
-            copy_selected_text_checked(&snapshot, Duration::from_millis(450))
-        } else if use_line_selection {
+            && (plan.range.start == 0 || replace_entire_context);
+        let mut selected = if use_line_selection {
             select_web_line_left_context();
             std::thread::sleep(Duration::from_millis(35));
             copy_selected_text_checked(&snapshot, Duration::from_millis(450))
         } else {
-            select_left_utf16_units(actual_before.encode_utf16().count())?;
+            select_left_utf16_units(expected_selection.encode_utf16().count())?;
             std::thread::sleep(Duration::from_millis(35));
             copy_selected_text_checked(&snapshot, Duration::from_millis(450))
         };
-        if context.selection_range.is_none() && selected.as_deref() != Some(actual_before.as_str())
-        {
+        if !replace_entire_context && selected.as_deref() != Some(expected_selection) {
             selected = extend_web_selection_to_expected_prefix(
                 selected,
                 &actual_before,
@@ -1291,7 +1324,7 @@ impl WebKeyboardSelectionMethod {
                 Duration::from_millis(450),
             );
         }
-        if selected.as_deref() != Some(actual_before.as_str()) {
+        if selected.as_deref() != Some(expected_selection) {
             send_key(VK_RIGHT);
             let _ = restore_clipboard_text_only(&snapshot);
             return Err(PlatformError::ReplacementUnavailableReason(format!(
@@ -1303,12 +1336,12 @@ impl WebKeyboardSelectionMethod {
 
         let _ = restore_clipboard_text_only(&snapshot);
         std::thread::sleep(Duration::from_millis(20));
-        send_unicode_text(&plan.replacement_text)?;
+        send_unicode_text(&replacement_text)?;
 
         Ok(ApplyReplacementResult {
             applied: true,
             actual_before_text: Some(actual_before),
-            actual_after_text: Some(plan.replacement_text.clone()),
+            actual_after_text: Some(replacement_text),
             method: MethodId::WebKeyboardSelection.as_str().to_owned(),
         })
     }
@@ -6115,11 +6148,11 @@ unsafe extern "system" fn low_level_keyboard_proc(
             });
         return CallNextHookEx(0, code, wparam, lparam);
     }
-    if should_suppress_keyboard_companion_event(vk_code) {
-        return 1;
-    }
     if should_ignore_keyboard_hook_event(event) {
         return CallNextHookEx(0, code, wparam, lparam);
+    }
+    if should_suppress_keyboard_companion_event(vk_code) {
+        return 1;
     }
 
     let (mode, action, suppress_key) = KEYBOARD_CONTROL_STATE
@@ -6255,12 +6288,17 @@ struct ClipboardGuard;
 #[cfg(windows)]
 impl ClipboardGuard {
     fn open() -> Result<Self, PlatformError> {
-        let opened = unsafe { OpenClipboard(0) };
-        if opened == 0 {
-            return Err(PlatformError::ClipboardUnavailable);
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_millis(450) {
+            let opened = unsafe { OpenClipboard(0) };
+            if opened != 0 {
+                return Ok(Self);
+            }
+
+            std::thread::sleep(Duration::from_millis(10));
         }
 
-        Ok(Self)
+        Err(PlatformError::ClipboardUnavailable)
     }
 }
 

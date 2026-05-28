@@ -216,7 +216,6 @@ fn should_guard_clipboard(context: &TextContext) -> bool {
         matches!(
             method,
             MethodId::TerminalClipboardShortcut
-                | MethodId::ConsoleBuffer
                 | MethodId::ClipboardSelection
                 | MethodId::SendInput
         )

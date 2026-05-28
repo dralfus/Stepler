@@ -33,8 +33,8 @@ fn uia_value_pattern_replaces_wpf_textbox() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("method: \"uia_text\""),
-        "expected UIAutomationText apply method\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stdout).contains("method: \"uia_editable_text\""),
+        "expected UIAutomationEditableText apply method\nstdout:\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
 
@@ -76,8 +76,8 @@ fn uia_value_pattern_scrolllock_does_not_duplicate_prefix() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("method: \"uia_text\""),
-        "expected UIAutomationText apply method\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stdout).contains("method: \"uia_editable_text\""),
+        "expected UIAutomationEditableText apply method\nstdout:\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
 

@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use stepler_core::{
@@ -612,13 +614,8 @@ impl ConsoleBufferMethod {
 
         let replacement = replace_range_text(&current_text, plan.range, &plan.replacement_text)
             .ok_or(PlatformError::PreflightFailed)?;
-        let chars_to_remove = current_text.encode_utf16().count();
-        for _ in 0..chars_to_remove {
-            send_key(VK_BACK);
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        restore_clipboard(clipboard_snapshot_from_text(&replacement))?;
-        send_key_chord(&[VK_LSHIFT], VK_INSERT);
+        clear_console_input_line(foreground)?;
+        send_unicode_text(&replacement)?;
         std::thread::sleep(Duration::from_millis(60));
 
         Ok(ApplyReplacementResult {
@@ -628,6 +625,22 @@ impl ConsoleBufferMethod {
             method: MethodId::ConsoleBuffer.as_str().to_owned(),
         })
     }
+}
+
+#[cfg(windows)]
+fn clear_console_input_line(hwnd: isize) -> Result<(), PlatformError> {
+    for _ in 0..3 {
+        send_key_virtual(VK_ESCAPE);
+        std::thread::sleep(Duration::from_millis(45));
+        match read_console_input_text(hwnd) {
+            Err(PlatformError::ReplacementUnavailable) => return Ok(()),
+            Ok(input) if input.trim().is_empty() => return Ok(()),
+            Ok(_) => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(PlatformError::PreflightFailed)
 }
 
 #[cfg(windows)]
@@ -886,7 +899,9 @@ impl WordComMethod {
         app_class: &str,
         focused_class: &str,
     ) -> Result<TextContext, PlatformError> {
-        let is_outlook = is_outlook_class_or_process(app_class, focused_class, None);
+        let process_name = window_process_name(foreground);
+        let is_outlook =
+            is_outlook_class_or_process(app_class, focused_class, process_name.as_deref());
         let output = run_powershell_script(
             if is_outlook {
                 OUTLOOK_WORD_CAPTURE_SCRIPT
@@ -1987,6 +2002,18 @@ mod tests {
     }
 
     #[test]
+    fn classic_console_class_requires_foreground_and_focus_console() {
+        assert!(is_classic_console_class(
+            "ConsoleWindowClass",
+            "ConsoleWindowClass"
+        ));
+        assert!(!is_classic_console_class(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass"
+        ));
+    }
+
+    #[test]
     fn classic_console_is_not_psreadline_passthrough_terminal() {
         assert!(is_psreadline_passthrough_terminal_class(
             "CASCADIA_HOSTING_WINDOW_CLASS",
@@ -1995,6 +2022,22 @@ mod tests {
         assert!(!is_psreadline_passthrough_terminal_class(
             "ConsoleWindowClass",
             "ConsoleWindowClass"
+        ));
+    }
+
+    #[test]
+    fn classic_console_does_not_need_conservative_suppression() {
+        assert!(!terminal_class_needs_conservative_suppression(
+            "ConsoleWindowClass",
+            "ConsoleWindowClass"
+        ));
+    }
+
+    #[test]
+    fn windows_terminal_needs_conservative_suppression() {
+        assert!(terminal_class_needs_conservative_suppression(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass"
         ));
     }
 
@@ -2677,6 +2720,37 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_control_state_maps_classic_console_ctrl_pause_immediately() {
+        let mut state = KeyboardControlHookState::default();
+
+        assert_eq!(state.handle_key(VK_LCONTROL, true, false), None);
+        assert_eq!(
+            state.handle_classic_console_pause_key(VK_CANCEL, true, false),
+            Some(stepler_core::CorrectionMode::ScrollLock)
+        );
+        assert_eq!(
+            state.handle_classic_console_pause_key(VK_CANCEL, false, true),
+            None
+        );
+        assert_eq!(state.handle_key(VK_LCONTROL, false, true), None);
+        assert_eq!(state.take_pending_scroll_lock_if_released(), None);
+    }
+
+    #[test]
+    fn keyboard_control_state_maps_classic_console_plain_pause_immediately() {
+        let mut state = KeyboardControlHookState::default();
+
+        assert_eq!(
+            state.handle_classic_console_pause_key(VK_PAUSE, true, false),
+            Some(stepler_core::CorrectionMode::Pause)
+        );
+        assert_eq!(
+            state.handle_classic_console_pause_key(VK_PAUSE, false, true),
+            None
+        );
+    }
+
+    #[test]
     fn keyboard_control_state_passes_plain_terminal_pause_through() {
         let mut state = KeyboardControlHookState::default();
 
@@ -3222,6 +3296,22 @@ fn is_supported_terminal_class(app_class: &str, focused_class: &str) -> bool {
         || focused_class == "Windows.UI.Input.InputSite.WindowClass"
 }
 
+fn is_classic_console_class(app_class: &str, focused_class: &str) -> bool {
+    app_class.eq_ignore_ascii_case("ConsoleWindowClass")
+        && focused_class.eq_ignore_ascii_case("ConsoleWindowClass")
+}
+
+#[cfg(windows)]
+fn foreground_is_classic_console() -> bool {
+    let Ok(foreground) = foreground_hwnd() else {
+        return false;
+    };
+    let focused = focused_window(foreground).unwrap_or(foreground);
+    let app_class = window_class_name(foreground).unwrap_or_default();
+    let focused_class = window_class_name(focused).unwrap_or_default();
+    is_classic_console_class(&app_class, &focused_class)
+}
+
 #[cfg(windows)]
 fn foreground_terminal_passthrough() -> TerminalPassthrough {
     let Ok(foreground) = foreground_hwnd() else {
@@ -3259,14 +3349,20 @@ fn terminal_passthrough_for_window(
 }
 
 #[cfg(windows)]
-fn terminal_focus_is_supported() -> bool {
+fn terminal_needs_conservative_suppression() -> bool {
     let Ok(foreground) = foreground_hwnd() else {
         return false;
     };
     let focused = focused_window(foreground).unwrap_or(foreground);
     let app_class = window_class_name(foreground).unwrap_or_default();
     let focused_class = window_class_name(focused).unwrap_or_default();
-    is_supported_terminal_class(&app_class, &focused_class)
+    terminal_class_needs_conservative_suppression(&app_class, &focused_class)
+}
+
+fn terminal_class_needs_conservative_suppression(app_class: &str, focused_class: &str) -> bool {
+    is_supported_terminal_class(app_class, focused_class)
+        && !app_class.eq_ignore_ascii_case("ConsoleWindowClass")
+        && !focused_class.eq_ignore_ascii_case("ConsoleWindowClass")
 }
 
 fn is_psreadline_passthrough_terminal_class(app_class: &str, focused_class: &str) -> bool {
@@ -3439,6 +3535,7 @@ fn run_powershell_script(script: &str, env: &[(&str, String)]) -> Result<String,
     for (key, value) in env {
         command.env(key, value);
     }
+    command.creation_flags(CREATE_NO_WINDOW);
 
     let mut child = command
         .spawn()
@@ -3638,6 +3735,7 @@ $targetCaret = [int] $env:STEPLER_WORD_CARET
 $expected = From-B64 $env:STEPLER_WORD_EXPECTED_B64
 $replacement = From-B64 $env:STEPLER_WORD_REPLACEMENT_B64
 $word = [Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application')
+try { $word.Activate() } catch { }
 $document = $word.ActiveDocument
 $range = $document.Range($start, $end)
 $actual = Strip-WordRangeMarkers ([string] $range.Text)
@@ -5886,6 +5984,46 @@ impl KeyboardControlHookState {
         }
     }
 
+    fn handle_classic_console_pause_key(
+        &mut self,
+        vk_code: u32,
+        is_down: bool,
+        is_up: bool,
+    ) -> Option<stepler_core::CorrectionMode> {
+        if !matches!(vk_code, VK_PAUSE | VK_CANCEL) {
+            return None;
+        }
+
+        let ctrl_down = self.left_ctrl_down || self.right_ctrl_down;
+        if is_down
+            && !self.pause_down
+            && Self::debounce_allows(if ctrl_down {
+                self.last_scroll_lock_at
+            } else {
+                self.last_pause_at
+            })
+        {
+            self.pause_down = true;
+            let now = Instant::now();
+            if ctrl_down {
+                self.left_ctrl_used |= self.left_ctrl_down;
+                self.right_ctrl_used |= self.right_ctrl_down;
+                self.last_scroll_lock_at = Some(now);
+                self.suppress_c_until = Some(now + Duration::from_millis(1_500));
+                return Some(stepler_core::CorrectionMode::ScrollLock);
+            }
+
+            self.last_pause_at = Some(now);
+            return Some(stepler_core::CorrectionMode::Pause);
+        }
+
+        if is_up {
+            self.pause_down = false;
+        }
+
+        None
+    }
+
     fn should_suppress_companion_key(&mut self, vk_code: u32) -> bool {
         if !is_scrolllock_companion_key(vk_code) {
             return false;
@@ -6114,8 +6252,23 @@ unsafe extern "system" fn low_level_keyboard_proc(
         return CallNextHookEx(0, code, wparam, lparam);
     }
     if matches!(vk_code, VK_PAUSE | VK_CANCEL) {
+        if foreground_is_classic_console() {
+            let mode = KEYBOARD_CONTROL_STATE
+                .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
+                .lock()
+                .ok()
+                .and_then(|mut state| {
+                    state.handle_classic_console_pause_key(vk_code, is_down, is_up)
+                });
+            if let Some(mode) = mode {
+                post_correction_hotkey_from_hook(mode, vk_code, is_down, is_up);
+            }
+            return 1;
+        }
         let terminal_passthrough = foreground_terminal_passthrough();
-        if terminal_passthrough == TerminalPassthrough::None && terminal_focus_is_supported() {
+        if terminal_passthrough == TerminalPassthrough::None
+            && terminal_needs_conservative_suppression()
+        {
             append_hotkey_signal_log(&format!(
                 "hook_terminal_conservative_suppressed vk={vk_code} down={is_down} up={is_up}"
             ));
@@ -6309,6 +6462,34 @@ fn correction_hotkey_enabled(mode: stepler_core::CorrectionMode) -> bool {
 }
 
 #[cfg(windows)]
+fn post_correction_hotkey_from_hook(
+    mode: stepler_core::CorrectionMode,
+    vk_code: u32,
+    is_down: bool,
+    is_up: bool,
+) {
+    if !correction_hotkey_enabled(mode) {
+        append_hotkey_signal_log(&format!("hook_mode_disabled {mode:?}"));
+        return;
+    }
+    if let Some(thread_id) = KEYBOARD_CONTROL_THREAD_ID.get().copied() {
+        let posted = unsafe {
+            PostThreadMessageW(
+                thread_id,
+                WM_STEPLER_HOTKEY,
+                correction_mode_message_id(mode),
+                0,
+            )
+        };
+        append_hotkey_signal_log(&format!(
+            "hook_post mode={mode:?} vk={vk_code} down={is_down} up={is_up} posted={posted}"
+        ));
+    } else {
+        append_hotkey_signal_log(&format!("hook_no_thread mode={mode:?} vk={vk_code}"));
+    }
+}
+
+#[cfg(windows)]
 fn layout_action_enabled(action: KeyboardControlAction) -> bool {
     match action {
         KeyboardControlAction::SwitchToRussian | KeyboardControlAction::SwitchToEnglish => {
@@ -6427,8 +6608,6 @@ const VK_C: u32 = 0x43;
 #[cfg(windows)]
 const VK_V: u32 = 0x56;
 #[cfg(windows)]
-const VK_BACK: u32 = 0x08;
-#[cfg(windows)]
 const VK_ESCAPE: u32 = 0x1B;
 #[cfg(windows)]
 const VK_INSERT: u32 = 0x2D;
@@ -6488,6 +6667,8 @@ const SMTO_ABORTIFHUNG: u32 = 0x0002;
 const KLF_SETFORPROCESS: u32 = 0x00000100;
 #[cfg(windows)]
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(windows)]
 const STEPLER_INJECTED_CONTROL_MAGIC: usize = 0x5354_4550_4C45_5201;
 #[cfg(windows)]

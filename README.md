@@ -101,17 +101,25 @@ Risky/fallback методы по умолчанию не должны включ
 
 Это информационный список ручных проверок, а не обещание полной поддержки всех версий приложений.
 
-| Приложение/поверхность | Проверенный сценарий | Method adapter |
-| --- | --- | --- |
-| Notepad | `P`, `CP`, сохранение clipboard | `Win32EditMessages` |
-| PowerShell / Windows Terminal | `P`, `CP`, selection, переключение раскладки после конвертации | `PSReadLine` |
-| Microsoft Word desktop | `P`, `CP`, выделение, диапазон слева от курсора | `WordCom` |
-| Microsoft Outlook desktop compose | WordEditor в письме, ожидаемый путь поддержки | `WordCom` через Outlook WordEditor |
-| Windows Settings / Feedback Hub / WPF TextBox fixture | caret-aware замена в editable UIA поле | `UIAutomationEditableText` / `UIAutomationText` |
-| Confluence / JIRA в Chrome/Firefox | выделенный текст в web editor; no-selection только если UIA проходит strict caret preflight | `UIAutomationDocumentText` |
-| Browser-like / Electron-like окна без безопасного text API | fail-closed, risky методы только явно | policy + diagnostics |
+| Приложение/поверхность | Проверенный сценарий | Method adapter | Наблюдаемое время |
+| --- | --- | --- | --- |
+| Notepad | `P`, `CP`, сохранение clipboard | `Win32EditMessages` | p50 ~18 ms, avg ~22 ms |
+| PowerShell / Windows Terminal, локальная сессия | `P`, `CP`, selection, переключение раскладки после конвертации | `PSReadLine` | обычно быстрее web/Word; отдельные hotkey-forward события ~426 ms |
+| PowerShell / Windows Terminal, внутри запущен SSH | `P`/`CP` намеренно не применяются к удаленной shell без opt-in remote adapter | fail-closed / SSH suppression | не применяется |
+| Microsoft Word desktop | `P`, `CP`, выделение, диапазон слева от курсора | `WordCom` | p50 ~2266 ms, avg ~2188 ms |
+| Microsoft Outlook desktop compose | WordEditor в письме, ожидаемый путь поддержки | `WordCom` через Outlook WordEditor | p50 ~2266 ms, avg ~2188 ms |
+| Windows Settings / Feedback Hub / WPF TextBox fixture | caret-aware замена в editable UIA поле | `UIAutomationEditableText` / `UIAutomationText` | p50 ~1304 ms, avg ~1324 ms |
+| Confluence / JIRA в Chrome/Firefox | выделенный текст в web editor; no-selection только если UIA проходит strict caret preflight | `UIAutomationDocumentText` / `WebKeyboardSelection` | `UIAutomationDocumentText`: p50 ~1114 ms, avg ~1653 ms; `WebKeyboardSelection`: p50 ~603 ms, avg ~842 ms |
+| Codex / browser-like / Electron-like поля ввода | `P`, `CP` через keyboard selection path, если поле допускает безопасное выделение/проверку | `WebKeyboardSelection` | p50 ~603 ms, avg ~842 ms |
+| classic `cmd.exe` / `conhost.exe` | `P` частично работает; `CP` нестабилен, может очищать/портить текущую строку | `ConsoleBuffer` | p50 ~108 ms, avg ~285 ms, но нестабильно |
+| `cmd.exe` внутри Windows Terminal | основной безопасный adapter пока не реализован; terminal clipboard shortcut остается diagnostic/fallback | `TerminalClipboardShortcut` / policy | не считается поддержанным |
+| Browser-like / Electron-like окна без безопасного text API | fail-closed, risky методы только явно | policy + diagnostics | не применяется |
 
 Для web/document editor-ов no-selection режим включается только через `UIAutomationDocumentText` caret preflight: UIA должен вернуть стабильный collapsed range, Stepler выделяет ровно рассчитанный диапазон слева от caret и перед вводом проверяет совпадение текста.
+
+`UIAutomationEditableText` проверялся на обычных editable UIA полях: Windows Settings, Feedback Hub и тестовый WPF TextBox (`stepler-cli uia-fixture`). Это поля, которые UI Automation видит как редактируемый `ControlType.Edit` с writable `ValuePattern`.
+
+`UIAutomationDocumentText` проверялся на document/web surfaces: например редакторы Confluence/JIRA в браузере, где поле выглядит для UIA не как классический edit control, а как документ с `TextPattern`. В таких местах надежность зависит от того, отдает ли приложение стабильный selection/caret range.
 
 ## Структура проекта
 

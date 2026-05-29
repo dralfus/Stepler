@@ -6103,7 +6103,7 @@ impl KeyboardControlHookState {
                     self.right_ctrl_down = true;
                     self.right_ctrl_used = false;
                 }
-                VK_APPS | VK_CAPITAL => return Some(KeyboardControlAction::SwitchToNext),
+                VK_APPS => return Some(KeyboardControlAction::SwitchToNext),
                 _ => {
                     if self.left_ctrl_down {
                         self.left_ctrl_used = true;
@@ -6353,6 +6353,19 @@ unsafe extern "system" fn low_level_keyboard_proc(
     if should_ignore_keyboard_hook_event(event) {
         return CallNextHookEx(0, code, wparam, lparam);
     }
+    if vk_code == VK_CAPITAL && caps_lock_disabled() {
+        append_hotkey_signal_log(&format!(
+            "hook_capslock_suppressed down={is_down} up={is_up}"
+        ));
+        return 1;
+    }
+    if vk_code == VK_INSERT && insert_as_backspace_enabled() && no_modifier_keys_down() {
+        if is_down {
+            append_hotkey_signal_log("hook_insert_as_backspace");
+            send_key_virtual(VK_BACK);
+        }
+        return 1;
+    }
     if should_suppress_keyboard_companion_event(vk_code) {
         return 1;
     }
@@ -6424,7 +6437,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
             );
         }
 
-        if matches!(vk_code, VK_APPS | VK_CAPITAL) {
+        if vk_code == VK_APPS {
             return 1;
         }
     }
@@ -6499,6 +6512,34 @@ fn layout_action_enabled(action: KeyboardControlAction) -> bool {
             env_flag_enabled("STEPLER_ENABLE_MENU_CAPS_LAYOUT", true)
         }
     }
+}
+
+#[cfg(windows)]
+fn caps_lock_disabled() -> bool {
+    env_flag_enabled("STEPLER_DISABLE_CAPSLOCK", true)
+}
+
+#[cfg(windows)]
+fn insert_as_backspace_enabled() -> bool {
+    env_flag_enabled("STEPLER_INSERT_AS_BACKSPACE", true)
+}
+
+#[cfg(windows)]
+fn no_modifier_keys_down() -> bool {
+    ![
+        VK_LCONTROL,
+        VK_RCONTROL,
+        VK_SHIFT,
+        VK_LSHIFT,
+        VK_RSHIFT,
+        VK_MENU,
+        VK_LMENU,
+        VK_RMENU,
+        VK_LWIN,
+        VK_RWIN,
+    ]
+    .iter()
+    .any(|vk| unsafe { GetAsyncKeyState(*vk as i32) & i16::MIN != 0 })
 }
 
 #[cfg(windows)]
@@ -6607,6 +6648,8 @@ const VK_END: u32 = 0x23;
 const VK_C: u32 = 0x43;
 #[cfg(windows)]
 const VK_V: u32 = 0x56;
+#[cfg(windows)]
+const VK_BACK: u32 = 0x08;
 #[cfg(windows)]
 const VK_ESCAPE: u32 = 0x1B;
 #[cfg(windows)]

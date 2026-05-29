@@ -424,15 +424,15 @@ fn run_hotkeys() {
     let settings = RuntimeSettings::from_env();
 
     eprintln!("Stepler hotkey runner started.");
+    eprintln!("Registered: Pause, Ctrl+Pause. Controls: LeftCtrl=RU, RightCtrl=EN, Menu=next.");
     eprintln!(
-        "Registered: Pause, Ctrl+Pause. Controls: LeftCtrl=RU, RightCtrl=EN, Menu/Caps=next."
-    );
-    eprintln!(
-        "Settings: pause={} scrolllock={} ctrl_layout={} menu_caps={} risky_fallbacks={}",
+        "Settings: pause={} scrolllock={} ctrl_layout={} menu_next={} disable_caps={} insert_backspace={} risky_fallbacks={}",
         settings.pause_enabled,
         settings.scrolllock_enabled,
         settings.ctrl_layout_enabled,
         settings.menu_caps_enabled,
+        settings.disable_caps_lock,
+        settings.insert_as_backspace,
         settings.risky_fallbacks_enabled
     );
     eprintln!("Press Ctrl+C in this console to stop.");
@@ -471,6 +471,8 @@ struct RuntimeSettings {
     scrolllock_enabled: bool,
     ctrl_layout_enabled: bool,
     menu_caps_enabled: bool,
+    disable_caps_lock: bool,
+    insert_as_backspace: bool,
     risky_fallbacks_enabled: bool,
 }
 
@@ -481,6 +483,8 @@ impl RuntimeSettings {
             scrolllock_enabled: env_enabled("STEPLER_ENABLE_SCROLLLOCK", true),
             ctrl_layout_enabled: env_enabled("STEPLER_ENABLE_CTRL_LAYOUT", true),
             menu_caps_enabled: env_enabled("STEPLER_ENABLE_MENU_CAPS_LAYOUT", true),
+            disable_caps_lock: env_enabled("STEPLER_DISABLE_CAPSLOCK", true),
+            insert_as_backspace: env_enabled("STEPLER_INSERT_AS_BACKSPACE", true),
             risky_fallbacks_enabled: std::env::var_os("STEPLER_ALLOW_RISKY_FALLBACKS").is_some(),
         }
     }

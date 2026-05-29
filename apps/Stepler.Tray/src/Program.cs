@@ -126,6 +126,8 @@ internal sealed class SteplerTrayForm : Form
     private readonly ToolStripMenuItem _scrollLockItem;
     private readonly ToolStripMenuItem _ctrlLayoutItem;
     private readonly ToolStripMenuItem _menuCapsLayoutItem;
+    private readonly ToolStripMenuItem _disableCapsLockItem;
+    private readonly ToolStripMenuItem _insertAsBackspaceItem;
     private readonly ToolStripMenuItem _riskyFallbacksItem;
     private readonly ToolStripMenuItem _autostartItem;
     private readonly ToolStripMenuItem _openHotkeyLogItem;
@@ -188,11 +190,23 @@ internal sealed class SteplerTrayForm : Form
         };
         _ctrlLayoutItem.Click += (_, _) => UpdateSetting(settings => settings.CtrlLayoutSwitchEnabled = _ctrlLayoutItem.Checked);
 
-        _menuCapsLayoutItem = new ToolStripMenuItem("Menu/Caps: следующая раскладка")
+        _menuCapsLayoutItem = new ToolStripMenuItem("Menu: следующая раскладка")
         {
             CheckOnClick = true,
         };
         _menuCapsLayoutItem.Click += (_, _) => UpdateSetting(settings => settings.MenuCapsSwitchEnabled = _menuCapsLayoutItem.Checked);
+
+        _disableCapsLockItem = new ToolStripMenuItem("Отключить CapsLock")
+        {
+            CheckOnClick = true,
+        };
+        _disableCapsLockItem.Click += (_, _) => UpdateSetting(settings => settings.DisableCapsLock = _disableCapsLockItem.Checked);
+
+        _insertAsBackspaceItem = new ToolStripMenuItem("Insert как Backspace")
+        {
+            CheckOnClick = true,
+        };
+        _insertAsBackspaceItem.Click += (_, _) => UpdateSetting(settings => settings.InsertAsBackspaceEnabled = _insertAsBackspaceItem.Checked);
 
         _riskyFallbacksItem = new ToolStripMenuItem("Risky fallback adapters")
         {
@@ -226,6 +240,8 @@ internal sealed class SteplerTrayForm : Form
         menu.Items.Add(_scrollLockItem);
         menu.Items.Add(_ctrlLayoutItem);
         menu.Items.Add(_menuCapsLayoutItem);
+        menu.Items.Add(_disableCapsLockItem);
+        menu.Items.Add(_insertAsBackspaceItem);
         menu.Items.Add(_riskyFallbacksItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_autostartItem);
@@ -548,6 +564,8 @@ internal sealed class SteplerTrayForm : Form
         _scrollLockItem.Checked = _settings.ScrollLockEnabled;
         _ctrlLayoutItem.Checked = _settings.CtrlLayoutSwitchEnabled;
         _menuCapsLayoutItem.Checked = _settings.MenuCapsSwitchEnabled;
+        _disableCapsLockItem.Checked = _settings.DisableCapsLock;
+        _insertAsBackspaceItem.Checked = _settings.InsertAsBackspaceEnabled;
         _riskyFallbacksItem.Checked = _settings.RiskyFallbacksEnabled;
         _autostartItem.Checked = AutostartManager.IsEnabled();
     }
@@ -815,6 +833,8 @@ internal sealed class SteplerSettings
     public bool ScrollLockEnabled { get; set; } = true;
     public bool CtrlLayoutSwitchEnabled { get; set; } = true;
     public bool MenuCapsSwitchEnabled { get; set; } = true;
+    public bool DisableCapsLock { get; set; } = true;
+    public bool InsertAsBackspaceEnabled { get; set; } = true;
     public bool RiskyFallbacksEnabled { get; set; }
 }
 
@@ -876,6 +896,8 @@ internal static class ProcessStartInfoExtensions
         startInfo.Environment["STEPLER_ENABLE_SCROLLLOCK"] = Bool(settings.ScrollLockEnabled);
         startInfo.Environment["STEPLER_ENABLE_CTRL_LAYOUT"] = Bool(settings.CtrlLayoutSwitchEnabled);
         startInfo.Environment["STEPLER_ENABLE_MENU_CAPS_LAYOUT"] = Bool(settings.MenuCapsSwitchEnabled);
+        startInfo.Environment["STEPLER_DISABLE_CAPSLOCK"] = Bool(settings.DisableCapsLock);
+        startInfo.Environment["STEPLER_INSERT_AS_BACKSPACE"] = Bool(settings.InsertAsBackspaceEnabled);
         if (settings.RiskyFallbacksEnabled)
         {
             startInfo.Environment["STEPLER_ALLOW_RISKY_FALLBACKS"] = "1";

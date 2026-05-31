@@ -284,6 +284,29 @@ pub fn default_app_policies() -> Vec<AppPolicy> {
             allow_risky_methods: false,
         },
         AppPolicy {
+            app_matcher: String::from("notepad"),
+            preferred_context_methods: vec![
+                MethodId::Win32EditMessages,
+                MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationEditableText,
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationText,
+            ],
+            preferred_replace_methods: vec![
+                MethodId::Win32EditMessages,
+                MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationEditableText,
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationText,
+            ],
+            forbidden_methods: vec![
+                MethodId::TerminalClipboardShortcut,
+                MethodId::ClipboardSelection,
+                MethodId::SendInput,
+            ],
+            allow_risky_methods: false,
+        },
+        AppPolicy {
             app_matcher: String::from("ConsoleWindowClass"),
             preferred_context_methods: vec![MethodId::ConsoleBuffer],
             preferred_replace_methods: vec![MethodId::ConsoleBuffer],

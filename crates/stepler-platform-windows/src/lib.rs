@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use stepler_core::{
@@ -280,6 +282,9 @@ pub fn release_modifier_keys() {
         VK_RSHIFT,
         VK_SHIFT,
     ] {
+        if !should_release_modifier_key(key) {
+            continue;
+        }
         unsafe {
             keybd_event(key as u8, 0, KEYEVENTF_KEYUP, 0);
         }
@@ -297,13 +302,24 @@ pub fn release_modifier_keys() {
     ]
     .iter()
     .copied()
+    .filter(|key| should_release_modifier_key(*key))
     .map(|key| KeyboardInputEvent::new(key, true, KeyboardInputMode::VirtualKey))
     .collect::<Vec<_>>();
-    let _ = send_keyboard_input(&events);
+    if !events.is_empty() {
+        let _ = send_keyboard_input(&events);
+    }
 }
 
 #[cfg(not(windows))]
 pub fn release_modifier_keys() {}
+
+#[cfg(windows)]
+fn should_release_modifier_key(vk: u32) -> bool {
+    match vk {
+        VK_LMENU | VK_RMENU | VK_MENU => (unsafe { GetAsyncKeyState(vk as i32) }) < 0,
+        _ => true,
+    }
+}
 
 impl KeyboardControlAction {
     fn message_id(self) -> usize {
@@ -598,13 +614,8 @@ impl ConsoleBufferMethod {
 
         let replacement = replace_range_text(&current_text, plan.range, &plan.replacement_text)
             .ok_or(PlatformError::PreflightFailed)?;
-        let chars_to_remove = current_text.encode_utf16().count();
-        for _ in 0..chars_to_remove {
-            send_key(VK_BACK);
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        restore_clipboard(clipboard_snapshot_from_text(&replacement))?;
-        send_key_chord(&[VK_LSHIFT], VK_INSERT);
+        clear_console_input_line(foreground)?;
+        send_unicode_text(&replacement)?;
         std::thread::sleep(Duration::from_millis(60));
 
         Ok(ApplyReplacementResult {
@@ -614,6 +625,22 @@ impl ConsoleBufferMethod {
             method: MethodId::ConsoleBuffer.as_str().to_owned(),
         })
     }
+}
+
+#[cfg(windows)]
+fn clear_console_input_line(hwnd: isize) -> Result<(), PlatformError> {
+    for _ in 0..3 {
+        send_key_virtual(VK_ESCAPE);
+        std::thread::sleep(Duration::from_millis(45));
+        match read_console_input_text(hwnd) {
+            Err(PlatformError::ReplacementUnavailable) => return Ok(()),
+            Ok(input) if input.trim().is_empty() => return Ok(()),
+            Ok(_) => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(PlatformError::PreflightFailed)
 }
 
 #[cfg(windows)]
@@ -874,7 +901,9 @@ impl WordComMethod {
         app_class: &str,
         focused_class: &str,
     ) -> Result<TextContext, PlatformError> {
-        let is_outlook = is_outlook_class_or_process(app_class, focused_class, None);
+        let process_name = window_process_name(foreground);
+        let is_outlook =
+            is_outlook_class_or_process(app_class, focused_class, process_name.as_deref());
         let output = run_powershell_script(
             if is_outlook {
                 OUTLOOK_WORD_CAPTURE_SCRIPT
@@ -951,9 +980,19 @@ impl WordComMethod {
 
         let abs_start = base + byte_offset_to_utf16(&context.text_snapshot, plan.range.start);
         let abs_end = base + byte_offset_to_utf16(&context.text_snapshot, plan.range.end);
+        let original_caret =
+            base + byte_offset_to_utf16(&context.text_snapshot, context.caret_range.end);
+        let replacement_delta = plan.replacement_text.encode_utf16().count() as isize
+            - plan.expected_before_text.encode_utf16().count() as isize;
+        let target_caret = if context.caret_range.end >= plan.range.end {
+            original_caret.saturating_add_signed(replacement_delta)
+        } else {
+            original_caret
+        };
         let env = [
             ("STEPLER_WORD_START", abs_start.to_string()),
             ("STEPLER_WORD_END", abs_end.to_string()),
+            ("STEPLER_WORD_CARET", target_caret.to_string()),
             (
                 "STEPLER_WORD_EXPECTED_B64",
                 encode_utf16le_base64(&plan.expected_before_text),
@@ -995,7 +1034,10 @@ struct WebKeyboardSelectionMethod;
 #[cfg(windows)]
 impl WebKeyboardSelectionMethod {
     fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
-        if !is_browser_like_target(target) && !is_telegram_target(target) {
+        if !is_browser_like_target(target)
+            && !is_telegram_target(target)
+            && !is_notepad_like_target(target)
+        {
             return None;
         }
 
@@ -1023,31 +1065,29 @@ impl WebKeyboardSelectionMethod {
             let snapshot = capture_clipboard_text_only()?;
             let scrolllock_mode = active_correction_mode_is_scrolllock();
 
-            if !scrolllock_mode {
-                let selected = copy_selected_text_checked(&snapshot, Duration::from_millis(160))
-                    .filter(|text| !text.trim().is_empty())
-                    .filter(|text| !looks_like_hotkeyhandler_marker(text));
-                if let Some(text) = selected {
-                    let text_len = text.len();
-                    let _ = restore_clipboard_text_only(&snapshot);
-                    return Ok(TextContext {
-                        app_id: format!("{app_class}/{focused_class}"),
-                        window_id: hwnd_id(foreground),
-                        control_id: format!("web-keyboard-selection-selected:{}", hwnd_id(focused)),
-                        text_snapshot: text,
-                        caret_range: TextRange::caret(text_len),
-                        selection_range: Some(TextRange::new(0, text_len)),
-                        capabilities: Capabilities {
-                            can_replace_directly: false,
-                            can_read_selection: true,
-                            can_read_caret: true,
-                            method_binding: Some(MethodBinding::new(
-                                MethodId::WebKeyboardSelection,
-                                vec![MethodId::WebKeyboardSelection],
-                            )),
-                        },
-                    });
-                }
+            let selected = copy_selected_text_checked(&snapshot, Duration::from_millis(220))
+                .filter(|text| !text.trim().is_empty())
+                .filter(|text| !looks_like_hotkeyhandler_marker(text));
+            if let Some(text) = selected {
+                let text_len = text.len();
+                let _ = restore_clipboard_text_only(&snapshot);
+                return Ok(TextContext {
+                    app_id: format!("{app_class}/{focused_class}"),
+                    window_id: hwnd_id(foreground),
+                    control_id: format!("web-keyboard-selection-selected:{}", hwnd_id(focused)),
+                    text_snapshot: text,
+                    caret_range: TextRange::caret(text_len),
+                    selection_range: Some(TextRange::new(0, text_len)),
+                    capabilities: Capabilities {
+                        can_replace_directly: false,
+                        can_read_selection: true,
+                        can_read_caret: true,
+                        method_binding: Some(MethodBinding::new(
+                            MethodId::WebKeyboardSelection,
+                            vec![MethodId::WebKeyboardSelection],
+                        )),
+                    },
+                });
             }
 
             if scrolllock_mode {
@@ -1255,37 +1295,72 @@ impl WebKeyboardSelectionMethod {
         plan: &ReplacementPlan,
     ) -> Result<ApplyReplacementResult, PlatformError> {
         let actual_before = slice_by_range(&context.text_snapshot, plan.range)
-            .ok_or(PlatformError::PreflightFailed)?
+            .ok_or_else(|| {
+                PlatformError::ReplacementUnavailableReason(String::from(
+                    "web_keyboard_preflight invalid_range",
+                ))
+            })?
             .to_owned();
-        if actual_before != plan.expected_before_text
-            || plan.range.end != context.text_snapshot.len()
-        {
-            return Err(PlatformError::PreflightFailed);
+        if actual_before != plan.expected_before_text {
+            return Err(PlatformError::ReplacementUnavailableReason(format!(
+                "web_keyboard_preflight plan_expected={} actual_range={}",
+                preview_for_error(&plan.expected_before_text, 40),
+                preview_for_error(&actual_before, 40)
+            )));
+        }
+        let expected_foreground = parse_hwnd_id(&context.window_id).ok_or_else(|| {
+            PlatformError::ReplacementUnavailableReason(String::from(
+                "web_keyboard_preflight invalid_hwnd",
+            ))
+        })?;
+        if foreground_hwnd()? != expected_foreground {
+            return Err(PlatformError::ReplacementUnavailableReason(String::from(
+                "web_keyboard_preflight foreground_changed",
+            )));
         }
 
-        let expected_foreground =
-            parse_hwnd_id(&context.window_id).ok_or(PlatformError::PreflightFailed)?;
-        if foreground_hwnd()? != expected_foreground {
-            return Err(PlatformError::PreflightFailed);
+        if context.selection_range.is_some() {
+            send_unicode_text(&plan.replacement_text)?;
+            return Ok(ApplyReplacementResult {
+                applied: true,
+                actual_before_text: Some(actual_before),
+                actual_after_text: Some(plan.replacement_text.clone()),
+                method: MethodId::WebKeyboardSelection.as_str().to_owned(),
+            });
         }
+
+        let replace_entire_context = plan.range.end != context.text_snapshot.len();
+        let replacement_text = if replace_entire_context {
+            let mut rebuilt = String::with_capacity(
+                context.text_snapshot.len() - actual_before.len() + plan.replacement_text.len(),
+            );
+            rebuilt.push_str(&context.text_snapshot[..plan.range.start]);
+            rebuilt.push_str(&plan.replacement_text);
+            rebuilt.push_str(&context.text_snapshot[plan.range.end..]);
+            rebuilt
+        } else {
+            plan.replacement_text.clone()
+        };
+        let expected_selection = if replace_entire_context {
+            context.text_snapshot.as_str()
+        } else {
+            actual_before.as_str()
+        };
 
         let snapshot = capture_clipboard_text_only()?;
         let use_line_selection = is_web_keyboard_line_context(&context.control_id)
             && context.selection_range.is_none()
-            && plan.range.start == 0;
-        let mut selected = if context.selection_range.is_some() {
-            copy_selected_text_checked(&snapshot, Duration::from_millis(450))
-        } else if use_line_selection {
+            && (plan.range.start == 0 || replace_entire_context);
+        let mut selected = if use_line_selection {
             select_web_line_left_context();
             std::thread::sleep(Duration::from_millis(35));
             copy_selected_text_checked(&snapshot, Duration::from_millis(450))
         } else {
-            select_left_utf16_units(actual_before.encode_utf16().count())?;
+            select_left_utf16_units(expected_selection.encode_utf16().count())?;
             std::thread::sleep(Duration::from_millis(35));
             copy_selected_text_checked(&snapshot, Duration::from_millis(450))
         };
-        if context.selection_range.is_none() && selected.as_deref() != Some(actual_before.as_str())
-        {
+        if !replace_entire_context && selected.as_deref() != Some(expected_selection) {
             selected = extend_web_selection_to_expected_prefix(
                 selected,
                 &actual_before,
@@ -1293,7 +1368,7 @@ impl WebKeyboardSelectionMethod {
                 Duration::from_millis(450),
             );
         }
-        if selected.as_deref() != Some(actual_before.as_str()) {
+        if selected.as_deref() != Some(expected_selection) {
             send_key(VK_RIGHT);
             let _ = restore_clipboard_text_only(&snapshot);
             return Err(PlatformError::ReplacementUnavailableReason(format!(
@@ -1305,12 +1380,12 @@ impl WebKeyboardSelectionMethod {
 
         let _ = restore_clipboard_text_only(&snapshot);
         std::thread::sleep(Duration::from_millis(20));
-        send_unicode_text(&plan.replacement_text)?;
+        send_unicode_text(&replacement_text)?;
 
         Ok(ApplyReplacementResult {
             applied: true,
             actual_before_text: Some(actual_before),
-            actual_after_text: Some(plan.replacement_text.clone()),
+            actual_after_text: Some(replacement_text),
             method: MethodId::WebKeyboardSelection.as_str().to_owned(),
         })
     }
@@ -1932,6 +2007,18 @@ mod tests {
     }
 
     #[test]
+    fn classic_console_class_requires_foreground_and_focus_console() {
+        assert!(is_classic_console_class(
+            "ConsoleWindowClass",
+            "ConsoleWindowClass"
+        ));
+        assert!(!is_classic_console_class(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass"
+        ));
+    }
+
+    #[test]
     fn classic_console_is_not_psreadline_passthrough_terminal() {
         assert!(is_psreadline_passthrough_terminal_class(
             "CASCADIA_HOSTING_WINDOW_CLASS",
@@ -1940,6 +2027,22 @@ mod tests {
         assert!(!is_psreadline_passthrough_terminal_class(
             "ConsoleWindowClass",
             "ConsoleWindowClass"
+        ));
+    }
+
+    #[test]
+    fn classic_console_does_not_need_conservative_suppression() {
+        assert!(!terminal_class_needs_conservative_suppression(
+            "ConsoleWindowClass",
+            "ConsoleWindowClass"
+        ));
+    }
+
+    #[test]
+    fn windows_terminal_needs_conservative_suppression() {
+        assert!(terminal_class_needs_conservative_suppression(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass"
         ));
     }
 
@@ -1955,6 +2058,7 @@ mod tests {
         assert!(is_ssh_terminal_title("root@host"));
         assert!(is_ssh_terminal_title("ssh user@host"));
         assert!(!is_ssh_terminal_title("Windows PowerShell"));
+        assert!(!is_ssh_terminal_title("PowerShell"));
         assert!(!is_ssh_terminal_title("PowerShell 7 (x64)"));
         assert!(!is_ssh_terminal_title("C:\\WINDOWS\\system32\\cmd.exe"));
     }
@@ -1966,6 +2070,14 @@ mod tests {
                 "CASCADIA_HOSTING_WINDOW_CLASS",
                 "Windows.UI.Input.InputSite.WindowClass",
                 "Windows PowerShell"
+            ),
+            TerminalPassthrough::PsReadLine
+        );
+        assert_eq!(
+            terminal_passthrough_for_window(
+                "CASCADIA_HOSTING_WINDOW_CLASS",
+                "Windows.UI.Input.InputSite.WindowClass",
+                "PowerShell"
             ),
             TerminalPassthrough::PsReadLine
         );
@@ -2639,6 +2751,37 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_control_state_maps_classic_console_ctrl_pause_immediately() {
+        let mut state = KeyboardControlHookState::default();
+
+        assert_eq!(state.handle_key(VK_LCONTROL, true, false), None);
+        assert_eq!(
+            state.handle_classic_console_pause_key(VK_CANCEL, true, false),
+            Some(stepler_core::CorrectionMode::ScrollLock)
+        );
+        assert_eq!(
+            state.handle_classic_console_pause_key(VK_CANCEL, false, true),
+            None
+        );
+        assert_eq!(state.handle_key(VK_LCONTROL, false, true), None);
+        assert_eq!(state.take_pending_scroll_lock_if_released(), None);
+    }
+
+    #[test]
+    fn keyboard_control_state_maps_classic_console_plain_pause_immediately() {
+        let mut state = KeyboardControlHookState::default();
+
+        assert_eq!(
+            state.handle_classic_console_pause_key(VK_PAUSE, true, false),
+            Some(stepler_core::CorrectionMode::Pause)
+        );
+        assert_eq!(
+            state.handle_classic_console_pause_key(VK_PAUSE, false, true),
+            None
+        );
+    }
+
+    #[test]
     fn keyboard_control_state_passes_plain_terminal_pause_through() {
         let mut state = KeyboardControlHookState::default();
 
@@ -3184,6 +3327,22 @@ fn is_supported_terminal_class(app_class: &str, focused_class: &str) -> bool {
         || focused_class == "Windows.UI.Input.InputSite.WindowClass"
 }
 
+fn is_classic_console_class(app_class: &str, focused_class: &str) -> bool {
+    app_class.eq_ignore_ascii_case("ConsoleWindowClass")
+        && focused_class.eq_ignore_ascii_case("ConsoleWindowClass")
+}
+
+#[cfg(windows)]
+fn foreground_is_classic_console() -> bool {
+    let Ok(foreground) = foreground_hwnd() else {
+        return false;
+    };
+    let focused = focused_window(foreground).unwrap_or(foreground);
+    let app_class = window_class_name(foreground).unwrap_or_default();
+    let focused_class = window_class_name(focused).unwrap_or_default();
+    is_classic_console_class(&app_class, &focused_class)
+}
+
 #[cfg(windows)]
 fn foreground_terminal_passthrough() -> TerminalPassthrough {
     let Ok(foreground) = foreground_hwnd() else {
@@ -3221,14 +3380,20 @@ fn terminal_passthrough_for_window(
 }
 
 #[cfg(windows)]
-fn terminal_focus_is_supported() -> bool {
+fn terminal_needs_conservative_suppression() -> bool {
     let Ok(foreground) = foreground_hwnd() else {
         return false;
     };
     let focused = focused_window(foreground).unwrap_or(foreground);
     let app_class = window_class_name(foreground).unwrap_or_default();
     let focused_class = window_class_name(focused).unwrap_or_default();
-    is_supported_terminal_class(&app_class, &focused_class)
+    terminal_class_needs_conservative_suppression(&app_class, &focused_class)
+}
+
+fn terminal_class_needs_conservative_suppression(app_class: &str, focused_class: &str) -> bool {
+    is_supported_terminal_class(app_class, focused_class)
+        && !app_class.eq_ignore_ascii_case("ConsoleWindowClass")
+        && !focused_class.eq_ignore_ascii_case("ConsoleWindowClass")
 }
 
 fn is_psreadline_passthrough_terminal_class(app_class: &str, focused_class: &str) -> bool {
@@ -3260,6 +3425,8 @@ fn is_local_psreadline_terminal_title(title: &str) -> bool {
     }
 
     title == "windows powershell"
+        || title == "powershell"
+        || title == "pwsh"
         || title.starts_with("windows powershell ")
         || title.starts_with("powershell ")
         || title.starts_with("pwsh ")
@@ -3334,6 +3501,18 @@ fn is_browser_like_target(target: &ForegroundTarget) -> bool {
     )
 }
 
+fn is_notepad_like_target(target: &ForegroundTarget) -> bool {
+    let app_class = target.app_class.to_ascii_lowercase();
+    let focused_class = target.focused_class.to_ascii_lowercase();
+    let process_name = target
+        .process_name
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    process_name == "notepad" || app_class.contains("notepad") || focused_class.contains("notepad")
+}
+
 fn allow_uia_document_caret_fallback(target: &ForegroundTarget) -> bool {
     let _ = target;
     false
@@ -3400,6 +3579,7 @@ fn run_powershell_script(script: &str, env: &[(&str, String)]) -> Result<String,
     for (key, value) in env {
         command.env(key, value);
     }
+    command.creation_flags(CREATE_NO_WINDOW);
 
     let mut child = command
         .spawn()
@@ -3595,9 +3775,11 @@ function ConvertTo-B64([string] $Text) {
 }
 $start = [int] $env:STEPLER_WORD_START
 $end = [int] $env:STEPLER_WORD_END
+$targetCaret = [int] $env:STEPLER_WORD_CARET
 $expected = From-B64 $env:STEPLER_WORD_EXPECTED_B64
 $replacement = From-B64 $env:STEPLER_WORD_REPLACEMENT_B64
 $word = [Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application')
+try { $word.Activate() } catch { }
 $document = $word.ActiveDocument
 $range = $document.Range($start, $end)
 $actual = Strip-WordRangeMarkers ([string] $range.Text)
@@ -3611,7 +3793,7 @@ try {
     $rightBefore = Strip-WordRangeMarkers ([string] $document.Range($end, $end + 1).Text)
 } catch { }
 $range.Text = $replacement
-$caret = $start + $replacement.Length
+$caret = $targetCaret
 $word.Selection.SetRange($caret, $caret)
 Start-Sleep -Milliseconds 140
 $rightAfter = ''
@@ -3709,6 +3891,7 @@ function ConvertTo-B64([string] $Text) {
 }
 $start = [int] $env:STEPLER_WORD_START
 $end = [int] $env:STEPLER_WORD_END
+$targetCaret = [int] $env:STEPLER_WORD_CARET
 $expected = From-B64 $env:STEPLER_WORD_EXPECTED_B64
 $replacement = From-B64 $env:STEPLER_WORD_REPLACEMENT_B64
 $outlook = [Runtime.InteropServices.Marshal]::GetActiveObject('Outlook.Application')
@@ -3738,7 +3921,7 @@ try {
     $rightBefore = Strip-WordRangeMarkers ([string] $document.Range($end, $end + 1).Text)
 } catch { }
 $range.Text = $replacement
-$caret = $start + $replacement.Length
+$caret = $targetCaret
 $word.Selection.SetRange($caret, $caret)
 Start-Sleep -Milliseconds 140
 $rightAfter = ''
@@ -5845,6 +6028,46 @@ impl KeyboardControlHookState {
         }
     }
 
+    fn handle_classic_console_pause_key(
+        &mut self,
+        vk_code: u32,
+        is_down: bool,
+        is_up: bool,
+    ) -> Option<stepler_core::CorrectionMode> {
+        if !matches!(vk_code, VK_PAUSE | VK_CANCEL) {
+            return None;
+        }
+
+        let ctrl_down = self.left_ctrl_down || self.right_ctrl_down;
+        if is_down
+            && !self.pause_down
+            && Self::debounce_allows(if ctrl_down {
+                self.last_scroll_lock_at
+            } else {
+                self.last_pause_at
+            })
+        {
+            self.pause_down = true;
+            let now = Instant::now();
+            if ctrl_down {
+                self.left_ctrl_used |= self.left_ctrl_down;
+                self.right_ctrl_used |= self.right_ctrl_down;
+                self.last_scroll_lock_at = Some(now);
+                self.suppress_c_until = Some(now + Duration::from_millis(1_500));
+                return Some(stepler_core::CorrectionMode::ScrollLock);
+            }
+
+            self.last_pause_at = Some(now);
+            return Some(stepler_core::CorrectionMode::Pause);
+        }
+
+        if is_up {
+            self.pause_down = false;
+        }
+
+        None
+    }
+
     fn should_suppress_companion_key(&mut self, vk_code: u32) -> bool {
         if !is_scrolllock_companion_key(vk_code) {
             return false;
@@ -5924,7 +6147,7 @@ impl KeyboardControlHookState {
                     self.right_ctrl_down = true;
                     self.right_ctrl_used = false;
                 }
-                VK_APPS | VK_CAPITAL => return Some(KeyboardControlAction::SwitchToNext),
+                VK_APPS => return Some(KeyboardControlAction::SwitchToNext),
                 _ => {
                     if self.left_ctrl_down {
                         self.left_ctrl_used = true;
@@ -6073,8 +6296,23 @@ unsafe extern "system" fn low_level_keyboard_proc(
         return CallNextHookEx(0, code, wparam, lparam);
     }
     if matches!(vk_code, VK_PAUSE | VK_CANCEL) {
+        if foreground_is_classic_console() {
+            let mode = KEYBOARD_CONTROL_STATE
+                .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
+                .lock()
+                .ok()
+                .and_then(|mut state| {
+                    state.handle_classic_console_pause_key(vk_code, is_down, is_up)
+                });
+            if let Some(mode) = mode {
+                post_correction_hotkey_from_hook(mode, vk_code, is_down, is_up);
+            }
+            return 1;
+        }
         let terminal_passthrough = foreground_terminal_passthrough();
-        if terminal_passthrough == TerminalPassthrough::None && terminal_focus_is_supported() {
+        if terminal_passthrough == TerminalPassthrough::None
+            && terminal_needs_conservative_suppression()
+        {
             append_hotkey_signal_log(&format!(
                 "hook_terminal_conservative_suppressed vk={vk_code} down={is_down} up={is_up}"
             ));
@@ -6156,11 +6394,24 @@ unsafe extern "system" fn low_level_keyboard_proc(
             });
         return CallNextHookEx(0, code, wparam, lparam);
     }
-    if should_suppress_keyboard_companion_event(vk_code) {
-        return 1;
-    }
     if should_ignore_keyboard_hook_event(event) {
         return CallNextHookEx(0, code, wparam, lparam);
+    }
+    if vk_code == VK_CAPITAL && caps_lock_disabled() {
+        append_hotkey_signal_log(&format!(
+            "hook_capslock_suppressed down={is_down} up={is_up}"
+        ));
+        return 1;
+    }
+    if vk_code == VK_INSERT && insert_as_backspace_enabled() && no_modifier_keys_down() {
+        if is_down {
+            append_hotkey_signal_log("hook_insert_as_backspace");
+            send_key_virtual(VK_BACK);
+        }
+        return 1;
+    }
+    if should_suppress_keyboard_companion_event(vk_code) {
+        return 1;
     }
 
     let (mode, action, suppress_key) = KEYBOARD_CONTROL_STATE
@@ -6230,7 +6481,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
             );
         }
 
-        if matches!(vk_code, VK_APPS | VK_CAPITAL) {
+        if vk_code == VK_APPS {
             return 1;
         }
     }
@@ -6268,6 +6519,34 @@ fn correction_hotkey_enabled(mode: stepler_core::CorrectionMode) -> bool {
 }
 
 #[cfg(windows)]
+fn post_correction_hotkey_from_hook(
+    mode: stepler_core::CorrectionMode,
+    vk_code: u32,
+    is_down: bool,
+    is_up: bool,
+) {
+    if !correction_hotkey_enabled(mode) {
+        append_hotkey_signal_log(&format!("hook_mode_disabled {mode:?}"));
+        return;
+    }
+    if let Some(thread_id) = KEYBOARD_CONTROL_THREAD_ID.get().copied() {
+        let posted = unsafe {
+            PostThreadMessageW(
+                thread_id,
+                WM_STEPLER_HOTKEY,
+                correction_mode_message_id(mode),
+                0,
+            )
+        };
+        append_hotkey_signal_log(&format!(
+            "hook_post mode={mode:?} vk={vk_code} down={is_down} up={is_up} posted={posted}"
+        ));
+    } else {
+        append_hotkey_signal_log(&format!("hook_no_thread mode={mode:?} vk={vk_code}"));
+    }
+}
+
+#[cfg(windows)]
 fn layout_action_enabled(action: KeyboardControlAction) -> bool {
     match action {
         KeyboardControlAction::SwitchToRussian | KeyboardControlAction::SwitchToEnglish => {
@@ -6277,6 +6556,34 @@ fn layout_action_enabled(action: KeyboardControlAction) -> bool {
             env_flag_enabled("STEPLER_ENABLE_MENU_CAPS_LAYOUT", true)
         }
     }
+}
+
+#[cfg(windows)]
+fn caps_lock_disabled() -> bool {
+    env_flag_enabled("STEPLER_DISABLE_CAPSLOCK", true)
+}
+
+#[cfg(windows)]
+fn insert_as_backspace_enabled() -> bool {
+    env_flag_enabled("STEPLER_INSERT_AS_BACKSPACE", true)
+}
+
+#[cfg(windows)]
+fn no_modifier_keys_down() -> bool {
+    ![
+        VK_LCONTROL,
+        VK_RCONTROL,
+        VK_SHIFT,
+        VK_LSHIFT,
+        VK_RSHIFT,
+        VK_MENU,
+        VK_LMENU,
+        VK_RMENU,
+        VK_LWIN,
+        VK_RWIN,
+    ]
+    .iter()
+    .any(|vk| unsafe { GetAsyncKeyState(*vk as i32) & i16::MIN != 0 })
 }
 
 #[cfg(windows)]
@@ -6296,12 +6603,17 @@ struct ClipboardGuard;
 #[cfg(windows)]
 impl ClipboardGuard {
     fn open() -> Result<Self, PlatformError> {
-        let opened = unsafe { OpenClipboard(0) };
-        if opened == 0 {
-            return Err(PlatformError::ClipboardUnavailable);
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_millis(450) {
+            let opened = unsafe { OpenClipboard(0) };
+            if opened != 0 {
+                return Ok(Self);
+            }
+
+            std::thread::sleep(Duration::from_millis(10));
         }
 
-        Ok(Self)
+        Err(PlatformError::ClipboardUnavailable)
     }
 }
 
@@ -6442,6 +6754,8 @@ const SMTO_ABORTIFHUNG: u32 = 0x0002;
 const KLF_SETFORPROCESS: u32 = 0x00000100;
 #[cfg(windows)]
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(windows)]
 const STEPLER_INJECTED_CONTROL_MAGIC: usize = 0x5354_4550_4C45_5201;
 #[cfg(windows)]
@@ -6730,6 +7044,7 @@ unsafe extern "system" {
     fn CallNextHookEx(hook: isize, code: i32, wparam: usize, lparam: isize) -> isize;
     fn UnhookWindowsHookEx(hook: isize) -> i32;
     fn keybd_event(vk: u8, scan: u8, flags: u32, extra_info: usize);
+    fn GetAsyncKeyState(virtual_key: i32) -> i16;
 }
 
 #[cfg(windows)]

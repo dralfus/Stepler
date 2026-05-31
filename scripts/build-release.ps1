@@ -17,7 +17,9 @@ if ([string]::IsNullOrWhiteSpace($DistDir)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($BuildVersion)) {
-    $BuildVersion = "0.1.0-alpha.$(Get-Date -Format 'yyyyMMdd.HHmm')"
+    $buildDate = Get-Date -Format 'yyyyMMdd'
+    $buildTime = Get-Date -Format 'HHmm'
+    $BuildVersion = "0.1.0-alpha.$buildDate.t$buildTime"
 }
 
 if ([string]::IsNullOrWhiteSpace($FileVersion)) {

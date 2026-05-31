@@ -5,7 +5,7 @@
 Собрать инсталлятор:
 
 ```powershell
-cd F:\distr\system\Stepler
+cd <repo>\Stepler
 .\scripts\build-installer.ps1
 ```
 

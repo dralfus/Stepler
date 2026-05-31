@@ -1,13 +1,25 @@
-Stepler known issues / release notes for alpha 0.1.0
+# Известные ограничения Stepler
 
-Known limitations:
+Актуально для alpha 0.1.1.
 
-- Browser/Electron/Codex-style controls are not a primary supported path yet. Generic ClipboardSelection and SendInput fallbacks are risky and disabled unless explicitly enabled.
-- PowerShell should use the PSReadLine adapter. The smart-line shortcut is Ctrl+Pause.
-- Browser/Electron/Confluence/Codex generic editing surfaces use only the strict UIAutomationEditableText method. If Windows UI Automation does not expose a focused writable Edit element with reliable text/caret patterns, Stepler refuses to mutate them.
-- UIAutomationDocumentText is selection-only in alpha: it can replace explicitly selected text in UIA TextPattern document surfaces, but it does not infer the word/line around a collapsed caret. Selected text uses a fast foreground-checked apply path by default; set STEPLER_UIA_DOCUMENT_STRICT_APPLY=1 to use the slower UIA preflight/verify path for diagnostics.
-- The installer is framework-dependent and requires .NET 9 Desktop Runtime on the target machine.
-- Linux support is postponed.
-- Word support depends on installed Microsoft Word and COM availability.
+## Открытые ограничения
 
-No currently known blocking data-loss bugs after the latest Notepad, PowerShell, Word, UIA fixture, clipboard, and tray fixes.
+- PowerShell должен работать через PSReadLine adapter. Для новых сессий adapter загружается из профиля PowerShell; уже открытые окна нужно перезапустить или загрузить adapter вручную. Умный режим строки назначен на `Ctrl+Pause`.
+- Windows Terminal с удаленной SSH-сессией не имеет безопасного локального API для редактирования строки на удаленной машине. По умолчанию Stepler подавляет `Pause`/`Ctrl+Pause` в SSH, чтобы не отправлять `^C` и не закрывать сессию.
+- Browser/Electron-поля поддерживаются только через безопасные app policies и проверяемые методы. Generic `ClipboardSelection` и `SendInput` fallback-и остаются рискованными и выключены, если не включить их явно через диагностику.
+- `UIAutomationDocumentText` надежен для явно выделенного текста и отдельных web/document-поверхностей, но не является универсальным способом понять слово слева от caret во всех приложениях.
+- Telegram Desktop поддерживается отдельной policy для Qt-окна Telegram. Если изменится process name или класс окна, потребуется обновить диагностику и policy.
+- Word adapter зависит от установленного Microsoft Word и доступности COM.
+- Linux support отложен.
+
+## Закрыто в текущей ветке
+
+- PowerShell/Windows Terminal больше не использует `Ctrl+C` как универсальное копирование текущей строки.
+- В SSH-сессиях `Pause`/`Ctrl+Pause` больше не отправляют `^C`.
+- Telegram больше не распознается как SSH только из-за символа `@` в заголовке чата.
+- PSReadLine profile installer больше не привязан к одному пути Documents и учитывает локальный `%USERPROFILE%\Documents`.
+- Локальные пути конкретной машины удалены из рабочего кода и пользовательской документации.
+
+## Блокирующие data-loss баги
+
+На текущий момент неизвестны. Если adapter не может подтвердить контекст или `expected_before_text`, он должен отказаться от замены.

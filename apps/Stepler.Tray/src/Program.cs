@@ -607,6 +607,14 @@ internal sealed class SteplerTrayForm : Form
 
     private static string? FindRepoRoot()
     {
+        var configured = Environment.GetEnvironmentVariable("STEPLER_REPO_ROOT");
+        if (!string.IsNullOrWhiteSpace(configured)
+            && File.Exists(Path.Combine(configured, "Cargo.toml"))
+            && Directory.Exists(Path.Combine(configured, "crates")))
+        {
+            return configured;
+        }
+
         var current = AppContext.BaseDirectory;
         while (!string.IsNullOrWhiteSpace(current))
         {
@@ -619,8 +627,7 @@ internal sealed class SteplerTrayForm : Form
             current = Directory.GetParent(current)?.FullName;
         }
 
-        var fallback = @"F:\distr\system\Stepler";
-        return File.Exists(Path.Combine(fallback, "Cargo.toml")) ? fallback : null;
+        return null;
     }
 
     private string ResolveCliPath()

@@ -346,6 +346,27 @@ pub fn default_app_policies() -> Vec<AppPolicy> {
             allow_risky_methods: false,
         },
         AppPolicy {
+            app_matcher: String::from("Telegram"),
+            preferred_context_methods: vec![
+                MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationEditableText,
+                MethodId::UiAutomationDocumentText,
+            ],
+            preferred_replace_methods: vec![
+                MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationEditableText,
+                MethodId::UiAutomationDocumentText,
+            ],
+            forbidden_methods: vec![
+                MethodId::Win32EditMessages,
+                MethodId::UiAutomationText,
+                MethodId::TerminalClipboardShortcut,
+                MethodId::ClipboardSelection,
+                MethodId::SendInput,
+            ],
+            allow_risky_methods: false,
+        },
+        AppPolicy {
             app_matcher: String::from("MozillaWindowClass"),
             preferred_context_methods: vec![
                 MethodId::WebKeyboardSelection,
@@ -645,6 +666,22 @@ mod tests {
             error,
             ResolveError::ForbiddenByPolicy(MethodId::UiAutomationDocumentText)
         );
+    }
+
+    #[test]
+    fn resolver_prefers_keyboard_selection_for_telegram_policy() {
+        let resolver = MethodResolver::default();
+        let mut target = target("Qt51518QWindowIcon", "Qt51518QWindowIcon");
+        target.process_name = Some(String::from("Telegram"));
+        let probes = vec![
+            MethodProbe::safe(MethodId::UiAutomationEditableText, "editable text"),
+            MethodProbe::safe(MethodId::WebKeyboardSelection, "keyboard selection"),
+        ];
+
+        let decision = resolver.resolve(&target, &probes).unwrap();
+
+        assert_eq!(decision.context_method, MethodId::WebKeyboardSelection);
+        assert_eq!(decision.replacement_method, MethodId::WebKeyboardSelection);
     }
 
     fn target(app_class: &str, focused_class: &str) -> ForegroundTarget {

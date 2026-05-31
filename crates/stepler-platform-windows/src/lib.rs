@@ -724,6 +724,7 @@ impl ClipboardSelectionMethod {
             || is_supported_terminal_class(&target.app_class, &target.focused_class)
             || is_word_target(target)
             || is_browser_like_target(target)
+            || is_telegram_target(target)
             || target.app_class.eq_ignore_ascii_case("Progman")
             || target.app_class.eq_ignore_ascii_case("WorkerW")
             || target.focused_class.eq_ignore_ascii_case("SysListView32")
@@ -817,6 +818,7 @@ impl SendInputMethod {
         if is_supported_terminal_class(&target.app_class, &target.focused_class)
             || is_word_target(target)
             || is_browser_like_target(target)
+            || is_telegram_target(target)
             || target.app_class.eq_ignore_ascii_case("Progman")
             || target.app_class.eq_ignore_ascii_case("WorkerW")
             || target.focused_class.eq_ignore_ascii_case("SysListView32")
@@ -993,13 +995,13 @@ struct WebKeyboardSelectionMethod;
 #[cfg(windows)]
 impl WebKeyboardSelectionMethod {
     fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
-        if !is_browser_like_target(target) {
+        if !is_browser_like_target(target) && !is_telegram_target(target) {
             return None;
         }
 
         let mut probe = MethodProbe::safe(
             MethodId::WebKeyboardSelection,
-            "browser/editor keyboard selection with clipboard preflight",
+            "editor keyboard selection with clipboard preflight",
         );
         probe.requires_clipboard = true;
         Some(probe)
@@ -1950,8 +1952,8 @@ mod tests {
     #[test]
     fn ssh_terminal_title_is_detected_without_matching_powershell() {
         assert!(is_ssh_terminal_title("vpnuser"));
-        assert!(is_ssh_terminal_title("root@example"));
-        assert!(is_ssh_terminal_title("ssh user@example"));
+        assert!(is_ssh_terminal_title("root@host"));
+        assert!(is_ssh_terminal_title("ssh user@host"));
         assert!(!is_ssh_terminal_title("Windows PowerShell"));
         assert!(!is_ssh_terminal_title("PowerShell 7 (x64)"));
         assert!(!is_ssh_terminal_title("C:\\WINDOWS\\system32\\cmd.exe"));
@@ -1979,7 +1981,7 @@ mod tests {
             terminal_passthrough_for_window(
                 "CASCADIA_HOSTING_WINDOW_CLASS",
                 "Windows.UI.Input.InputSite.WindowClass",
-                "PowerShell ssh user@example"
+                "PowerShell ssh user@host"
             ),
             TerminalPassthrough::Ssh
         );
@@ -1990,6 +1992,14 @@ mod tests {
                 ""
             ),
             TerminalPassthrough::UnknownTerminal
+        );
+        assert_eq!(
+            terminal_passthrough_for_window(
+                "Qt51518QWindowIcon",
+                "Qt51518QWindowIcon",
+                "\u{200e}Contact Name @ \u{200e}username"
+            ),
+            TerminalPassthrough::None
         );
     }
 
@@ -2242,6 +2252,24 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn telegram_qt_window_uses_keyboard_selection_probe() {
+        let target = ForegroundTarget {
+            app_class: String::from("Qt51518QWindowIcon"),
+            focused_class: String::from("Qt51518QWindowIcon"),
+            title: String::from("Contact @ username"),
+            process_name: Some(String::from("Telegram")),
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("hwnd:2"),
+        };
+
+        assert!(is_telegram_target(&target));
+        assert!(WebKeyboardSelectionMethod.probe(&target).is_some());
+        assert!(ClipboardSelectionMethod.probe(&target).is_none());
+        assert!(SendInputMethod.probe(&target).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn uia_text_method_does_not_probe_known_special_controls() {
         let edit = ForegroundTarget {
             app_class: String::from("Notepad"),
@@ -2400,7 +2428,7 @@ mod tests {
     #[test]
     fn console_prompt_line_parser_extracts_input() {
         assert_eq!(
-            console_input_from_prompt_line("PS C:\\Users\\alexey.andreev> пше      "),
+            console_input_from_prompt_line("PS C:\\Users\\User> пше      "),
             "пше"
         );
         assert_eq!(console_input_from_prompt_line("ghbdtn vbh"), "ghbdtn vbh");
@@ -3177,19 +3205,19 @@ fn terminal_passthrough_for_window(
     focused_class: &str,
     title: &str,
 ) -> TerminalPassthrough {
+    if !is_psreadline_passthrough_terminal_class(app_class, focused_class) {
+        return TerminalPassthrough::None;
+    }
     if is_cmd_terminal_title(&title) {
         return TerminalPassthrough::None;
     }
     if is_ssh_terminal_title(&title) {
         return TerminalPassthrough::Ssh;
     }
-    if is_psreadline_passthrough_terminal_class(&app_class, &focused_class) {
-        if is_local_psreadline_terminal_title(&title) {
-            return TerminalPassthrough::PsReadLine;
-        }
-        return TerminalPassthrough::UnknownTerminal;
+    if is_local_psreadline_terminal_title(title) {
+        return TerminalPassthrough::PsReadLine;
     }
-    TerminalPassthrough::None
+    TerminalPassthrough::UnknownTerminal
 }
 
 #[cfg(windows)]
@@ -3283,6 +3311,19 @@ fn is_outlook_class_or_process(
         || app_class.eq_ignore_ascii_case("rctrl_renwnd32")
         || focused_class.eq_ignore_ascii_case("_WwG")
             && app_class.to_ascii_lowercase().contains("outlook")
+}
+
+fn is_telegram_target(target: &ForegroundTarget) -> bool {
+    target
+        .process_name
+        .as_deref()
+        .is_some_and(|process| process.eq_ignore_ascii_case("Telegram"))
+        || is_telegram_qt_class(&target.app_class) && target.title.contains('@')
+}
+
+fn is_telegram_qt_class(class_name: &str) -> bool {
+    let class_name = class_name.to_ascii_lowercase();
+    class_name.starts_with("qt") && class_name.ends_with("qwindowicon")
 }
 
 fn is_browser_like_target(target: &ForegroundTarget) -> bool {

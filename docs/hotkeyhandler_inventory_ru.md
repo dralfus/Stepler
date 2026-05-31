@@ -1,8 +1,8 @@
-# Инвентаризация HotkeyHandler для Stepler
+# Инвентаризация донорского проекта для Stepler
 
 Дата: 2026-05-08.
 
-Источник: `F:\distr\system\HotkeyHandler`.
+Источник: локальный донорский workspace.
 
 ## Что есть в доноре
 
@@ -68,7 +68,7 @@
 - `Data\NGrams\*.tsv` в runtime/test data Stepler;
 - `Data\Lexicons\*.txt` только как вспомогательный ресурс.
 
-### `HotkeyHandler.Tests`
+### Unit tests
 
 Переносить как unit/regression fixtures:
 
@@ -80,7 +80,7 @@
 - short function phrase `d nf,kbwt exntyj` -> `в таблице учтено`;
 - unknown mistyped English in Russian layout `ыеи ьфекшч` -> `stb matrix`.
 
-### `HotkeyHandler.UiTests`
+### UI tests
 
 Переносить как сценарии, не как реализацию:
 

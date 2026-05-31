@@ -97,7 +97,8 @@ Get-SteplerPsReadLineStatus
 
 ```powershell
 Import-Module PSReadLine
-. F:\distr\system\Stepler\dist\Stepler\scripts\Stepler.PSReadLine.ps1
+$adapter = Join-Path (Get-Location) "dist\Stepler\scripts\Stepler.PSReadLine.ps1"
+. $adapter
 Get-SteplerPsReadLineStatus
 ```
 

@@ -22,7 +22,7 @@ cargo test -p stepler-core
 1. Открыть Notepad.
 2. Набрать `k.,jdm`.
 3. Поставить курсор в конец слова.
-4. Из `F:\distr\system\Stepler` выполнить:
+4. Из корня репозитория Stepler выполнить:
 
 ```powershell
 $env:Path="$env:USERPROFILE\.cargo\bin;$env:Path"
@@ -68,7 +68,7 @@ cargo build -p stepler-cli
 Для диагностики или старого уже открытого окна PowerShell adapter можно загрузить вручную:
 
 ```powershell
-. F:\distr\system\Stepler\scripts\Stepler.PSReadLine.ps1
+. .\scripts\Stepler.PSReadLine.ps1
 ```
 
 Для автозагрузки можно добавить эту строку в `$PROFILE` после сборки `stepler-cli`.
@@ -76,7 +76,7 @@ cargo build -p stepler-cli
 Важно: PSReadLine может регистрировать только клавиши из `System.ConsoleKey`. `Pause` поддерживается, поэтому операция умного режима строки в PSReadLine adapter по умолчанию назначена на `Ctrl+Pause`. При необходимости можно выбрать другой chord; если передать неподдерживаемый chord, скрипт предупредит и вернется к безопасному fallback:
 
 ```powershell
-. F:\distr\system\Stepler\scripts\Stepler.PSReadLine.ps1 -ScrollLockChord F8
+. .\scripts\Stepler.PSReadLine.ps1 -ScrollLockChord F8
 ```
 
 Проверка:

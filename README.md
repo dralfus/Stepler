@@ -54,7 +54,8 @@ Get-PSReadLineKeyHandler -Bound |
 
 ```powershell
 Import-Module PSReadLine
-. "D:\distr\System\Stepler\Stepler\dist\Stepler\scripts\Stepler.PSReadLine.ps1"
+$adapter = Join-Path (Get-Location) "dist\Stepler\scripts\Stepler.PSReadLine.ps1"
+. $adapter
 Get-SteplerPsReadLineStatus
 ```
 

@@ -1,19 +1,19 @@
 # Stepler handoff для нового Codex-чата
 
-Этот файл сохраняет контекст для продолжения разработки Stepler после открытия workspace на `F:\distr\system\`.
+Этот файл сохраняет контекст для продолжения разработки Stepler после открытия workspace в локальной папке с проектами.
 
 ## Рабочие каталоги
 
-- Старый проект: `F:\distr\system\HotkeyHandler\`
-- Новый проект: `F:\distr\system\Stepler\`
-- Рекомендуемый workspace root для Codex: `F:\distr\system\`
+- Старый проект: `<workspace>\HotkeyHandler\`
+- Новый проект: `<workspace>\Stepler\`
+- Рекомендуемый workspace root для Codex: `<workspace>\`
 
 ## Документы, которые нужно прочитать в новом чате
 
-1. `F:\distr\system\HotkeyHandler\TECHNICAL_SPEC_RU.md`
-2. `F:\distr\system\HotkeyHandler\STEPLER_DEVELOPMENT_PLAN_RU.md`
-3. `F:\distr\system\HotkeyHandler\README.md`
-4. `F:\distr\system\HotkeyHandler\known_bugs.txt`
+1. `<workspace>\HotkeyHandler\TECHNICAL_SPEC_RU.md`
+2. `<workspace>\HotkeyHandler\STEPLER_DEVELOPMENT_PLAN_RU.md`
+3. `<workspace>\HotkeyHandler\README.md`
+4. `<workspace>\HotkeyHandler\known_bugs.txt`
 
 ## Цель Stepler
 
@@ -175,7 +175,7 @@ UI-обновление метрик должно быть асинхронны�
 
 ## Команда для нового чата
 
-После открытия Codex workspace на `F:\distr\system\` можно написать:
+После открытия Codex workspace в папке с проектами можно написать:
 
 ```text
 Продолжаем Stepler. Прочитай HotkeyHandler\STEPLER_HANDOFF_RU.md, TECHNICAL_SPEC_RU.md и STEPLER_DEVELOPMENT_PLAN_RU.md. Новый проект находится в Stepler\. Начни с этапа 1: Rust workspace и stepler-core, с unit tests.

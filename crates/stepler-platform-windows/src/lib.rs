@@ -1185,7 +1185,7 @@ impl WebKeyboardSelectionMethod {
                 continue;
             }
 
-            select_web_left_context();
+            select_web_line_left_context();
             let copied_raw = copy_selected_text_checked(&snapshot, Duration::from_millis(450));
             let copied = copied_raw
                 .filter(|text| !text.trim().is_empty())
@@ -1198,7 +1198,7 @@ impl WebKeyboardSelectionMethod {
                 return Ok(TextContext {
                     app_id: format!("{app_class}/{focused_class}"),
                     window_id: hwnd_id(foreground),
-                    control_id: format!("web-keyboard-selection:{}", hwnd_id(focused)),
+                    control_id: format!("web-keyboard-line-selection:{}", hwnd_id(focused)),
                     text_snapshot: text,
                     caret_range: TextRange::caret(text_len),
                     selection_range: None,
@@ -1218,7 +1218,7 @@ impl WebKeyboardSelectionMethod {
                 release_modifier_keys();
                 std::thread::sleep(Duration::from_millis(80));
                 let snapshot = capture_clipboard_text_only()?;
-                select_web_line_left_context();
+                select_web_left_context();
                 let copied_raw = copy_selected_text_checked(&snapshot, Duration::from_millis(450));
                 let copied = copied_raw
                     .filter(|text| !text.trim().is_empty())
@@ -1231,7 +1231,7 @@ impl WebKeyboardSelectionMethod {
                     return Ok(TextContext {
                         app_id: format!("{app_class}/{focused_class}"),
                         window_id: hwnd_id(foreground),
-                        control_id: format!("web-keyboard-line-selection:{}", hwnd_id(focused)),
+                        control_id: format!("web-keyboard-selection:{}", hwnd_id(focused)),
                         text_snapshot: text,
                         caret_range: TextRange::caret(text_len),
                         selection_range: None,
@@ -1368,27 +1368,54 @@ impl WebKeyboardSelectionMethod {
                 Duration::from_millis(450),
             );
         }
+        let selected_prefix_to_preserve =
+            if !replace_entire_context && selected.as_deref() != Some(expected_selection) {
+                selected
+                    .as_deref()
+                    .and_then(|selected| shifted_web_selection_prefix(selected, expected_selection))
+                    .unwrap_or_default()
+                    .to_owned()
+            } else {
+                String::new()
+            };
         if selected.as_deref() != Some(expected_selection) {
-            send_key(VK_RIGHT);
-            let _ = restore_clipboard_text_only(&snapshot);
-            return Err(PlatformError::ReplacementUnavailableReason(format!(
-                "web_keyboard_preflight expected={} actual={}",
-                preview_for_error(&actual_before, 40),
-                preview_for_error(selected.as_deref().unwrap_or("<none>"), 40)
-            )));
+            if selected_prefix_to_preserve.is_empty() {
+                send_key(VK_RIGHT);
+                let _ = restore_clipboard_text_only(&snapshot);
+                return Err(PlatformError::ReplacementUnavailableReason(format!(
+                    "web_keyboard_preflight expected={} actual={}",
+                    preview_for_error(&actual_before, 40),
+                    preview_for_error(selected.as_deref().unwrap_or("<none>"), 40)
+                )));
+            }
         }
 
         let _ = restore_clipboard_text_only(&snapshot);
         std::thread::sleep(Duration::from_millis(20));
-        send_unicode_text(&replacement_text)?;
+        let text_to_send = if selected_prefix_to_preserve.is_empty() {
+            replacement_text.clone()
+        } else {
+            format!("{selected_prefix_to_preserve}{replacement_text}")
+        };
+        send_unicode_text(&text_to_send)?;
 
         Ok(ApplyReplacementResult {
             applied: true,
             actual_before_text: Some(actual_before),
-            actual_after_text: Some(replacement_text),
+            actual_after_text: Some(text_to_send),
             method: MethodId::WebKeyboardSelection.as_str().to_owned(),
         })
     }
+}
+
+#[cfg(windows)]
+fn shifted_web_selection_prefix<'a>(selected: &'a str, expected: &str) -> Option<&'a str> {
+    let prefix = selected.strip_suffix(expected)?;
+    if prefix.is_empty() || prefix.chars().count() > 4 || !prefix.chars().all(char::is_whitespace) {
+        return None;
+    }
+
+    Some(prefix)
 }
 
 #[cfg(windows)]
@@ -2346,6 +2373,23 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn shifted_web_selection_prefix_accepts_leading_space_only() {
+        assert_eq!(
+            shifted_web_selection_prefix(" ghbqltncz ", "ghbqltncz "),
+            Some(" ")
+        );
+        assert_eq!(
+            shifted_web_selection_prefix("xghbqltncz ", "ghbqltncz "),
+            None
+        );
+        assert_eq!(
+            shifted_web_selection_prefix(" ghbqltncz !", "ghbqltncz "),
+            None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn yandex_chrome_widget_is_browser_like() {
         let target = ForegroundTarget {
             app_class: String::from("Chrome_Yandex_WidgetWin_1"),
@@ -2694,6 +2738,23 @@ mod tests {
         let mut state = KeyboardControlHookState::default();
         assert_eq!(
             state.handle_correction_hotkey(VK_CANCEL, true, false),
+            Some(stepler_core::CorrectionMode::Pause)
+        );
+    }
+
+    #[test]
+    fn keyboard_control_state_recovers_from_missing_pause_key_up() {
+        let mut state = KeyboardControlHookState::default();
+
+        assert_eq!(
+            state.handle_correction_hotkey(VK_PAUSE, true, false),
+            Some(stepler_core::CorrectionMode::Pause)
+        );
+        state.pause_down_at = Some(Instant::now() - Duration::from_millis(800));
+        state.last_pause_at = Some(Instant::now() - Duration::from_millis(800));
+
+        assert_eq!(
+            state.handle_correction_hotkey(VK_PAUSE, true, false),
             Some(stepler_core::CorrectionMode::Pause)
         );
     }
@@ -5942,6 +6003,7 @@ struct KeyboardControlHookState {
     left_ctrl_used: bool,
     right_ctrl_used: bool,
     pause_down: bool,
+    pause_down_at: Option<Instant>,
     pending_scroll_lock: bool,
     win_down: bool,
     last_pause_at: Option<Instant>,
@@ -5959,6 +6021,9 @@ impl KeyboardControlHookState {
     ) -> Option<stepler_core::CorrectionMode> {
         match vk_code {
             VK_PAUSE | VK_CANCEL => {
+                if is_down {
+                    self.recover_stale_pause_down();
+                }
                 let ctrl_down = self.left_ctrl_down || self.right_ctrl_down;
                 if is_down
                     && !self.pause_down
@@ -5968,7 +6033,7 @@ impl KeyboardControlHookState {
                         self.last_pause_at
                     })
                 {
-                    self.pause_down = true;
+                    self.mark_pause_down();
                     let now = Instant::now();
                     if ctrl_down {
                         self.left_ctrl_used |= self.left_ctrl_down;
@@ -5983,7 +6048,7 @@ impl KeyboardControlHookState {
                     return Some(stepler_core::CorrectionMode::Pause);
                 }
                 if is_up {
-                    self.pause_down = false;
+                    self.mark_pause_up();
                     return self.take_pending_scroll_lock_if_released();
                 }
             }
@@ -6004,8 +6069,11 @@ impl KeyboardControlHookState {
         }
 
         let ctrl_down = self.left_ctrl_down || self.right_ctrl_down;
+        if is_down {
+            self.recover_stale_pause_down();
+        }
         if is_down && !self.pause_down {
-            self.pause_down = true;
+            self.mark_pause_down();
             if ctrl_down {
                 self.left_ctrl_used |= self.left_ctrl_down;
                 self.right_ctrl_used |= self.right_ctrl_down;
@@ -6015,7 +6083,7 @@ impl KeyboardControlHookState {
         }
 
         if is_up {
-            self.pause_down = false;
+            self.mark_pause_up();
             if ctrl_down {
                 return TerminalPauseHandling::Suppress;
             }
@@ -6039,6 +6107,9 @@ impl KeyboardControlHookState {
         }
 
         let ctrl_down = self.left_ctrl_down || self.right_ctrl_down;
+        if is_down {
+            self.recover_stale_pause_down();
+        }
         if is_down
             && !self.pause_down
             && Self::debounce_allows(if ctrl_down {
@@ -6047,7 +6118,7 @@ impl KeyboardControlHookState {
                 self.last_pause_at
             })
         {
-            self.pause_down = true;
+            self.mark_pause_down();
             let now = Instant::now();
             if ctrl_down {
                 self.left_ctrl_used |= self.left_ctrl_down;
@@ -6062,7 +6133,7 @@ impl KeyboardControlHookState {
         }
 
         if is_up {
-            self.pause_down = false;
+            self.mark_pause_up();
         }
 
         None
@@ -6088,6 +6159,28 @@ impl KeyboardControlHookState {
         last_at
             .map(|last_at| last_at.elapsed() >= Duration::from_millis(250))
             .unwrap_or(true)
+    }
+
+    fn mark_pause_down(&mut self) {
+        self.pause_down = true;
+        self.pause_down_at = Some(Instant::now());
+    }
+
+    fn mark_pause_up(&mut self) {
+        self.pause_down = false;
+        self.pause_down_at = None;
+    }
+
+    fn recover_stale_pause_down(&mut self) {
+        if self.pause_down
+            && self
+                .pause_down_at
+                .is_some_and(|pause_down_at| pause_down_at.elapsed() >= Duration::from_millis(750))
+        {
+            self.pause_down = false;
+            self.pause_down_at = None;
+            self.pending_scroll_lock = false;
+        }
     }
 
     fn take_pending_scroll_lock_if_released(&mut self) -> Option<stepler_core::CorrectionMode> {
@@ -6328,7 +6421,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 .ok()
                 .map(|mut state| {
                     let ctrl_down = state.left_ctrl_down || state.right_ctrl_down;
-                    state.pause_down = true;
+                    state.mark_pause_down();
                     state.left_ctrl_used |= state.left_ctrl_down;
                     state.right_ctrl_used |= state.right_ctrl_down;
                     if ctrl_down {
@@ -6356,12 +6449,12 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 .lock()
                 .map(|mut state| {
                     if is_down {
-                        state.pause_down = true;
+                        state.mark_pause_down();
                         state.left_ctrl_used |= state.left_ctrl_down;
                         state.right_ctrl_used |= state.right_ctrl_down;
                     }
                     if is_up {
-                        state.pause_down = false;
+                        state.mark_pause_up();
                     }
                 });
             return 1;

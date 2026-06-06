@@ -54,6 +54,21 @@ mod tests {
     }
 
     #[test]
+    fn pause_keeps_layout_punctuation_inside_word_before_trailing_space() {
+        let context = TextContext::new("prefix ckf,fz\u{a0}")
+            .with_caret(TextRange::caret("prefix ckf,fz\u{a0}".len()));
+
+        let plan = build_replacement_plan(&context, CorrectionMode::Pause).unwrap();
+
+        assert_eq!(
+            plan.range,
+            TextRange::new("prefix ".len(), "prefix ckf,fz\u{a0}".len())
+        );
+        assert_eq!(plan.expected_before_text, "ckf,fz\u{a0}");
+        assert_eq!(plan.replacement_text, "слабая\u{a0}");
+    }
+
+    #[test]
     fn pause_does_not_cross_line_break_for_trailing_space_lookup() {
         let context = TextContext::new("k.,jdm\n").with_caret(TextRange::caret(7));
 

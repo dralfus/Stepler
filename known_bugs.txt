@@ -1,21 +1,32 @@
 # Известные ограничения Stepler
 
-Актуально для alpha 0.1.1.
+Актуально для alpha 0.1.1 и текущей development-ветки.
 
 ## Открытые ограничения
 
-- PowerShell должен работать через PSReadLine adapter. Для новых сессий adapter загружается из профиля PowerShell; уже открытые окна нужно перезапустить или загрузить adapter вручную. Умный режим строки назначен на `Ctrl+Pause`.
-- Windows Terminal с удаленной SSH-сессией не имеет безопасного локального API для редактирования строки на удаленной машине. По умолчанию Stepler подавляет `Pause`/`Ctrl+Pause` в SSH, чтобы не отправлять `^C` и не закрывать сессию.
-- Browser/Electron-поля поддерживаются только через безопасные app policies и проверяемые методы. Generic `ClipboardSelection` и `SendInput` fallback-и остаются рискованными и выключены, если не включить их явно через диагностику.
+- PowerShell должен работать через `PSReadLine` adapter. Для новых сессий adapter загружается из профиля PowerShell; уже открытые окна нужно перезапустить или загрузить adapter вручную. Умный режим строки назначен на `Ctrl+Pause`.
+- PowerShell внутри SSH-сессии не редактируется локальным adapter-ом. По умолчанию Stepler подавляет `Pause`/`Ctrl+Pause`, чтобы не отправлять `^C` на удаленную машину. Remote Bash/readline adapter существует только как opt-in сценарий через `STEPLER_ENABLE_SSH_REMOTE_ADAPTER=1` и скрипт на удаленной стороне.
+- Встроенный терминал Codex/Electron работает через passthrough в `PSReadLine`, если внутри реально PowerShell с загруженным adapter-ом. Generic xterm keyboard fallback выключен по умолчанию: он оказался небезопасным и может захватывать prompt/clipboard вместо текущей команды.
+- Browser/Electron-поля поддерживаются через безопасные app policies и `WebKeyboardSelection`/UIA методы с preflight-проверками. В сложных web editor-ах no-selection режим может быть медленнее обычных Win32 controls и может fail-closed, если приложение не дает стабильно выделить/проверить диапазон.
+- Generic `ClipboardSelection` и `SendInput` fallback-и остаются рискованными и выключены, если не включить их явно через диагностику/policy.
 - `UIAutomationDocumentText` надежен для явно выделенного текста и отдельных web/document-поверхностей, но не является универсальным способом понять слово слева от caret во всех приложениях.
+- Classic `cmd.exe`/`conhost.exe`: `Pause` частично работает через `ConsoleBuffer`, но нестабилен; `Ctrl+Pause` пока не считается поддержанным, может очищать/портить текущую строку. Нужен отдельный adapter или другой безопасный протокол.
+- `cmd.exe` внутри Windows Terminal пока не имеет безопасного полноценного adapter-а. `TerminalClipboardShortcut` остается diagnostic/fallback путем и не считается поддержкой.
+- `WordCom`/Outlook WordEditor зависит от установленного Microsoft Word, доступности COM и может быть заметно медленнее Win32/WebKeyboard adapters.
+- CP-словарь исключений (`resources/layout-overrides.tsv`) применяется только к `Ctrl+Pause`. После ручного редактирования словаря нужно перезапустить обработчик из tray, потому что языковые модели загружаются при старте `stepler-cli`.
 - Telegram Desktop поддерживается отдельной policy для Qt-окна Telegram. Если изменится process name или класс окна, потребуется обновить диагностику и policy.
-- Word adapter зависит от установленного Microsoft Word и доступности COM.
 - Linux support отложен.
 
 ## Закрыто в текущей ветке
 
 - PowerShell/Windows Terminal больше не использует `Ctrl+C` как универсальное копирование текущей строки.
-- В SSH-сессиях `Pause`/`Ctrl+Pause` больше не отправляют `^C`.
+- В SSH-сессиях `Pause`/`Ctrl+Pause` больше не отправляют `^C` по умолчанию.
+- Встроенный терминал Codex с PowerShell снова работает через `PSReadLine` passthrough, а небезопасный xterm fallback отключен по умолчанию.
+- Web/Codex/Confluence/JIRA selection сценарии через `WebKeyboardSelection` снова учитывают выделенный текст и не должны конвертировать всю строку вместо selection.
+- `Ctrl+Pause` получил словарь исключений для неоднозначных слов; подтвержденный кейс `ddble -> ввиду` включен в дистрибутив.
+- В tray добавлен пункт открытия CP-словаря исключений.
+- Добавлены настройки tray: отключение `CapsLock` и режим `Insert` как `Backspace`.
+- Notepad regression с Alt-menu hints после `Pause`/`Ctrl+Pause` исправлен; стандартный путь снова `Win32EditMessages`.
 - Telegram больше не распознается как SSH только из-за символа `@` в заголовке чата.
 - PSReadLine profile installer больше не привязан к одному пути Documents и учитывает локальный `%USERPROFILE%\Documents`.
 - Локальные пути конкретной машины удалены из рабочего кода и пользовательской документации.

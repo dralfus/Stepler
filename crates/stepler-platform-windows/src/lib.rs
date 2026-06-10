@@ -97,6 +97,10 @@ pub fn method_diagnostics() -> Result<WindowsMethodDiagnostics, PlatformError> {
 pub fn try_forward_embedded_terminal_hotkey(
     mode: stepler_core::CorrectionMode,
 ) -> Result<bool, PlatformError> {
+    if !env_flag_enabled("STEPLER_ENABLE_EMBEDDED_TERMINAL_PSREADLINE", true) {
+        return Ok(false);
+    }
+
     let focus = uia_focus_diagnostics()?;
     if !is_embedded_terminal_uia_focus(&focus) {
         return Ok(false);
@@ -105,8 +109,14 @@ pub fn try_forward_embedded_terminal_hotkey(
     release_modifier_keys();
     std::thread::sleep(Duration::from_millis(20));
     match mode {
-        stepler_core::CorrectionMode::Pause => send_key_chord_virtual(&[VK_CONTROL], VK_F11),
-        stepler_core::CorrectionMode::ScrollLock => send_key_chord_virtual(&[VK_CONTROL], VK_F12),
+        stepler_core::CorrectionMode::Pause => {
+            append_hotkey_signal_log("embedded_terminal_psreadline_forward chord=Ctrl+F11");
+            send_key_chord_virtual(&[VK_CONTROL], VK_F11);
+        }
+        stepler_core::CorrectionMode::ScrollLock => {
+            append_hotkey_signal_log("embedded_terminal_psreadline_forward chord=Ctrl+F12");
+            send_key_chord_virtual(&[VK_CONTROL], VK_F12);
+        }
     }
     release_modifier_keys();
     Ok(true)
@@ -1032,6 +1042,175 @@ impl WordComMethod {
 struct WebKeyboardSelectionMethod;
 
 #[cfg(windows)]
+#[derive(Debug, Default, Clone, Copy)]
+struct XtermKeyboardSelectionMethod;
+
+#[cfg(windows)]
+impl XtermKeyboardSelectionMethod {
+    fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
+        if !env_flag_enabled("STEPLER_ENABLE_XTERM_KEYBOARD_SELECTION", false) {
+            return None;
+        }
+        if !is_browser_like_target(target) || !focused_is_xterm_textarea() {
+            return None;
+        }
+
+        let mut probe = MethodProbe::safe(
+            MethodId::XtermKeyboardSelection,
+            "xterm textarea keyboard selection with terminal copy/paste shortcuts",
+        );
+        probe.requires_clipboard = true;
+        Some(probe)
+    }
+
+    fn capture(
+        &self,
+        foreground: isize,
+        focused: isize,
+        app_class: &str,
+        focused_class: &str,
+    ) -> Result<TextContext, PlatformError> {
+        if foreground_hwnd()? != foreground {
+            return Err(PlatformError::PreflightFailed);
+        }
+
+        let snapshot = capture_clipboard_text_only()?;
+        let selected = copy_selected_text_checked_with_chord(
+            &snapshot,
+            &[VK_CONTROL, VK_SHIFT],
+            VK_C,
+            Duration::from_millis(260),
+        )
+        .filter(|text| !text.trim().is_empty())
+        .filter(|text| !looks_like_hotkeyhandler_marker(text));
+        let _ = restore_clipboard_text_only(&snapshot);
+        if let Some(text) = selected {
+            let text_len = text.len();
+            return Ok(TextContext {
+                app_id: format!("{app_class}/{focused_class}"),
+                window_id: hwnd_id(foreground),
+                control_id: format!("xterm-selection:{}", hwnd_id(focused)),
+                text_snapshot: text,
+                caret_range: TextRange::caret(text_len),
+                selection_range: Some(TextRange::new(0, text_len)),
+                capabilities: Capabilities {
+                    can_replace_directly: false,
+                    can_read_selection: true,
+                    can_read_caret: true,
+                    method_binding: Some(MethodBinding::new(
+                        MethodId::XtermKeyboardSelection,
+                        vec![MethodId::XtermKeyboardSelection],
+                    )),
+                },
+            });
+        }
+
+        let snapshot = capture_clipboard_text_only()?;
+        send_key_chord(&[VK_LSHIFT], VK_HOME);
+        std::thread::sleep(Duration::from_millis(40));
+        let copied = copy_selected_text_checked_with_chord(
+            &snapshot,
+            &[VK_CONTROL, VK_SHIFT],
+            VK_C,
+            Duration::from_millis(360),
+        )
+        .filter(|text| !text.trim().is_empty())
+        .filter(|text| !looks_like_hotkeyhandler_marker(text));
+        send_key(VK_RIGHT);
+        let _ = restore_clipboard_text_only(&snapshot);
+
+        if let Some(text) = copied {
+            let text_len = text.len();
+            return Ok(TextContext {
+                app_id: format!("{app_class}/{focused_class}"),
+                window_id: hwnd_id(foreground),
+                control_id: format!("xterm-line-selection:{}", hwnd_id(focused)),
+                text_snapshot: text,
+                caret_range: TextRange::caret(text_len),
+                selection_range: None,
+                capabilities: Capabilities {
+                    can_replace_directly: false,
+                    can_read_selection: false,
+                    can_read_caret: true,
+                    method_binding: Some(MethodBinding::new(
+                        MethodId::XtermKeyboardSelection,
+                        vec![MethodId::XtermKeyboardSelection],
+                    )),
+                },
+            });
+        }
+
+        Err(PlatformError::ReplacementUnavailableReason(String::from(
+            "xterm_keyboard_capture_empty",
+        )))
+    }
+
+    fn apply(
+        &self,
+        context: &TextContext,
+        plan: &ReplacementPlan,
+    ) -> Result<ApplyReplacementResult, PlatformError> {
+        let actual_before = slice_by_range(&context.text_snapshot, plan.range)
+            .ok_or(PlatformError::PreflightFailed)?
+            .to_owned();
+        if actual_before != plan.expected_before_text {
+            return Err(PlatformError::PreflightFailed);
+        }
+
+        let replace_entire_context =
+            context.selection_range.is_none() && plan.range.end != context.text_snapshot.len();
+        let replacement_text = if replace_entire_context {
+            replace_range_text(&context.text_snapshot, plan.range, &plan.replacement_text)
+                .ok_or(PlatformError::PreflightFailed)?
+        } else {
+            plan.replacement_text.clone()
+        };
+        let expected_selection = if replace_entire_context {
+            context.text_snapshot.as_str()
+        } else {
+            actual_before.as_str()
+        };
+
+        let snapshot = capture_clipboard_text_only()?;
+        if context.selection_range.is_none() {
+            if context.control_id.starts_with("xterm-line-selection:") && replace_entire_context {
+                send_key_chord(&[VK_LSHIFT], VK_HOME);
+            } else {
+                select_left_utf16_units(expected_selection.encode_utf16().count())?;
+            }
+            std::thread::sleep(Duration::from_millis(35));
+            let selected = copy_selected_text_checked_with_chord(
+                &snapshot,
+                &[VK_CONTROL, VK_SHIFT],
+                VK_C,
+                Duration::from_millis(360),
+            );
+            if selected.as_deref() != Some(expected_selection) {
+                send_key(VK_RIGHT);
+                let _ = restore_clipboard_text_only(&snapshot);
+                return Err(PlatformError::ReplacementUnavailableReason(format!(
+                    "xterm_keyboard_preflight expected={} actual={}",
+                    preview_for_error(expected_selection, 40),
+                    preview_for_error(selected.as_deref().unwrap_or("<none>"), 40)
+                )));
+            }
+        }
+
+        restore_clipboard(clipboard_snapshot_from_text(&replacement_text))?;
+        send_key_chord_virtual(&[VK_CONTROL, VK_SHIFT], VK_V);
+        std::thread::sleep(Duration::from_millis(80));
+        let _ = restore_clipboard_text_only(&snapshot);
+
+        Ok(ApplyReplacementResult {
+            applied: true,
+            actual_before_text: Some(actual_before),
+            actual_after_text: Some(replacement_text),
+            method: MethodId::XtermKeyboardSelection.as_str().to_owned(),
+        })
+    }
+}
+
+#[cfg(windows)]
 impl WebKeyboardSelectionMethod {
     fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
         if !is_browser_like_target(target)
@@ -1059,6 +1238,11 @@ impl WebKeyboardSelectionMethod {
         let expected_foreground = foreground;
         if foreground_hwnd()? != expected_foreground {
             return Err(PlatformError::PreflightFailed);
+        }
+        if foreground_is_codex_embedded_terminal(foreground) {
+            return Err(PlatformError::ReplacementUnavailableReason(String::from(
+                "embedded_terminal_xterm_unsupported",
+            )));
         }
 
         for attempt in 0..2 {
@@ -3173,6 +3357,9 @@ fn capture_by_method(
         MethodId::UiAutomationText => {
             UiAutomationTextMethod.capture(foreground, focused, app_class, focused_class)
         }
+        MethodId::XtermKeyboardSelection => {
+            XtermKeyboardSelectionMethod.capture(foreground, focused, app_class, focused_class)
+        }
         MethodId::WebKeyboardSelection => {
             WebKeyboardSelectionMethod.capture(foreground, focused, app_class, focused_class)
         }
@@ -3207,6 +3394,9 @@ fn windows_method_probes(target: &ForegroundTarget) -> Vec<MethodProbe> {
         probes.push(probe);
     }
     if let Some(probe) = UiAutomationTextMethod.probe(target) {
+        probes.push(probe);
+    }
+    if let Some(probe) = XtermKeyboardSelectionMethod.probe(target) {
         probes.push(probe);
     }
     if let Some(probe) = WebKeyboardSelectionMethod.probe(target) {
@@ -3245,6 +3435,7 @@ fn apply_replacement(
             UiAutomationDocumentTextMethod.apply(context, plan)
         }
         Some(MethodId::UiAutomationText) => UiAutomationTextMethod.apply(context, plan),
+        Some(MethodId::XtermKeyboardSelection) => XtermKeyboardSelectionMethod.apply(context, plan),
         Some(MethodId::WebKeyboardSelection) => WebKeyboardSelectionMethod.apply(context, plan),
         Some(MethodId::ClipboardSelection) => ClipboardSelectionMethod.apply(context, plan),
         Some(MethodId::SendInput) => SendInputMethod.apply(context, plan),
@@ -3572,6 +3763,23 @@ fn is_notepad_like_target(target: &ForegroundTarget) -> bool {
         .to_ascii_lowercase();
 
     process_name == "notepad" || app_class.contains("notepad") || focused_class.contains("notepad")
+}
+
+#[cfg(windows)]
+fn focused_is_xterm_textarea() -> bool {
+    uia_focus_diagnostics()
+        .map(|focus| is_embedded_terminal_uia_focus(&focus))
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn foreground_is_codex_embedded_terminal(foreground: isize) -> bool {
+    let title = window_title(foreground).unwrap_or_default();
+    if !title.eq_ignore_ascii_case("Codex") {
+        return false;
+    }
+
+    focused_is_xterm_textarea()
 }
 
 fn allow_uia_document_caret_fallback(target: &ForegroundTarget) -> bool {
@@ -5025,6 +5233,16 @@ fn wait_for_clipboard_selection_text(
 
 #[cfg(windows)]
 fn copy_selected_text_checked(snapshot: &ClipboardSnapshot, timeout: Duration) -> Option<String> {
+    copy_selected_text_checked_with_chord(snapshot, &[VK_CONTROL], VK_C, timeout)
+}
+
+#[cfg(windows)]
+fn copy_selected_text_checked_with_chord(
+    snapshot: &ClipboardSnapshot,
+    modifiers: &[u32],
+    key: u32,
+    timeout: Duration,
+) -> Option<String> {
     let marker = format!(
         "__STEPLER_COPY_MARKER_{}__",
         snapshot.sequence_number.unwrap_or(0)
@@ -5032,7 +5250,7 @@ fn copy_selected_text_checked(snapshot: &ClipboardSnapshot, timeout: Duration) -
     let _ = restore_clipboard(clipboard_snapshot_from_text(&marker));
     release_modifier_keys();
     std::thread::sleep(Duration::from_millis(8));
-    send_key_chord_virtual(&[VK_CONTROL], VK_C);
+    send_key_chord_virtual(modifiers, key);
     wait_for_clipboard_text_different_from(&marker, timeout)
 }
 

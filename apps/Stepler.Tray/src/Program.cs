@@ -130,6 +130,7 @@ internal sealed class SteplerTrayForm : Form
     private readonly ToolStripMenuItem _insertAsBackspaceItem;
     private readonly ToolStripMenuItem _riskyFallbacksItem;
     private readonly ToolStripMenuItem _autostartItem;
+    private readonly ToolStripMenuItem _openLayoutOverridesItem;
     private readonly ToolStripMenuItem _openHotkeyLogItem;
     private readonly ToolStripMenuItem _openTrayLogItem;
     private ControlWindow? _controlWindow;
@@ -217,6 +218,9 @@ internal sealed class SteplerTrayForm : Form
         _autostartItem = new ToolStripMenuItem("Автозапуск Windows");
         _autostartItem.Click += (_, _) => ToggleAutostart();
 
+        _openLayoutOverridesItem = new ToolStripMenuItem("Открыть словарь исключений CP");
+        _openLayoutOverridesItem.Click += (_, _) => OpenLayoutOverrides();
+
         _openHotkeyLogItem = new ToolStripMenuItem("Открыть лог hotkeys");
         _openHotkeyLogItem.Click += (_, _) => OpenHotkeyLog();
 
@@ -246,6 +250,7 @@ internal sealed class SteplerTrayForm : Form
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_autostartItem);
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(_openLayoutOverridesItem);
         menu.Items.Add(_openHotkeyLogItem);
         menu.Items.Add(_openTrayLogItem);
         menu.Items.Add(new ToolStripSeparator());
@@ -599,6 +604,55 @@ internal sealed class SteplerTrayForm : Form
     private void OpenHotkeyLog()
     {
         OpenFileInNotepad(Program.HotkeyLogPath());
+    }
+
+    private void OpenLayoutOverrides()
+    {
+        var path = ResolveLayoutOverridesPath();
+        try
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            if (!File.Exists(path))
+            {
+                File.WriteAllText(
+                    path,
+                    "# source\ttarget" + Environment.NewLine +
+                    "# Пример: ddble\tввиду" + Environment.NewLine);
+            }
+
+            OpenFileInNotepad(path);
+        }
+        catch (Exception error)
+        {
+            Program.SafeLog($"open layout overrides error path={path} {error}");
+            MessageBox.Show(
+                "Не удалось открыть словарь исключений. Подробности записаны в лог tray.",
+                "Stepler",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+    }
+
+    private string ResolveLayoutOverridesPath()
+    {
+        var sideBySide = Path.Combine(AppContext.BaseDirectory, "resources", "layout-overrides.tsv");
+        if (File.Exists(sideBySide) || _repoRoot is null)
+        {
+            return sideBySide;
+        }
+
+        var repoResource = Path.Combine(
+            _repoRoot,
+            "crates",
+            "stepler-core",
+            "resources",
+            "layout-overrides.tsv");
+        return File.Exists(repoResource) ? repoResource : sideBySide;
     }
 
     private static void OpenFileInNotepad(string path)

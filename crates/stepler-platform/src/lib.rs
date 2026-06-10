@@ -330,10 +330,12 @@ pub fn default_app_policies() -> Vec<AppPolicy> {
         AppPolicy {
             app_matcher: String::from("Chrome_WidgetWin"),
             preferred_context_methods: vec![
+                MethodId::XtermKeyboardSelection,
                 MethodId::WebKeyboardSelection,
                 MethodId::UiAutomationEditableText,
             ],
             preferred_replace_methods: vec![
+                MethodId::XtermKeyboardSelection,
                 MethodId::WebKeyboardSelection,
                 MethodId::UiAutomationEditableText,
             ],
@@ -463,6 +465,7 @@ pub fn default_app_policy() -> AppPolicy {
             MethodId::UiAutomationEditableText,
             MethodId::UiAutomationDocumentText,
             MethodId::UiAutomationText,
+            MethodId::XtermKeyboardSelection,
             MethodId::WebKeyboardSelection,
             MethodId::ConsoleBuffer,
             MethodId::PsReadLine,
@@ -474,6 +477,7 @@ pub fn default_app_policy() -> AppPolicy {
             MethodId::UiAutomationEditableText,
             MethodId::UiAutomationDocumentText,
             MethodId::UiAutomationText,
+            MethodId::XtermKeyboardSelection,
             MethodId::WebKeyboardSelection,
             MethodId::ConsoleBuffer,
             MethodId::PsReadLine,

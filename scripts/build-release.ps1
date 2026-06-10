@@ -35,6 +35,7 @@ if ([string]::IsNullOrWhiteSpace($FileVersion)) {
 
 $distPath = [System.IO.Path]::GetFullPath($DistDir)
 $distScriptsPath = Join-Path $distPath "scripts"
+$distResourcesPath = Join-Path $distPath "resources"
 
 Write-Host "Build version: $BuildVersion"
 Write-Host "File version:  $FileVersion"
@@ -67,10 +68,12 @@ dotnet publish ".\apps\Stepler.Tray\Stepler.Tray.csproj" `
 Write-Host "Copying runtime files..."
 New-Item -ItemType Directory -Force -Path $distPath | Out-Null
 New-Item -ItemType Directory -Force -Path $distScriptsPath | Out-Null
+New-Item -ItemType Directory -Force -Path $distResourcesPath | Out-Null
 
 Copy-Item ".\target\release\stepler-cli.exe" (Join-Path $distPath "stepler-cli.exe") -Force
 Copy-Item ".\scripts\Stepler.PSReadLine.ps1" (Join-Path $distScriptsPath "Stepler.PSReadLine.ps1") -Force
 Copy-Item ".\scripts\Stepler.SSHReadline.bash" (Join-Path $distScriptsPath "Stepler.SSHReadline.bash") -Force
+Copy-Item ".\crates\stepler-core\resources\layout-overrides.tsv" (Join-Path $distResourcesPath "layout-overrides.tsv") -Force
 
 $buildInfo = @"
 Stepler build
@@ -98,6 +101,7 @@ Included:
   stepler-cli.exe          hotkey runner and diagnostics
   scripts\Stepler.PSReadLine.ps1
   scripts\Stepler.SSHReadline.bash
+  resources\layout-overrides.tsv
   BUILD_INFO.txt
 
 Logs:

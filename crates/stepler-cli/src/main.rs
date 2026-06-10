@@ -542,16 +542,16 @@ fn handle_hotkey_event<F, C, R, B>(
     set_active_correction_mode(mode);
     release_modifier_keys();
     if matches!(try_forward_embedded_terminal_hotkey(mode), Ok(true)) {
-        eprintln!("{mode:?}: forwarded to embedded terminal");
+        eprintln!("{mode:?}: forwarded to embedded terminal PSReadLine");
         let event = OperationLogEvent {
             operation_id: String::from("embedded-terminal"),
             trigger: LogTrigger::from(mode),
             state: OperationState::Completed,
             app: Some(String::from("embedded_terminal")),
             provider: Some(String::from("WindowsTextContextProvider")),
-            replacer: Some(String::from("embedded_terminal_passthrough")),
+            replacer: Some(String::from("embedded_terminal_psreadline")),
             range: None,
-            expected_before_text: Some(String::from("forwarded_to_psreadline")),
+            expected_before_text: Some(String::from("forwarded_to_embedded_terminal_psreadline")),
             replacement_text: None,
             clipboard_used: false,
             duration_ms: started.elapsed().as_millis(),

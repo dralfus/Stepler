@@ -134,6 +134,16 @@ mod tests {
     }
 
     #[test]
+    fn scrolllock_uses_layout_override_for_plausible_source_word() {
+        let context = TextContext::new("ddble");
+
+        let plan = build_replacement_plan(&context, CorrectionMode::ScrollLock).unwrap();
+
+        assert_eq!(plan.expected_before_text, "ddble");
+        assert_eq!(plan.replacement_text, "ввиду");
+    }
+
+    #[test]
     fn scrolllock_expands_token_when_caret_is_inside_word() {
         let context = TextContext::new("раз два три. xtnsht,\nлюбовь\nk.,jdm")
             .with_caret(TextRange::caret("раз два три. xtnsht,\nлюбовь\nk.,j".len()));

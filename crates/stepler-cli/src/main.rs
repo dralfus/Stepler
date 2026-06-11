@@ -450,8 +450,14 @@ fn run_hotkeys() {
             if !settings.layout_action_enabled(action) {
                 eprintln!("{action:?}: disabled");
             } else if let Err(error) = layout_switcher.handle_action(action) {
+                stepler_platform_windows::append_hotkey_signal_log(&format!(
+                    "runner_layout_action_result action={action:?} result=error error={error:?}"
+                ));
                 eprintln!("{action:?}: {error:?}");
             } else {
+                stepler_platform_windows::append_hotkey_signal_log(&format!(
+                    "runner_layout_action_result action={action:?} result=ok"
+                ));
                 eprintln!("{action:?}: ok");
             }
         },

@@ -138,8 +138,9 @@ impl LanguageModels {
     fn load() -> Self {
         let ru_dictionary = load_dictionary(include_str!("../resources/lexicons/ru-words.txt"));
         let en_dictionary = load_dictionary(include_str!("../resources/lexicons/en-words.txt"));
-        let layout_overrides = load_runtime_layout_overrides()
-            .unwrap_or_else(|| load_layout_overrides(include_str!("../resources/layout-overrides.tsv")));
+        let layout_overrides = load_runtime_layout_overrides().unwrap_or_else(|| {
+            load_layout_overrides(include_str!("../resources/layout-overrides.tsv"))
+        });
 
         Self {
             ru_ngrams: CharNGramModel::from_count_file(
@@ -280,7 +281,12 @@ fn is_forced_layout_override(source: &str, converted: &str) -> bool {
 
 fn normalize_override_text(text: &str) -> String {
     text.split_whitespace()
-        .map(|token| token.chars().flat_map(char::to_lowercase).collect::<String>())
+        .map(|token| {
+            token
+                .chars()
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }

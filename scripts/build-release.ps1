@@ -19,7 +19,7 @@ if ([string]::IsNullOrWhiteSpace($DistDir)) {
 if ([string]::IsNullOrWhiteSpace($BuildVersion)) {
     $buildDate = Get-Date -Format 'yyyyMMdd'
     $buildTime = Get-Date -Format 'HHmm'
-    $BuildVersion = "0.1.0-alpha.$buildDate.t$buildTime"
+    $BuildVersion = "0.1.1-alpha.$buildDate.t$buildTime"
 }
 
 if ([string]::IsNullOrWhiteSpace($FileVersion)) {
@@ -30,7 +30,7 @@ if ([string]::IsNullOrWhiteSpace($FileVersion)) {
     if ($daysSinceEpoch -gt 65535) {
         $daysSinceEpoch = $daysSinceEpoch % 65535
     }
-    $FileVersion = "0.1.0.$daysSinceEpoch"
+    $FileVersion = "0.1.1.$daysSinceEpoch"
 }
 
 $distPath = [System.IO.Path]::GetFullPath($DistDir)
@@ -62,7 +62,7 @@ dotnet publish ".\apps\Stepler.Tray\Stepler.Tray.csproj" `
     -p:Version=$BuildVersion `
     -p:InformationalVersion=$BuildVersion `
     -p:FileVersion=$FileVersion `
-    -p:AssemblyVersion=0.1.0.0 `
+    -p:AssemblyVersion=0.1.1.0 `
     -p:IncludeSourceRevisionInInformationalVersion=false
 
 Write-Host "Copying runtime files..."

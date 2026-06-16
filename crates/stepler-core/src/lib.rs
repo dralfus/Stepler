@@ -313,6 +313,7 @@ mod tests {
     fn operation_log_event_formats_jsonl() {
         let event = OperationLogEvent {
             operation_id: String::from("op-1"),
+            timestamp_unix_ms: 1_718_000_000_123,
             trigger: LogTrigger::Pause,
             state: OperationState::ReplacementApplied,
             app: Some(String::from("Notepad")),
@@ -332,6 +333,7 @@ mod tests {
         let json = event.to_json_line();
 
         assert!(json.contains("\"operation_id\":\"op-1\""));
+        assert!(json.contains("\"timestamp_unix_ms\":1718000000123"));
         assert!(json.contains("\"trigger\":\"Pause\""));
         assert!(json.contains("\"range\":[10,16]"));
         assert!(json.contains("\"timings_ms\":[{\"state\":\"ContextCaptured\",\"elapsed_ms\":2}]"));

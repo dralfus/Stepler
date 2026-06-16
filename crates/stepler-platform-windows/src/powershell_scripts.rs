@@ -123,7 +123,6 @@ if ($null -eq $inspector) {
     'error=no_active_inspector'
     exit 0
 }
-$inspector.Activate()
 $document = $inspector.WordEditor
 if ($null -eq $document) {
     'ok=0'
@@ -189,7 +188,6 @@ if ($null -eq $inspector) {
     'error=no_active_inspector'
     exit 0
 }
-$inspector.Activate()
 $document = $inspector.WordEditor
 if ($null -eq $document) {
     'ok=0'

@@ -129,14 +129,18 @@ internal sealed class SteplerTrayForm : Form
     private readonly ToolStripMenuItem _disableCapsLockItem;
     private readonly ToolStripMenuItem _insertAsBackspaceItem;
     private readonly ToolStripMenuItem _riskyFallbacksItem;
+    private readonly ToolStripMenuItem _showTimingOverlayItem;
     private readonly ToolStripMenuItem _autostartItem;
     private readonly ToolStripMenuItem _openLayoutOverridesItem;
     private readonly ToolStripMenuItem _openHotkeyLogItem;
     private readonly ToolStripMenuItem _openTrayLogItem;
     private ControlWindow? _controlWindow;
+    private HotkeyTimingOverlay? _timingOverlay;
+    private FileSystemWatcher? _hotkeyLogWatcher;
     private Process? _runner;
     private RunnerJob? _runnerJob;
     private SteplerSettings _settings;
+    private long _hotkeyLogPosition;
     private bool _stoppingRunner;
     private bool _closing;
 
@@ -215,6 +219,13 @@ internal sealed class SteplerTrayForm : Form
         };
         _riskyFallbacksItem.Click += (_, _) => UpdateSetting(settings => settings.RiskyFallbacksEnabled = _riskyFallbacksItem.Checked);
 
+        _showTimingOverlayItem = new ToolStripMenuItem("Показывать время P/CP")
+        {
+            CheckOnClick = true,
+        };
+        _showTimingOverlayItem.Click += (_, _) =>
+            UpdateSetting(settings => settings.ShowTimingOverlay = _showTimingOverlayItem.Checked, restartRunner: false);
+
         _autostartItem = new ToolStripMenuItem("Автозапуск Windows");
         _autostartItem.Click += (_, _) => ToggleAutostart();
 
@@ -247,6 +258,7 @@ internal sealed class SteplerTrayForm : Form
         menu.Items.Add(_disableCapsLockItem);
         menu.Items.Add(_insertAsBackspaceItem);
         menu.Items.Add(_riskyFallbacksItem);
+        menu.Items.Add(_showTimingOverlayItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_autostartItem);
         menu.Items.Add(new ToolStripSeparator());
@@ -269,6 +281,7 @@ internal sealed class SteplerTrayForm : Form
         {
             _notifyIcon.Visible = true;
             EnsurePowerShellProfileAdapter();
+            StartHotkeyLogWatcher();
             StartRunner();
             Program.SafeLog($"tray form ready handle={Handle}");
         };
@@ -280,6 +293,9 @@ internal sealed class SteplerTrayForm : Form
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         _closing = true;
+        StopHotkeyLogWatcher();
+        _timingOverlay?.Close();
+        _timingOverlay?.Dispose();
         StopRunner();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
@@ -525,13 +541,13 @@ internal sealed class SteplerTrayForm : Form
         StartRunner();
     }
 
-    private void UpdateSetting(Action<SteplerSettings> update)
+    private void UpdateSetting(Action<SteplerSettings> update, bool restartRunner = true)
     {
         update(_settings);
         SteplerSettingsStore.Save(_settings);
         Program.SafeLog($"settings saved {JsonSerializer.Serialize(_settings)}");
 
-        if (IsRunnerAlive())
+        if (restartRunner && IsRunnerAlive())
         {
             RestartRunner();
         }
@@ -572,7 +588,167 @@ internal sealed class SteplerTrayForm : Form
         _disableCapsLockItem.Checked = _settings.DisableCapsLock;
         _insertAsBackspaceItem.Checked = _settings.InsertAsBackspaceEnabled;
         _riskyFallbacksItem.Checked = _settings.RiskyFallbacksEnabled;
+        _showTimingOverlayItem.Checked = _settings.ShowTimingOverlay;
         _autostartItem.Checked = AutostartManager.IsEnabled();
+    }
+
+    private void StartHotkeyLogWatcher()
+    {
+        StopHotkeyLogWatcher();
+
+        var logPath = Program.HotkeyLogPath();
+        var directory = Path.GetDirectoryName(logPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(directory);
+        if (!File.Exists(logPath))
+        {
+            File.WriteAllText(logPath, string.Empty);
+        }
+
+        _hotkeyLogPosition = new FileInfo(logPath).Length;
+        _hotkeyLogWatcher = new FileSystemWatcher(directory, Path.GetFileName(logPath))
+        {
+            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
+            EnableRaisingEvents = true,
+        };
+        _hotkeyLogWatcher.Changed += (_, _) => BeginInvoke((Action)ReadNewHotkeyLogLines);
+        _hotkeyLogWatcher.Created += (_, _) => BeginInvoke((Action)ReadNewHotkeyLogLines);
+        Program.SafeLog($"hotkey timing watcher started path={logPath} position={_hotkeyLogPosition}");
+    }
+
+    private void StopHotkeyLogWatcher()
+    {
+        if (_hotkeyLogWatcher is null)
+        {
+            return;
+        }
+
+        _hotkeyLogWatcher.EnableRaisingEvents = false;
+        _hotkeyLogWatcher.Dispose();
+        _hotkeyLogWatcher = null;
+    }
+
+    private void ReadNewHotkeyLogLines()
+    {
+        if (!_settings.ShowTimingOverlay)
+        {
+            SyncHotkeyLogPosition();
+            return;
+        }
+
+        var logPath = Program.HotkeyLogPath();
+        try
+        {
+            if (!File.Exists(logPath))
+            {
+                _hotkeyLogPosition = 0;
+                return;
+            }
+
+            using var stream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (stream.Length < _hotkeyLogPosition)
+            {
+                _hotkeyLogPosition = 0;
+            }
+
+            stream.Seek(_hotkeyLogPosition, SeekOrigin.Begin);
+            using var reader = new StreamReader(stream);
+            string? line;
+            while ((line = reader.ReadLine()) is not null)
+            {
+                if (TryFormatHotkeyTiming(line, out var text, out var failed))
+                {
+                    ShowTimingOverlay(text, failed);
+                }
+            }
+
+            _hotkeyLogPosition = stream.Position;
+        }
+        catch (Exception error)
+        {
+            Program.SafeLog($"hotkey timing watcher read error {error.GetType().Name}: {error.Message}");
+        }
+    }
+
+    private void SyncHotkeyLogPosition()
+    {
+        try
+        {
+            var logPath = Program.HotkeyLogPath();
+            _hotkeyLogPosition = File.Exists(logPath) ? new FileInfo(logPath).Length : 0;
+        }
+        catch
+        {
+            _hotkeyLogPosition = 0;
+        }
+    }
+
+    private void ShowTimingOverlay(string text, bool failed)
+    {
+        if (_timingOverlay is null || _timingOverlay.IsDisposed)
+        {
+            _timingOverlay = new HotkeyTimingOverlay();
+        }
+
+        _timingOverlay.ShowTiming(text, failed);
+    }
+
+    private static bool TryFormatHotkeyTiming(string line, out string text, out bool failed)
+    {
+        text = string.Empty;
+        failed = false;
+
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("trigger", out var triggerElement))
+            {
+                return false;
+            }
+
+            var trigger = triggerElement.GetString();
+            var label = trigger switch
+            {
+                "Pause" => "P",
+                "ScrollLock" => "CP",
+                _ => null,
+            };
+            if (label is null)
+            {
+                return false;
+            }
+
+            var state = root.TryGetProperty("state", out var stateElement)
+                ? stateElement.GetString()
+                : null;
+            failed = !string.Equals(state, "Completed", StringComparison.Ordinal);
+            if (failed)
+            {
+                text = $"{label} failed";
+                return true;
+            }
+
+            var duration = root.TryGetProperty("duration_ms", out var durationElement)
+                && durationElement.TryGetInt64(out var value)
+                    ? value
+                    : 0;
+            text = $"{label} {duration} ms";
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void ToggleAutostart()
@@ -888,6 +1064,94 @@ internal static class PowerShellProfileManager
     }
 }
 
+internal sealed class HotkeyTimingOverlay : Form
+{
+    private const int WsExNoActivate = 0x08000000;
+    private const int WsExToolWindow = 0x00000080;
+    private const int ShowDurationMs = 1000;
+
+    private readonly Label _label;
+    private readonly System.Windows.Forms.Timer _hideTimer;
+
+    public HotkeyTimingOverlay()
+    {
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.Manual;
+        TopMost = true;
+        BackColor = Color.FromArgb(28, 32, 36);
+        Padding = new Padding(14, 8, 14, 8);
+        AutoSize = true;
+        AutoSizeMode = AutoSizeMode.GrowAndShrink;
+
+        _label = new Label
+        {
+            AutoSize = true,
+            Font = new Font("Segoe UI", 11, FontStyle.Bold, GraphicsUnit.Point),
+            ForeColor = Color.White,
+            BackColor = Color.Transparent,
+            Text = "P 0 ms",
+        };
+        Controls.Add(_label);
+
+        _hideTimer = new System.Windows.Forms.Timer
+        {
+            Interval = ShowDurationMs,
+        };
+        _hideTimer.Tick += (_, _) =>
+        {
+            _hideTimer.Stop();
+            Hide();
+        };
+    }
+
+    protected override bool ShowWithoutActivation => true;
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var parameters = base.CreateParams;
+            parameters.ExStyle |= WsExNoActivate | WsExToolWindow;
+            return parameters;
+        }
+    }
+
+    public void ShowTiming(string text, bool failed)
+    {
+        _label.Text = text;
+        BackColor = failed ? Color.FromArgb(118, 33, 43) : Color.FromArgb(28, 32, 36);
+        _label.ForeColor = failed ? Color.FromArgb(255, 235, 238) : Color.White;
+
+        PerformLayout();
+        PositionNearTray();
+        Show();
+        BringToFront();
+
+        _hideTimer.Stop();
+        _hideTimer.Start();
+    }
+
+    private void PositionNearTray()
+    {
+        var area = Screen.PrimaryScreen?.WorkingArea ?? Screen.FromControl(this).WorkingArea;
+        var margin = 18;
+        Location = new Point(
+            Math.Max(area.Left + margin, area.Right - Width - margin),
+            Math.Max(area.Top + margin, area.Bottom - Height - margin));
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _hideTimer.Dispose();
+        }
+
+        base.Dispose(disposing);
+    }
+}
+
 internal sealed class SteplerSettings
 {
     public bool PauseEnabled { get; set; } = true;
@@ -897,6 +1161,7 @@ internal sealed class SteplerSettings
     public bool DisableCapsLock { get; set; } = true;
     public bool InsertAsBackspaceEnabled { get; set; } = true;
     public bool RiskyFallbacksEnabled { get; set; }
+    public bool ShowTimingOverlay { get; set; } = true;
 }
 
 internal static class SteplerSettingsStore

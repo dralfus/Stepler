@@ -91,6 +91,7 @@ Stepler не стремится писать отдельный большой �
 - `UIAutomationText` - базовый UIA text/value adapter для совместимых controls.
 - `WordCom` - Word object model; также используется для Outlook desktop через WordEditor.
 - `PSReadLine` - безопасная работа с буфером ввода PowerShell.
+- `SshTerminal` - remote helper для Bash/readline поверх SSH: Windows Stepler форвардит приватные escape-последовательности, а конвертация выполняется на удаленной машине через `stepler-remote`.
 - `ConsoleBuffer` - чтение классического console buffer.
 - `TerminalClipboardShortcut` - диагностический/fallback путь для терминалов.
 - `ClipboardSelection` - risky fallback для уже выделенного текста через clipboard copy/paste с восстановлением буфера.
@@ -106,7 +107,7 @@ Risky/fallback методы по умолчанию не должны включ
 | --- | --- | --- | --- |
 | Notepad | `P`, `CP`, сохранение clipboard | `Win32EditMessages` | p50 ~18 ms, avg ~22 ms |
 | PowerShell / Windows Terminal, локальная сессия | `P`, `CP`, selection, переключение раскладки после конвертации | `PSReadLine` | обычно быстрее web/Word; отдельные hotkey-forward события ~426 ms |
-| PowerShell / Windows Terminal, внутри запущен SSH | `P`/`CP` намеренно не применяются к удаленной shell без opt-in remote adapter | fail-closed / SSH suppression | не применяется |
+| PowerShell / Windows Terminal, внутри запущен SSH | `P`/`CP` работают только после установки remote helper на Linux host и opt-in на Windows клиенте | `SshTerminal` / Bash readline helper | зависит от SSH latency; обычно сравнимо с локальным readline |
 | Microsoft Word desktop | `P`, `CP`, выделение, диапазон слева от курсора | `WordCom` | p50 ~2266 ms, avg ~2188 ms |
 | Microsoft Outlook desktop compose | WordEditor в письме, ожидаемый путь поддержки | `WordCom` через Outlook WordEditor | p50 ~2266 ms, avg ~2188 ms |
 | Windows Settings / Feedback Hub / WPF TextBox fixture | caret-aware замена в editable UIA поле | `UIAutomationEditableText` / `UIAutomationText` | p50 ~1304 ms, avg ~1324 ms |
@@ -129,6 +130,7 @@ Risky/fallback методы по умолчанию не должны включ
 - `crates/stepler-cli` - CLI, диагностика, hotkey runner и PSReadLine bridge.
 - `crates/stepler-platform` - platform-neutral контракты resolver-а и адаптеров.
 - `crates/stepler-platform-windows` - Windows method adapters, hotkey hook и layout switch.
+- `crates/stepler-remote` - маленький Linux/SSH helper для Bash/readline, использующий тот же `stepler-core`.
 - `crates/stepler-testkit` - тестовые helpers.
 - `apps/Stepler.Tray` - tray-only Windows host, который запускает `stepler-cli run-hotkeys`.
 - `scripts` - сборка release/installer и PSReadLine adapter.
@@ -151,6 +153,30 @@ Rust-проверки:
 cargo fmt --all -- --check
 cargo test --workspace
 ```
+
+SSH на удаленный Linux host. Предпочтительный путь: собрать helper на машине разработчика через WSL, а на VPS только скопировать готовый бинарник.
+
+```powershell
+.\scripts\build-remote-linux.ps1
+```
+
+После этого скопируй файлы из `dist\Stepler\remote\linux-x64` на удаленную машину:
+
+```bash
+mkdir -p ~/.local/bin ~/.config/stepler
+cp stepler-remote ~/.local/bin/
+cp Stepler.SSHReadline.bash ~/.config/stepler/
+chmod +x ~/.local/bin/stepler-remote
+grep -qxF 'source ~/.config/stepler/Stepler.SSHReadline.bash' ~/.bashrc || echo 'source ~/.config/stepler/Stepler.SSHReadline.bash' >> ~/.bashrc
+```
+
+На Windows-клиенте нужно явно включить форвардинг перед запуском Stepler:
+
+```powershell
+setx STEPLER_ENABLE_SSH_REMOTE_ADAPTER 1
+```
+
+После этого перезапусти Stepler и SSH-сессию. Без opt-in Stepler продолжает fail-closed поведение в SSH: `P`/`CP` подавляются, чтобы не портить удаленную строку ввода. Это не полноценный Linux-port с глобальными hotkeys, а узкий Bash/readline adapter для SSH.
 
 Release build:
 

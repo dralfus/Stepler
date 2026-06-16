@@ -3,7 +3,9 @@ param(
     [string]$Runtime = "win-x64",
     [string]$DistDir = "",
     [string]$BuildVersion = "",
-    [string]$FileVersion = ""
+    [string]$FileVersion = "",
+    [switch]$BuildLinuxRemote,
+    [string]$WslDistro = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -75,6 +77,15 @@ Copy-Item ".\scripts\Stepler.PSReadLine.ps1" (Join-Path $distScriptsPath "Steple
 Copy-Item ".\scripts\Stepler.SSHReadline.bash" (Join-Path $distScriptsPath "Stepler.SSHReadline.bash") -Force
 Copy-Item ".\crates\stepler-core\resources\layout-overrides.tsv" (Join-Path $distResourcesPath "layout-overrides.tsv") -Force
 
+if ($BuildLinuxRemote) {
+    $remoteDistPath = Join-Path $distPath "remote\linux-x64"
+    $remoteArgs = @("-DistDir", $remoteDistPath)
+    if (-not [string]::IsNullOrWhiteSpace($WslDistro)) {
+        $remoteArgs += @("-WslDistro", $WslDistro)
+    }
+    & ".\scripts\build-remote-linux.ps1" @remoteArgs
+}
+
 $buildInfo = @"
 Stepler build
 
@@ -116,7 +127,11 @@ PowerShell PSReadLine adapter:
     . <this folder>\scripts\Stepler.PSReadLine.ps1
 
 SSH Bash/readline adapter:
-  Copy scripts\Stepler.SSHReadline.bash to the Linux host and source it from ~/.bashrc.
+  Preferred: build the Linux helper on the developer machine with:
+    .\scripts\build-remote-linux.ps1
+  or run build-release with -BuildLinuxRemote.
+  Copy remote\linux-x64\stepler-remote and remote\linux-x64\Stepler.SSHReadline.bash
+  to the Linux host. Cargo is not needed on the remote VPS.
   Set STEPLER_ENABLE_SSH_REMOTE_ADAPTER=1 before starting Stepler to forward Pause/Ctrl+Pause
   as private readline sequences in SSH tabs. Without this opt-in Stepler only suppresses the
   unsafe terminal hotkeys.

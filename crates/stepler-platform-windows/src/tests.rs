@@ -429,6 +429,30 @@ fn web_keyboard_fast_context_is_line_compatible() {
 
 #[cfg(windows)]
 #[test]
+fn rocket_active_line_context_does_not_mark_technical_selection_as_user_selection() {
+    let context = TextContext {
+        app_id: String::from("Chrome_WidgetWin_1/Chrome_RenderWidgetHostHWND"),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("web-keyboard-rocket-active-line-selection:hwnd:2"),
+        text_snapshot: String::from("hello ghbdtn"),
+        caret_range: TextRange::caret("hello ghbdtn".len()),
+        selection_range: None,
+        capabilities: Capabilities::default(),
+    };
+
+    assert_eq!(context.selection_range, None);
+
+    let plan =
+        stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::Pause)
+            .unwrap();
+
+    assert_eq!(plan.range, TextRange::new("hello ".len(), "hello ghbdtn".len()));
+    assert_eq!(plan.expected_before_text, "ghbdtn");
+    assert_eq!(plan.replacement_text, "привет");
+}
+
+#[cfg(windows)]
+#[test]
 fn web_keyboard_fast_profile_matches_checked_web_apps() {
     assert!(web_keyboard_fast_profile_title_matches(
         "[CTP-11796] GS-Labs JIRA - Mozilla Firefox"
@@ -613,6 +637,21 @@ fn word_com_method_probes_outlook_word_editor_windows() {
     assert_eq!(probe.method_id, MethodId::WordCom);
     assert_eq!(probe.safety, stepler_platform::ProbeSafety::Safe);
     assert!(!probe.requires_clipboard);
+}
+
+#[cfg(windows)]
+#[test]
+fn word_com_method_does_not_probe_outlook_explorer_windows() {
+    let target = ForegroundTarget {
+        app_class: String::from("rctrl_renwnd32"),
+        focused_class: String::from("SUPERGRID"),
+        title: String::from("Inbox - Outlook"),
+        process_name: Some(String::from("OUTLOOK")),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("hwnd:2"),
+    };
+
+    assert!(WordComMethod.probe(&target).is_none());
 }
 
 #[test]

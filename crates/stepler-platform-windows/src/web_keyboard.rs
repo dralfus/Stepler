@@ -342,7 +342,7 @@ impl WebKeyboardSelectionMethod {
                         web_keyboard_control_prefix("web-keyboard-line-selection", foreground)
                     },
                     text,
-                    rocket_fast,
+                    false,
                 ));
             }
 

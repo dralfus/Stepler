@@ -708,12 +708,12 @@ fn is_word_target(target: &ForegroundTarget) -> bool {
         || target.title.to_ascii_lowercase().contains("word")
 }
 
-fn is_outlook_target(target: &ForegroundTarget) -> bool {
-    is_outlook_class_or_process(
-        &target.app_class,
-        &target.focused_class,
-        target.process_name.as_deref(),
-    )
+fn is_outlook_word_editor_target(target: &ForegroundTarget) -> bool {
+    target
+        .process_name
+        .as_deref()
+        .is_some_and(|process| process.eq_ignore_ascii_case("OUTLOOK"))
+        && target.focused_class.eq_ignore_ascii_case("_WwG")
 }
 
 fn is_outlook_class_or_process(

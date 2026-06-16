@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 mod psreadline;
 
 use psreadline::{PsReadLineMethod, PsReadLineRequest};
@@ -551,6 +551,7 @@ fn handle_hotkey_event<F, C, R, B>(
         eprintln!("{mode:?}: forwarded to embedded terminal PSReadLine");
         let event = OperationLogEvent {
             operation_id: String::from("embedded-terminal"),
+            timestamp_unix_ms: timestamp_unix_ms(),
             trigger: LogTrigger::from(mode),
             state: OperationState::Completed,
             app: Some(String::from("embedded_terminal")),
@@ -599,6 +600,7 @@ fn handle_hotkey_event<F, C, R, B>(
             }
             let event = OperationLogEvent {
                 operation_id: outcome.operation_id.clone(),
+                timestamp_unix_ms: timestamp_unix_ms(),
                 trigger: LogTrigger::from(mode),
                 state: OperationState::Completed,
                 app: Some(outcome.context.app_id.clone()),
@@ -617,6 +619,7 @@ fn handle_hotkey_event<F, C, R, B>(
         Err(error) => {
             let event = OperationLogEvent {
                 operation_id: String::from("unknown"),
+                timestamp_unix_ms: timestamp_unix_ms(),
                 trigger: LogTrigger::from(mode),
                 state: OperationState::RolledBackOrFailed,
                 app: None,
@@ -642,6 +645,13 @@ fn set_active_correction_mode(mode: CorrectionMode) {
         CorrectionMode::ScrollLock => "scrolllock",
     };
     std::env::set_var("STEPLER_ACTIVE_CORRECTION_MODE", value);
+}
+
+fn timestamp_unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

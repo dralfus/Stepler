@@ -7,7 +7,7 @@ pub(super) struct WordComMethod;
 #[cfg(windows)]
 impl WordComMethod {
     pub(super) fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
-        (is_word_target(target) || is_outlook_target(target))
+        (is_word_target(target) || is_outlook_word_editor_target(target))
             .then(|| MethodProbe::safe(MethodId::WordCom, "Word COM object model"))
     }
 

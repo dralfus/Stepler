@@ -410,6 +410,20 @@ pub fn default_app_policies() -> Vec<AppPolicy> {
             allow_risky_methods: false,
         },
         AppPolicy {
+            app_matcher: String::from("OUTLOOK"),
+            preferred_context_methods: vec![MethodId::Win32EditMessages, MethodId::WordCom],
+            preferred_replace_methods: vec![MethodId::Win32EditMessages, MethodId::WordCom],
+            forbidden_methods: vec![
+                MethodId::UiAutomationEditableText,
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationText,
+                MethodId::TerminalClipboardShortcut,
+                MethodId::ClipboardSelection,
+                MethodId::SendInput,
+            ],
+            allow_risky_methods: false,
+        },
+        AppPolicy {
             app_matcher: String::from("WINWORD"),
             preferred_context_methods: vec![
                 MethodId::WordCom,
@@ -636,6 +650,56 @@ mod tests {
         assert_eq!(
             error,
             ResolveError::ForbiddenByPolicy(MethodId::ClipboardSelection)
+        );
+    }
+
+    #[test]
+    fn resolver_prefers_word_com_for_outlook_policy() {
+        let resolver = MethodResolver::default();
+        let mut target = target("rctrl_renwnd32", "_WwG");
+        target.process_name = Some(String::from("OUTLOOK"));
+        let probes = vec![
+            MethodProbe::safe(MethodId::UiAutomationEditableText, "uia fallback"),
+            MethodProbe::safe(MethodId::WordCom, "outlook word editor"),
+        ];
+
+        let decision = resolver.resolve(&target, &probes).unwrap();
+
+        assert_eq!(decision.context_method, MethodId::WordCom);
+        assert_eq!(decision.replacement_method, MethodId::WordCom);
+    }
+
+    #[test]
+    fn resolver_allows_win32_edit_for_outlook_search_policy() {
+        let resolver = MethodResolver::default();
+        let mut target = target("rctrl_renwnd32", "Edit");
+        target.process_name = Some(String::from("OUTLOOK"));
+        let probes = vec![MethodProbe::safe(
+            MethodId::Win32EditMessages,
+            "outlook search edit",
+        )];
+
+        let decision = resolver.resolve(&target, &probes).unwrap();
+
+        assert_eq!(decision.context_method, MethodId::Win32EditMessages);
+        assert_eq!(decision.replacement_method, MethodId::Win32EditMessages);
+    }
+
+    #[test]
+    fn resolver_forbids_uia_for_outlook_policy() {
+        let resolver = MethodResolver::default();
+        let mut target = target("rctrl_renwnd32", "SUPERGRID");
+        target.process_name = Some(String::from("OUTLOOK"));
+        let probes = vec![MethodProbe::safe(
+            MethodId::UiAutomationEditableText,
+            "uia fallback",
+        )];
+
+        let error = resolver.resolve(&target, &probes).unwrap_err();
+
+        assert_eq!(
+            error,
+            ResolveError::ForbiddenByPolicy(MethodId::UiAutomationEditableText)
         );
     }
 

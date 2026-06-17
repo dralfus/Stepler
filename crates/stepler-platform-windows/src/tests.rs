@@ -111,6 +111,9 @@ fn ssh_terminal_title_is_detected_without_matching_powershell() {
     assert!(is_ssh_terminal_title("vpnuser"));
     assert!(is_ssh_terminal_title("root@host"));
     assert!(is_ssh_terminal_title("ssh user@host"));
+    assert!(is_ssh_remote_adapter_title(
+        "stepler-remote-ready vpnuser@host:~"
+    ));
     assert!(!is_ssh_terminal_title("Windows PowerShell"));
     assert!(!is_ssh_terminal_title("PowerShell"));
     assert!(!is_ssh_terminal_title("PowerShell 7 (x64)"));
@@ -134,6 +137,14 @@ fn terminal_passthrough_keeps_only_local_powershell_forwardable() {
             "PowerShell"
         ),
         TerminalPassthrough::PsReadLine
+    );
+    assert_eq!(
+        terminal_passthrough_for_window(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass",
+            "stepler-remote-ready vpnuser@host:~"
+        ),
+        TerminalPassthrough::SshRemote
     );
     assert_eq!(
         terminal_passthrough_for_window(
@@ -442,11 +453,13 @@ fn rocket_active_line_context_does_not_mark_technical_selection_as_user_selectio
 
     assert_eq!(context.selection_range, None);
 
-    let plan =
-        stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::Pause)
-            .unwrap();
+    let plan = stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::Pause)
+        .unwrap();
 
-    assert_eq!(plan.range, TextRange::new("hello ".len(), "hello ghbdtn".len()));
+    assert_eq!(
+        plan.range,
+        TextRange::new("hello ".len(), "hello ghbdtn".len())
+    );
     assert_eq!(plan.expected_before_text, "ghbdtn");
     assert_eq!(plan.replacement_text, "привет");
 }

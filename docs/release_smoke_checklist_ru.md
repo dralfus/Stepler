@@ -1,6 +1,6 @@
 # Release smoke checklist
 
-Чек-лист для первого Windows alpha-релиза Stepler. Цель - быстро поймать регрессии, которые реально портят пользовательский сценарий: неправильная замена, сломанный clipboard, зависшие modifier-клавиши, неработающий tray или неверный method resolver.
+Чек-лист для первого Windows-релиза Stepler 1.0. Цель - быстро поймать регрессии, которые реально портят пользовательский сценарий: неправильная замена, сломанный clipboard, зависшие modifier-клавиши, неработающий tray или неверный method resolver.
 
 ## 1. Подготовка
 
@@ -161,7 +161,7 @@ cargo run -p stepler-cli -- diagnose-focus --delay 3 --methods
 
 Для неизвестного `Chrome_WidgetWin_*` resolver может показать `ClipboardSelection`/`SendInput` как risky probes, но без явного разрешения normal hotkey не должен портить текст или clipboard.
 
-Если включить `Risky fallback adapters` в tray, проверять только вручную и считать режим экспериментальным. Для alpha-релиза это не основной поддерживаемый путь.
+Если включить `Risky fallback adapters` в tray, проверять только вручную и считать режим экспериментальным. Для релиза 1.0 это не основной поддерживаемый путь.
 
 ## 9. Tray settings persistence
 
@@ -184,9 +184,10 @@ Get-Content "$env:LOCALAPPDATA\Stepler\logs\Stepler.Tray.log" -Tail 30 -ErrorAct
 
 Разовые `UnsupportedControl` допустимы для неподдержанных приложений. Частые `ClipboardUnavailable`, `ForegroundUnavailable`, panic, COM exception или restore failure - повод остановить релиз.
 
-## 11. Известные ограничения alpha
+## 11. Известные ограничения 1.0
 
-- Linux-реализация отложена.
+- Полноценная Linux desktop-версия отложена; поддержан только SSH/Bash remote helper.
+- Classic `cmd.exe`/`conhost.exe` и `cmd.exe` внутри Windows Terminal не считаются поддержанными сценариями.
 - Browser/Codex/Windsurf через generic fallback не являются основным поддерживаемым путем.
 - PowerShell должен использовать PSReadLine adapter; terminal clipboard shortcut остается diagnostic/fallback.
 - Word smoke зависит от установленного Microsoft Word и отсутствия уже открытых `WINWORD` процессов для автоматического теста.

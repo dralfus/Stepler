@@ -546,6 +546,22 @@ fn handle_hotkey_event<F, C, R, B>(
 {
     let started = Instant::now();
     set_active_correction_mode(mode);
+    let received_event = OperationLogEvent {
+        operation_id: String::from("hotkey"),
+        timestamp_unix_ms: timestamp_unix_ms(),
+        trigger: LogTrigger::from(mode),
+        state: OperationState::HotkeyReceived,
+        app: None,
+        provider: Some(String::from("WindowsTextContextProvider")),
+        replacer: None,
+        range: None,
+        expected_before_text: Some(String::from("hotkey_received")),
+        replacement_text: None,
+        clipboard_used: false,
+        duration_ms: 0,
+        timings: Vec::new(),
+    };
+    append_log(log_path, &received_event.to_json_line());
     release_modifier_keys();
     if matches!(try_forward_embedded_terminal_hotkey(mode), Ok(true)) {
         eprintln!("{mode:?}: forwarded to embedded terminal PSReadLine");

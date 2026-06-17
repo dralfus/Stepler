@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$repoRoot = Resolve-Path (Join-Path $scriptDir "..")
+$repoRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
 
 if ([string]::IsNullOrWhiteSpace($DistDir)) {
     $DistDir = Join-Path $repoRoot "dist\Stepler\remote\linux-x64"
@@ -21,18 +21,18 @@ if (-not [string]::IsNullOrWhiteSpace($WslDistro)) {
     $wslArgs += @("-d", $WslDistro)
 }
 
-$wslRepoRoot = (& wsl.exe @wslArgs wslpath -a "$repoRoot").Trim()
+$wslRepoRoot = (& wsl.exe @wslArgs --exec wslpath -a -u $repoRoot).Trim()
 if ([string]::IsNullOrWhiteSpace($wslRepoRoot)) {
     throw "Cannot resolve repository path inside WSL."
 }
 
 $quotedRepo = ConvertTo-BashSingleQuoted $wslRepoRoot
-$buildCommand = "cd $quotedRepo && cargo build --release -p stepler-remote"
+$buildCommand = "cd $quotedRepo && if [ -f ""`$HOME/.cargo/env"" ]; then . ""`$HOME/.cargo/env""; fi && cargo build --release -p stepler-remote"
 
 Write-Host "Building stepler-remote in WSL..."
-& wsl.exe @wslArgs bash -lc $buildCommand
+& wsl.exe @wslArgs --exec /bin/sh -lc $buildCommand
 if ($LASTEXITCODE -ne 0) {
-    throw "WSL build failed. Install Rust in WSL, not on the remote VPS: curl https://sh.rustup.rs -sSf | sh"
+    throw "WSL build failed. Check the WSL distro with 'wsl.exe --list --verbose'. If needed, pass -WslDistro <Name>. Install Rust in that WSL distro, not on the remote VPS: curl https://sh.rustup.rs -sSf | sh"
 }
 
 $sourceBinary = Join-Path $repoRoot "target\release\stepler-remote"
@@ -57,11 +57,9 @@ Copy these files to the remote Linux host:
   chmod +x ~/.local/bin/stepler-remote
   grep -qxF 'source ~/.config/stepler/Stepler.SSHReadline.bash' ~/.bashrc || echo 'source ~/.config/stepler/Stepler.SSHReadline.bash' >> ~/.bashrc
 
-On the Windows client, enable SSH forwarding before starting Stepler:
-
-  setx STEPLER_ENABLE_SSH_REMOTE_ADAPTER 1
-
-Then restart Stepler and open a new SSH session.
+Open a new SSH session after installation. The remote Bash script marks the
+terminal title only when stepler-remote is available; Windows Stepler forwards
+Pause/Ctrl+Pause only to marked SSH sessions.
 '@
 
 Set-Content -Path (Join-Path $distPath "README_REMOTE_LINUX.txt") -Value $installText -Encoding UTF8

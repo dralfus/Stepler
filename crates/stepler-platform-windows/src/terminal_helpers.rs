@@ -49,7 +49,10 @@ pub(super) fn terminal_passthrough_for_window(
     if is_cmd_terminal_title(&title) {
         return TerminalPassthrough::None;
     }
-    if is_ssh_terminal_title(&title) {
+    if is_ssh_remote_adapter_title(&title) {
+        return TerminalPassthrough::SshRemote;
+    }
+    if is_ssh_terminal_title(title) {
         return TerminalPassthrough::Ssh;
     }
     if is_local_psreadline_terminal_title(title) {
@@ -136,6 +139,10 @@ pub(super) fn is_ssh_terminal_title(title: &str) -> bool {
         || title.starts_with("linux")
 }
 
+pub(super) fn is_ssh_remote_adapter_title(title: &str) -> bool {
+    title.to_ascii_lowercase().contains("stepler-remote-ready")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TerminalPauseHandling {
     PassThrough,
@@ -147,6 +154,7 @@ pub(super) enum TerminalPauseHandling {
 pub(super) enum TerminalPassthrough {
     None,
     PsReadLine,
+    SshRemote,
     Ssh,
     UnknownTerminal,
 }

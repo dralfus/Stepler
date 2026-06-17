@@ -130,6 +130,7 @@ internal sealed class SteplerTrayForm : Form
     private readonly ToolStripMenuItem _insertAsBackspaceItem;
     private readonly ToolStripMenuItem _riskyFallbacksItem;
     private readonly ToolStripMenuItem _showTimingOverlayItem;
+    private readonly ToolStripMenuItem _timingOverlayDurationItem;
     private readonly ToolStripMenuItem _autostartItem;
     private readonly ToolStripMenuItem _openLayoutOverridesItem;
     private readonly ToolStripMenuItem _openHotkeyLogItem;
@@ -226,6 +227,9 @@ internal sealed class SteplerTrayForm : Form
         _showTimingOverlayItem.Click += (_, _) =>
             UpdateSetting(settings => settings.ShowTimingOverlay = _showTimingOverlayItem.Checked, restartRunner: false);
 
+        _timingOverlayDurationItem = new ToolStripMenuItem("Время индикатора...");
+        _timingOverlayDurationItem.Click += (_, _) => ShowTimingOverlayDurationDialog();
+
         _autostartItem = new ToolStripMenuItem("Автозапуск Windows");
         _autostartItem.Click += (_, _) => ToggleAutostart();
 
@@ -259,6 +263,7 @@ internal sealed class SteplerTrayForm : Form
         menu.Items.Add(_insertAsBackspaceItem);
         menu.Items.Add(_riskyFallbacksItem);
         menu.Items.Add(_showTimingOverlayItem);
+        menu.Items.Add(_timingOverlayDurationItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_autostartItem);
         menu.Items.Add(new ToolStripSeparator());
@@ -589,6 +594,7 @@ internal sealed class SteplerTrayForm : Form
         _insertAsBackspaceItem.Checked = _settings.InsertAsBackspaceEnabled;
         _riskyFallbacksItem.Checked = _settings.RiskyFallbacksEnabled;
         _showTimingOverlayItem.Checked = _settings.ShowTimingOverlay;
+        _timingOverlayDurationItem.Text = $"Время индикатора: {_settings.TimingOverlayDurationMs} ms";
         _autostartItem.Checked = AutostartManager.IsEnabled();
     }
 
@@ -694,7 +700,7 @@ internal sealed class SteplerTrayForm : Form
             _timingOverlay = new HotkeyTimingOverlay();
         }
 
-        _timingOverlay.ShowTiming(text, failed);
+        _timingOverlay.ShowTiming(text, failed, _settings.TimingOverlayDurationMs);
     }
 
     private static bool TryFormatHotkeyTiming(string line, out string text, out bool failed)
@@ -731,6 +737,13 @@ internal sealed class SteplerTrayForm : Form
             var state = root.TryGetProperty("state", out var stateElement)
                 ? stateElement.GetString()
                 : null;
+            if (string.Equals(state, "HotkeyReceived", StringComparison.Ordinal))
+            {
+                failed = false;
+                text = $"{label} нажата";
+                return true;
+            }
+
             failed = !string.Equals(state, "Completed", StringComparison.Ordinal);
             if (failed)
             {
@@ -748,6 +761,57 @@ internal sealed class SteplerTrayForm : Form
         catch
         {
             return false;
+        }
+    }
+
+    private void ShowTimingOverlayDurationDialog()
+    {
+        using var form = new Form
+        {
+            Text = "Время индикатора",
+            ShowInTaskbar = false,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            StartPosition = FormStartPosition.CenterScreen,
+            ClientSize = new Size(260, 116),
+        };
+        var label = new Label
+        {
+            Text = "Показывать, мс:",
+            Location = new Point(16, 18),
+            Size = new Size(112, 24),
+        };
+        var input = new NumericUpDown
+        {
+            Minimum = 200,
+            Maximum = 5000,
+            Increment = 100,
+            Value = Math.Clamp(_settings.TimingOverlayDurationMs, 200, 5000),
+            Location = new Point(132, 16),
+            Size = new Size(96, 24),
+        };
+        var ok = new Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            Location = new Point(54, 68),
+            Size = new Size(72, 28),
+        };
+        var cancel = new Button
+        {
+            Text = "Отмена",
+            DialogResult = DialogResult.Cancel,
+            Location = new Point(136, 68),
+            Size = new Size(72, 28),
+        };
+        form.Controls.AddRange(new Control[] { label, input, ok, cancel });
+        form.AcceptButton = ok;
+        form.CancelButton = cancel;
+
+        if (form.ShowDialog(this) == DialogResult.OK)
+        {
+            UpdateSetting(settings => settings.TimingOverlayDurationMs = (int)input.Value, restartRunner: false);
         }
     }
 
@@ -1068,7 +1132,6 @@ internal sealed class HotkeyTimingOverlay : Form
 {
     private const int WsExNoActivate = 0x08000000;
     private const int WsExToolWindow = 0x00000080;
-    private const int ShowDurationMs = 1000;
 
     private readonly Label _label;
     private readonly System.Windows.Forms.Timer _hideTimer;
@@ -1096,7 +1159,7 @@ internal sealed class HotkeyTimingOverlay : Form
 
         _hideTimer = new System.Windows.Forms.Timer
         {
-            Interval = ShowDurationMs,
+            Interval = 1000,
         };
         _hideTimer.Tick += (_, _) =>
         {
@@ -1117,7 +1180,7 @@ internal sealed class HotkeyTimingOverlay : Form
         }
     }
 
-    public void ShowTiming(string text, bool failed)
+    public void ShowTiming(string text, bool failed, int durationMs)
     {
         _label.Text = text;
         BackColor = failed ? Color.FromArgb(118, 33, 43) : Color.FromArgb(28, 32, 36);
@@ -1129,6 +1192,7 @@ internal sealed class HotkeyTimingOverlay : Form
         BringToFront();
 
         _hideTimer.Stop();
+        _hideTimer.Interval = Math.Clamp(durationMs, 200, 5000);
         _hideTimer.Start();
     }
 
@@ -1162,6 +1226,7 @@ internal sealed class SteplerSettings
     public bool InsertAsBackspaceEnabled { get; set; } = true;
     public bool RiskyFallbacksEnabled { get; set; }
     public bool ShowTimingOverlay { get; set; } = true;
+    public int TimingOverlayDurationMs { get; set; } = 1000;
 }
 
 internal static class SteplerSettingsStore

@@ -1,6 +1,6 @@
-# Stepler 0.1.0 alpha
+# Stepler 1.0
 
-Первый alpha-релиз Stepler для Windows.
+Первый релиз Stepler для Windows.
 
 ## Что входит
 
@@ -18,6 +18,7 @@
   - `PSReadLine`;
   - `ConsoleBuffer`;
   - `TerminalClipboardShortcut`;
+  - `SshTerminal` remote helper для SSH/Bash;
   - `ClipboardSelection` как risky fallback;
   - `SendInput` как risky fallback.
 - App policies и runtime resolver с fail-closed поведением для неподтвержденных приложений.
@@ -27,9 +28,11 @@
 
 - Notepad.
 - Microsoft Word через COM.
+- Microsoft Outlook compose через WordEditor.
 - PowerShell через `scripts\Stepler.PSReadLine.ps1`.
+- SSH-сессии в PowerShell/Windows Terminal при установленном `stepler-remote` на удаленном Bash host.
+- Browser/Electron-like поля через безопасные web/UIA adapters там, где проходит preflight.
 - UI Automation `ValuePattern` поля, например часть Windows Settings/Feedback Hub/WPF fixture.
-- Выделенный текст в UIA `Document/TextPattern` surfaces, например Confluence/JIRA в браузере, через selection-only `UIAutomationDocumentText`.
 
 ## Логи
 
@@ -40,8 +43,8 @@
 
 ## Известные ограничения
 
-- Browser/Electron/Codex-style поля не считаются основным поддерживаемым путем в alpha.
+- Classic `cmd.exe`/`conhost.exe` и `cmd.exe` внутри Windows Terminal не считаются поддержанными сценариями.
 - Risky fallback adapters выключены по умолчанию.
 - `Ctrl+Pause` используется для умного режима строки во всех приложениях, включая PowerShell через PSReadLine.
 - Инсталлятор требует установленный .NET 9 Desktop Runtime.
-- Linux support отложен.
+- Полноценная Linux desktop-версия отложена; для SSH/Bash есть отдельный remote helper.

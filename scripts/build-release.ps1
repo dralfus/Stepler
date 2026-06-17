@@ -21,7 +21,7 @@ if ([string]::IsNullOrWhiteSpace($DistDir)) {
 if ([string]::IsNullOrWhiteSpace($BuildVersion)) {
     $buildDate = Get-Date -Format 'yyyyMMdd'
     $buildTime = Get-Date -Format 'HHmm'
-    $BuildVersion = "0.1.1-alpha.$buildDate.t$buildTime"
+    $BuildVersion = "1.0.$buildDate.t$buildTime"
 }
 
 if ([string]::IsNullOrWhiteSpace($FileVersion)) {
@@ -32,7 +32,7 @@ if ([string]::IsNullOrWhiteSpace($FileVersion)) {
     if ($daysSinceEpoch -gt 65535) {
         $daysSinceEpoch = $daysSinceEpoch % 65535
     }
-    $FileVersion = "0.1.1.$daysSinceEpoch"
+    $FileVersion = "1.0.0.$daysSinceEpoch"
 }
 
 $distPath = [System.IO.Path]::GetFullPath($DistDir)
@@ -44,11 +44,19 @@ Write-Host "File version:  $FileVersion"
 
 Write-Host "Building stepler-cli ($Configuration)..."
 cargo build -p stepler-cli --release
+if ($LASTEXITCODE -ne 0) {
+    throw "cargo build failed with exit code $LASTEXITCODE"
+}
 
 Write-Host "Publishing Stepler tray host ($Configuration, $Runtime)..."
 if (Test-Path $distPath) {
     try {
-        Remove-Item $distPath -Recurse -Force
+        Get-ChildItem $distPath -Force | ForEach-Object {
+            if ($_.Name -eq "remote") {
+                return
+            }
+            Remove-Item $_.FullName -Recurse -Force
+        }
     }
     catch {
         throw "Cannot clean release output '$distPath'. Close Stepler if it is running from this folder and retry. $($_.Exception.Message)"
@@ -61,11 +69,14 @@ dotnet publish ".\apps\Stepler.Tray\Stepler.Tray.csproj" `
     -r $Runtime `
     --self-contained false `
     -o $distPath `
-    -p:Version=$BuildVersion `
+    -p:Version=1.0.0 `
     -p:InformationalVersion=$BuildVersion `
     -p:FileVersion=$FileVersion `
-    -p:AssemblyVersion=0.1.1.0 `
+    -p:AssemblyVersion=1.0.0.0 `
     -p:IncludeSourceRevisionInInformationalVersion=false
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet publish failed with exit code $LASTEXITCODE"
+}
 
 Write-Host "Copying runtime files..."
 New-Item -ItemType Directory -Force -Path $distPath | Out-Null
@@ -99,7 +110,7 @@ BuiltAt: $((Get-Date).ToString("yyyy-MM-dd HH:mm:ss zzz"))
 Set-Content -Path (Join-Path $distPath "BUILD_INFO.txt") -Value $buildInfo -Encoding UTF8
 
 $readme = @"
-Stepler alpha build
+Stepler 1.0 build
 
 Version:
   $BuildVersion
@@ -132,9 +143,8 @@ SSH Bash/readline adapter:
   or run build-release with -BuildLinuxRemote.
   Copy remote\linux-x64\stepler-remote and remote\linux-x64\Stepler.SSHReadline.bash
   to the Linux host. Cargo is not needed on the remote VPS.
-  Set STEPLER_ENABLE_SSH_REMOTE_ADAPTER=1 before starting Stepler to forward Pause/Ctrl+Pause
-  as private readline sequences in SSH tabs. Without this opt-in Stepler only suppresses the
-  unsafe terminal hotkeys.
+  Open a new SSH session after installation. The remote script marks the terminal title only
+  when stepler-remote is available; Stepler forwards Pause/Ctrl+Pause only to marked SSH tabs.
 
 Main shortcuts:
   Pause                    convert current word/selection

@@ -1985,10 +1985,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
             ));
             return 1;
         }
-        if terminal_passthrough == TerminalPassthrough::Ssh
-            && is_down
-            && env_flag_enabled("STEPLER_ENABLE_SSH_REMOTE_ADAPTER", false)
-        {
+        if terminal_passthrough == TerminalPassthrough::SshRemote && is_down {
             let mode = KEYBOARD_CONTROL_STATE
                 .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
                 .lock()
@@ -2006,9 +2003,19 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 })
                 .unwrap_or(stepler_core::CorrectionMode::Pause);
             append_hotkey_signal_log(&format!(
-                "hook_ssh_terminal_forwarded mode={mode:?} vk={vk_code} down={is_down} up={is_up}"
+                "hook_ssh_remote_forwarded mode={mode:?} vk={vk_code} down={is_down} up={is_up}"
             ));
             send_ssh_terminal_sequence(mode);
+            return 1;
+        }
+        if terminal_passthrough == TerminalPassthrough::SshRemote && is_up {
+            append_hotkey_signal_log(&format!(
+                "hook_ssh_remote_suppressed_up vk={vk_code} down={is_down} up={is_up}"
+            ));
+            let _ = KEYBOARD_CONTROL_STATE
+                .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
+                .lock()
+                .map(|mut state| state.mark_pause_up());
             return 1;
         }
         if matches!(

@@ -170,13 +170,7 @@ chmod +x ~/.local/bin/stepler-remote
 grep -qxF 'source ~/.config/stepler/Stepler.SSHReadline.bash' ~/.bashrc || echo 'source ~/.config/stepler/Stepler.SSHReadline.bash' >> ~/.bashrc
 ```
 
-На Windows-клиенте нужно явно включить форвардинг перед запуском Stepler:
-
-```powershell
-setx STEPLER_ENABLE_SSH_REMOTE_ADAPTER 1
-```
-
-После этого перезапусти Stepler и SSH-сессию. Без opt-in Stepler продолжает fail-closed поведение в SSH: `P`/`CP` подавляются, чтобы не портить удаленную строку ввода. Это не полноценный Linux-port с глобальными hotkeys, а узкий Bash/readline adapter для SSH.
+После этого открой новую SSH-сессию. Удаленный скрипт помечает terminal title только если `stepler-remote` найден на этом host; Windows Stepler форвардит `P`/`CP` только в такие помеченные SSH-сессии. Если на другом host helper не установлен, Stepler продолжает fail-closed поведение и подавляет `P`/`CP`, чтобы не портить удаленную строку ввода. Это не полноценный Linux-port с глобальными hotkeys, а узкий Bash/readline adapter для SSH.
 
 Release build:
 
@@ -192,11 +186,11 @@ Installer build:
 ```
 
 Инсталлятор создается в `SetupOutput\SteplerSetup-<version>.exe`.
-Если `-BuildVersion` не указан, сборка получает уникальную версию со штампом времени, например `0.1.0-alpha.20260523.1234`; эта же версия отображается в окне управления Stepler и записывается в `dist\Stepler\BUILD_INFO.txt`.
+Если `-BuildVersion` не указан, сборка получает уникальную версию со штампом времени, например `1.0.20260617.t0950`; эта же версия отображается в окне управления Stepler и записывается в `dist\Stepler\BUILD_INFO.txt`.
 
 Дополнительные документы:
 
 - [Команды разработки](docs/development_commands_ru.md)
 - [Release smoke checklist](docs/release_smoke_checklist_ru.md)
 - [Установка](INSTALL_README.md)
-- [Release notes 0.1.0](docs/release_notes_0.1.0_ru.md)
+- [Release notes 1.0](docs/release_notes_1.0_ru.md)

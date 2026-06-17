@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "stepler-app"
-version = "0.1.1"
+version = "1.0.0"
 dependencies = [
  "stepler-core",
  "stepler-platform",
@@ -12,7 +12,7 @@ dependencies = [
 
 [[package]]
 name = "stepler-cli"
-version = "0.1.1"
+version = "1.0.0"
 dependencies = [
  "stepler-app",
  "stepler-core",
@@ -22,18 +22,18 @@ dependencies = [
 
 [[package]]
 name = "stepler-core"
-version = "0.1.1"
+version = "1.0.0"
 
 [[package]]
 name = "stepler-platform"
-version = "0.1.1"
+version = "1.0.0"
 dependencies = [
  "stepler-core",
 ]
 
 [[package]]
 name = "stepler-platform-windows"
-version = "0.1.1"
+version = "1.0.0"
 dependencies = [
  "stepler-core",
  "stepler-platform",
@@ -41,14 +41,14 @@ dependencies = [
 
 [[package]]
 name = "stepler-remote"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "stepler-core",
 ]
 
 [[package]]
 name = "stepler-testkit"
-version = "0.1.1"
+version = "1.0.0"
 dependencies = [
  "stepler-core",
 ]

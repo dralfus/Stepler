@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -129,13 +130,16 @@ internal sealed class SteplerTrayForm : Form
     private readonly ToolStripMenuItem _disableCapsLockItem;
     private readonly ToolStripMenuItem _insertAsBackspaceItem;
     private readonly ToolStripMenuItem _riskyFallbacksItem;
+    private readonly ToolStripMenuItem _darkThemeItem;
     private readonly ToolStripMenuItem _showTimingOverlayItem;
     private readonly ToolStripMenuItem _timingOverlayDurationItem;
     private readonly ToolStripMenuItem _autostartItem;
+    private readonly ToolStripMenuItem _qwenInputItem;
     private readonly ToolStripMenuItem _openLayoutOverridesItem;
     private readonly ToolStripMenuItem _openHotkeyLogItem;
     private readonly ToolStripMenuItem _openTrayLogItem;
     private ControlWindow? _controlWindow;
+    private QwenInputWindow? _qwenInputWindow;
     private HotkeyTimingOverlay? _timingOverlay;
     private FileSystemWatcher? _hotkeyLogWatcher;
     private Process? _runner;
@@ -220,6 +224,13 @@ internal sealed class SteplerTrayForm : Form
         };
         _riskyFallbacksItem.Click += (_, _) => UpdateSetting(settings => settings.RiskyFallbacksEnabled = _riskyFallbacksItem.Checked);
 
+        _darkThemeItem = new ToolStripMenuItem("Темная тема")
+        {
+            CheckOnClick = true,
+        };
+        _darkThemeItem.Click += (_, _) =>
+            UpdateSetting(settings => settings.DarkTheme = _darkThemeItem.Checked, restartRunner: false);
+
         _showTimingOverlayItem = new ToolStripMenuItem("Показывать время P/CP")
         {
             CheckOnClick = true,
@@ -232,6 +243,9 @@ internal sealed class SteplerTrayForm : Form
 
         _autostartItem = new ToolStripMenuItem("Автозапуск Windows");
         _autostartItem.Click += (_, _) => ToggleAutostart();
+
+        _qwenInputItem = new ToolStripMenuItem("Qwen input...");
+        _qwenInputItem.Click += (_, _) => RunAfterMenuClose(ShowQwenInputWindow);
 
         _openLayoutOverridesItem = new ToolStripMenuItem("Открыть словарь исключений CP");
         _openLayoutOverridesItem.Click += (_, _) => OpenLayoutOverrides();
@@ -262,10 +276,12 @@ internal sealed class SteplerTrayForm : Form
         menu.Items.Add(_disableCapsLockItem);
         menu.Items.Add(_insertAsBackspaceItem);
         menu.Items.Add(_riskyFallbacksItem);
+        menu.Items.Add(_darkThemeItem);
         menu.Items.Add(_showTimingOverlayItem);
         menu.Items.Add(_timingOverlayDurationItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_autostartItem);
+        menu.Items.Add(_qwenInputItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_openLayoutOverridesItem);
         menu.Items.Add(_openHotkeyLogItem);
@@ -274,6 +290,7 @@ internal sealed class SteplerTrayForm : Form
         menu.Items.Add(showItem);
         menu.Items.Add(exitItem);
         menu.Opening += (_, _) => UpdateMenuState();
+        ThemeApplier.Apply(menu, ThemePalette.FromDarkTheme(_settings.DarkTheme));
 
         _notifyIcon = new NotifyIcon
         {
@@ -323,11 +340,53 @@ internal sealed class SteplerTrayForm : Form
             RestartRunner,
             OpenHotkeyLog,
             () => OpenFileInNotepad(Program.LogPath()),
-            Close);
+            Close,
+            _settings.DarkTheme);
         ShowAndFocusControlWindow(_controlWindow);
     }
 
+    private void ShowQwenInputWindow()
+    {
+        if (_qwenInputWindow is { IsDisposed: false })
+        {
+            ShowAndFocusWindow(_qwenInputWindow);
+            return;
+        }
+
+        _qwenInputWindow = new QwenInputWindow(
+            ResolveCliPath(),
+            _settings.DarkTheme,
+            (text, failed) =>
+            {
+                if (_settings.ShowTimingOverlay)
+                {
+                    ShowTimingOverlay(text, failed);
+                }
+            });
+        ShowAndFocusWindow(_qwenInputWindow);
+    }
+
+    private void RunAfterMenuClose(Action action)
+    {
+        var timer = new System.Windows.Forms.Timer
+        {
+            Interval = 75,
+        };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            action();
+        };
+        timer.Start();
+    }
+
     private static void ShowAndFocusControlWindow(ControlWindow window)
+    {
+        ShowAndFocusWindow(window);
+    }
+
+    private static void ShowAndFocusWindow(Form window)
     {
         if (window.WindowState == FormWindowState.Minimized)
         {
@@ -339,6 +398,23 @@ internal sealed class SteplerTrayForm : Form
         window.TopMost = false;
         window.BringToFront();
         window.Activate();
+
+        var timer = new System.Windows.Forms.Timer
+        {
+            Interval = 100,
+        };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            if (!window.IsDisposed)
+            {
+                window.Show();
+                window.BringToFront();
+                window.Activate();
+            }
+        };
+        timer.Start();
     }
 
     private void StartRunner()
@@ -551,6 +627,7 @@ internal sealed class SteplerTrayForm : Form
         update(_settings);
         SteplerSettingsStore.Save(_settings);
         Program.SafeLog($"settings saved {JsonSerializer.Serialize(_settings)}");
+        ApplyCurrentTheme();
 
         if (restartRunner && IsRunnerAlive())
         {
@@ -593,6 +670,7 @@ internal sealed class SteplerTrayForm : Form
         _disableCapsLockItem.Checked = _settings.DisableCapsLock;
         _insertAsBackspaceItem.Checked = _settings.InsertAsBackspaceEnabled;
         _riskyFallbacksItem.Checked = _settings.RiskyFallbacksEnabled;
+        _darkThemeItem.Checked = _settings.DarkTheme;
         _showTimingOverlayItem.Checked = _settings.ShowTimingOverlay;
         _timingOverlayDurationItem.Text = $"Время индикатора: {_settings.TimingOverlayDurationMs} ms";
         _autostartItem.Checked = AutostartManager.IsEnabled();
@@ -700,7 +778,18 @@ internal sealed class SteplerTrayForm : Form
             _timingOverlay = new HotkeyTimingOverlay();
         }
 
-        _timingOverlay.ShowTiming(text, failed, _settings.TimingOverlayDurationMs);
+        _timingOverlay.ShowTiming(text, failed, _settings.TimingOverlayDurationMs, _settings.DarkTheme);
+    }
+
+    private void ApplyCurrentTheme()
+    {
+        var palette = ThemePalette.FromDarkTheme(_settings.DarkTheme);
+        if (_notifyIcon.ContextMenuStrip is not null)
+        {
+            ThemeApplier.Apply(_notifyIcon.ContextMenuStrip, palette);
+        }
+        _controlWindow?.ApplyTheme(_settings.DarkTheme);
+        _qwenInputWindow?.ApplyTheme(_settings.DarkTheme);
     }
 
     private static bool TryFormatHotkeyTiming(string line, out string text, out bool failed)
@@ -806,6 +895,7 @@ internal sealed class SteplerTrayForm : Form
             Size = new Size(72, 28),
         };
         form.Controls.AddRange(new Control[] { label, input, ok, cancel });
+        ThemeApplier.Apply(form, ThemePalette.FromDarkTheme(_settings.DarkTheme));
         form.AcceptButton = ok;
         form.CancelButton = cancel;
 
@@ -1180,11 +1270,19 @@ internal sealed class HotkeyTimingOverlay : Form
         }
     }
 
-    public void ShowTiming(string text, bool failed, int durationMs)
+    public void ShowTiming(string text, bool failed, int durationMs, bool darkTheme)
     {
         _label.Text = text;
-        BackColor = failed ? Color.FromArgb(118, 33, 43) : Color.FromArgb(28, 32, 36);
-        _label.ForeColor = failed ? Color.FromArgb(255, 235, 238) : Color.White;
+        BackColor = failed
+            ? Color.FromArgb(118, 33, 43)
+            : darkTheme
+                ? Color.FromArgb(28, 32, 36)
+                : Color.FromArgb(245, 247, 250);
+        _label.ForeColor = failed
+            ? Color.FromArgb(255, 235, 238)
+            : darkTheme
+                ? Color.White
+                : Color.FromArgb(30, 32, 36);
 
         PerformLayout();
         PositionNearTray();
@@ -1225,8 +1323,166 @@ internal sealed class SteplerSettings
     public bool DisableCapsLock { get; set; } = true;
     public bool InsertAsBackspaceEnabled { get; set; } = true;
     public bool RiskyFallbacksEnabled { get; set; }
+    public bool DarkTheme { get; set; } = true;
     public bool ShowTimingOverlay { get; set; } = true;
     public int TimingOverlayDurationMs { get; set; } = 1000;
+}
+
+internal readonly record struct ThemePalette(
+    Color Window,
+    Color Control,
+    Color ControlHover,
+    Color Border,
+    Color Text,
+    Color MutedText,
+    Color Input,
+    Color InputText)
+{
+    public static ThemePalette FromDarkTheme(bool darkTheme)
+    {
+        return darkTheme
+            ? new ThemePalette(
+                Color.FromArgb(30, 32, 36),
+                Color.FromArgb(43, 47, 53),
+                Color.FromArgb(55, 61, 69),
+                Color.FromArgb(75, 82, 92),
+                Color.FromArgb(245, 247, 250),
+                Color.FromArgb(190, 197, 207),
+                Color.FromArgb(22, 24, 27),
+                Color.FromArgb(245, 247, 250))
+            : new ThemePalette(
+                SystemColors.Window,
+                SystemColors.Control,
+                SystemColors.ButtonFace,
+                SystemColors.ControlDark,
+                SystemColors.ControlText,
+                SystemColors.GrayText,
+                SystemColors.Window,
+                SystemColors.WindowText);
+    }
+}
+
+internal static class ThemeApplier
+{
+    public static void Apply(Form form, ThemePalette palette)
+    {
+        form.BackColor = palette.Window;
+        form.ForeColor = palette.Text;
+        NativeMethods.SetImmersiveDarkMode(form.Handle, palette.Window.GetBrightness() < 0.5f);
+        ApplyControls(form.Controls, palette);
+    }
+
+    public static void Apply(ContextMenuStrip menu, ThemePalette palette)
+    {
+        menu.BackColor = palette.Control;
+        menu.ForeColor = palette.Text;
+        menu.ShowCheckMargin = false;
+        menu.ShowImageMargin = true;
+        menu.Renderer = new ThemedToolStripRenderer(palette);
+        foreach (ToolStripItem item in menu.Items)
+        {
+            item.BackColor = palette.Control;
+            item.ForeColor = item.Enabled ? palette.Text : palette.MutedText;
+        }
+    }
+
+    private static void ApplyControls(Control.ControlCollection controls, ThemePalette palette)
+    {
+        foreach (Control control in controls)
+        {
+            switch (control)
+            {
+                case TextBoxBase textBox:
+                    textBox.BackColor = palette.Input;
+                    textBox.ForeColor = palette.InputText;
+                    break;
+                case Button button:
+                    button.BackColor = palette.Control;
+                    button.ForeColor = palette.Text;
+                    button.FlatStyle = FlatStyle.Flat;
+                    button.FlatAppearance.BorderColor = palette.Border;
+                    button.FlatAppearance.MouseOverBackColor = palette.ControlHover;
+                    break;
+                case NumericUpDown numeric:
+                    numeric.BackColor = palette.Input;
+                    numeric.ForeColor = palette.InputText;
+                    break;
+                case Label label:
+                    label.BackColor = Color.Transparent;
+                    label.ForeColor = palette.Text;
+                    break;
+                default:
+                    control.BackColor = palette.Window;
+                    control.ForeColor = palette.Text;
+                    break;
+            }
+
+            if (control.HasChildren)
+            {
+                ApplyControls(control.Controls, palette);
+            }
+        }
+    }
+}
+
+internal sealed class ThemedToolStripRenderer : ToolStripProfessionalRenderer
+{
+    private readonly ThemePalette _palette;
+
+    public ThemedToolStripRenderer(ThemePalette palette)
+    {
+        _palette = palette;
+    }
+
+    protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
+    {
+        using var brush = new SolidBrush(_palette.Control);
+        e.Graphics.FillRectangle(brush, e.AffectedBounds);
+    }
+
+    protected override void OnRenderImageMargin(ToolStripRenderEventArgs e)
+    {
+        using var brush = new SolidBrush(_palette.Control);
+        e.Graphics.FillRectangle(brush, e.AffectedBounds);
+    }
+
+    protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+    {
+        var color = e.Item.Selected ? _palette.ControlHover : _palette.Control;
+        using var brush = new SolidBrush(color);
+        e.Graphics.FillRectangle(brush, new Rectangle(Point.Empty, e.Item.Size));
+    }
+
+    protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+    {
+        var box = new Rectangle(e.ImageRectangle.X + 2, e.ImageRectangle.Y + 2, 14, 14);
+        using var background = new SolidBrush(_palette.ControlHover);
+        using var border = new Pen(_palette.Border);
+        using var check = new Pen(Color.FromArgb(93, 213, 181), 2f)
+        {
+            StartCap = System.Drawing.Drawing2D.LineCap.Round,
+            EndCap = System.Drawing.Drawing2D.LineCap.Round,
+        };
+
+        e.Graphics.FillRectangle(background, box);
+        e.Graphics.DrawRectangle(border, box);
+        e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        e.Graphics.DrawLines(check, new[]
+        {
+            new Point(box.Left + 3, box.Top + 7),
+            new Point(box.Left + 6, box.Top + 10),
+            new Point(box.Left + 11, box.Top + 4),
+        });
+    }
+
+    protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+    {
+        using var brush = new SolidBrush(_palette.Control);
+        e.Graphics.FillRectangle(brush, new Rectangle(Point.Empty, e.Item.Size));
+        using var pen = new Pen(_palette.Border);
+        var y = e.Item.Height / 2;
+        e.Graphics.DrawLine(pen, 0, y, e.Item.Width, y);
+    }
 }
 
 internal static class SteplerSettingsStore
@@ -1349,8 +1605,32 @@ internal static class SteplerIcon
 
 internal static class NativeMethods
 {
+    private const int DwmwaUseImmersiveDarkMode = 20;
+    private const int DwmwaUseImmersiveDarkModeBefore20H1 = 19;
+
     [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
     public static extern bool DestroyIcon(IntPtr handle);
+
+    public static void SetImmersiveDarkMode(IntPtr handle, bool enabled)
+    {
+        if (handle == IntPtr.Zero || !OperatingSystem.IsWindowsVersionAtLeast(10))
+        {
+            return;
+        }
+
+        var value = enabled ? 1 : 0;
+        if (DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkMode, ref value, sizeof(int)) != 0)
+        {
+            _ = DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkModeBefore20H1, ref value, sizeof(int));
+        }
+    }
+
+    [DllImport("dwmapi.dll", PreserveSig = true)]
+    private static extern int DwmSetWindowAttribute(
+        IntPtr hwnd,
+        int dwAttribute,
+        ref int pvAttribute,
+        int cbAttribute);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string? lpName);
@@ -1471,7 +1751,8 @@ internal sealed class ControlWindow : Form
         Action restartRunner,
         Action openHotkeyLog,
         Action openTrayLog,
-        Action exit)
+        Action exit,
+        bool darkTheme)
     {
         Text = "Stepler";
         ShowInTaskbar = true;
@@ -1518,11 +1799,17 @@ internal sealed class ControlWindow : Form
             trayLogButton,
             exitButton,
         });
+        ApplyTheme(darkTheme);
     }
 
     public void UpdateStatus(string status)
     {
         _statusLabel.Text = status;
+    }
+
+    public void ApplyTheme(bool darkTheme)
+    {
+        ThemeApplier.Apply(this, ThemePalette.FromDarkTheme(darkTheme));
     }
 
     private static Button Button(string text, int x, int y, Action action)
@@ -1536,4 +1823,342 @@ internal sealed class ControlWindow : Form
         button.Click += (_, _) => action();
         return button;
     }
+}
+
+internal sealed class QwenInputWindow : Form
+{
+    private readonly string _cliPath;
+    private readonly Action<string, bool> _showTiming;
+    private readonly TextBox _input;
+    private readonly Label _status;
+
+    public QwenInputWindow(string cliPath, bool darkTheme, Action<string, bool> showTiming)
+    {
+        _cliPath = cliPath;
+        _showTiming = showTiming;
+
+        Text = "Stepler Qwen Input";
+        ShowInTaskbar = true;
+        FormBorderStyle = FormBorderStyle.Sizable;
+        MaximizeBox = true;
+        MinimizeBox = false;
+        ClientSize = new Size(520, 236);
+        MinimumSize = new Size(540, 220);
+        StartPosition = FormStartPosition.CenterScreen;
+        KeyPreview = true;
+
+        _input = new TextBox
+        {
+            AcceptsReturn = true,
+            AcceptsTab = true,
+            Multiline = true,
+            ScrollBars = ScrollBars.Vertical,
+            Location = new Point(12, 12),
+            Size = new Size(496, 120),
+            Font = new Font("Segoe UI", 10),
+            Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+        };
+
+        var submitButton = Button("Отправить", 12, 146, Submit);
+        submitButton.Size = new Size(128, 30);
+        submitButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+
+        var clearButton = Button("Очистить", 308, 146, () => _input.Clear());
+        var closeButton = Button("Закрыть", 416, 146, Close);
+        foreach (var button in new[] { clearButton, closeButton })
+        {
+            button.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+        }
+
+        _status = new Label
+        {
+            AutoSize = false,
+            Text = "Готово",
+            TextAlign = ContentAlignment.MiddleLeft,
+            Location = new Point(12, 190),
+            Size = new Size(496, 28),
+            Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+        };
+
+        Controls.AddRange(new Control[]
+        {
+            _input,
+            submitButton,
+            clearButton,
+            closeButton,
+            _status,
+        });
+
+        KeyDown += OnQwenInputKeyDown;
+        ApplyTheme(darkTheme);
+    }
+
+    public void ApplyTheme(bool darkTheme)
+    {
+        ThemeApplier.Apply(this, ThemePalette.FromDarkTheme(darkTheme));
+    }
+
+    private void OnQwenInputKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyCode != Keys.Pause)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        e.SuppressKeyPress = true;
+        ApplyCorrection(e.Control ? "scrolllock" : "pause");
+    }
+
+    private void ApplyCorrection(string mode)
+    {
+        var hotkeyStarted = Stopwatch.StartNew();
+        var hotkeyLabel = mode == "pause" ? "P" : "CP";
+        ShowTiming($"{hotkeyLabel} нажата", failed: false);
+        SetStatus($"{hotkeyLabel} нажата");
+
+        if (!File.Exists(_cliPath))
+        {
+            ShowFailure(hotkeyLabel, "stepler-cli.exe не найден");
+            return;
+        }
+
+        var line = _input.Text;
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            ShowFailure(hotkeyLabel, "пустой ввод");
+            return;
+        }
+
+        var args = new List<string>
+        {
+            "psreadline-plan",
+            "--mode",
+            mode,
+            "--text-b64",
+            Convert.ToBase64String(Encoding.Unicode.GetBytes(line)),
+            "--cursor",
+            _input.SelectionStart.ToString(),
+        };
+        if (_input.SelectionLength > 0)
+        {
+            args.Add("--selection-start");
+            args.Add(_input.SelectionStart.ToString());
+            args.Add("--selection-length");
+            args.Add(_input.SelectionLength.ToString());
+        }
+
+        var result = RunCli(args);
+        if (result.ExitCode != 0)
+        {
+            ShowFailure(hotkeyLabel, $"нет замены {hotkeyStarted.ElapsedMilliseconds} ms");
+            return;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(result.Stdout);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("applied", out var applied) || !applied.GetBoolean())
+            {
+                ShowFailure(hotkeyLabel, $"нет замены {hotkeyStarted.ElapsedMilliseconds} ms");
+                return;
+            }
+
+            var nextText = root.TryGetProperty("text_b64", out var textBase64)
+                ? Encoding.Unicode.GetString(Convert.FromBase64String(textBase64.GetString() ?? string.Empty))
+                : root.GetProperty("text").GetString() ?? string.Empty;
+            var cursor = root.TryGetProperty("cursor", out var cursorElement)
+                ? cursorElement.GetInt32()
+                : nextText.Length;
+
+            _input.Text = nextText;
+            _input.SelectionStart = Math.Clamp(cursor, 0, _input.TextLength);
+            _input.SelectionLength = 0;
+
+            var layoutStarted = Stopwatch.StartNew();
+            var layout = SwitchLayoutAfterCorrection(nextText);
+            layoutStarted.Stop();
+
+            var totalMs = hotkeyStarted.ElapsedMilliseconds;
+            if (layout.Target is null)
+            {
+                ShowSuccess(hotkeyLabel, $"{totalMs} ms");
+            }
+            else if (layout.Applied)
+            {
+                ShowSuccess(hotkeyLabel, $"{totalMs} ms, язык {layout.Target} {layoutStarted.ElapsedMilliseconds} ms");
+            }
+            else
+            {
+                ShowSuccess(hotkeyLabel, $"{totalMs} ms, язык fail {layoutStarted.ElapsedMilliseconds} ms");
+            }
+        }
+        catch (Exception error)
+        {
+            Program.SafeLog($"qwen input correction parse error {error}");
+            ShowFailure(hotkeyLabel, $"ошибка ответа {hotkeyStarted.ElapsedMilliseconds} ms");
+        }
+    }
+
+    private (string? Target, bool Applied) SwitchLayoutAfterCorrection(string text)
+    {
+        var targetLayout = DesiredLayoutForText(text);
+        if (targetLayout is null)
+        {
+            return (null, false);
+        }
+
+        var result = RunCli(new[] { "switch-layout", targetLayout });
+        if (result.ExitCode != 0)
+        {
+            Program.SafeLog($"qwen input layout switch failed target={targetLayout} stderr={result.Stderr.Trim()}");
+            return (targetLayout, false);
+        }
+
+        return (targetLayout, true);
+    }
+
+    private static string? DesiredLayoutForText(string text)
+    {
+        var russian = 0;
+        var english = 0;
+        foreach (var character in text)
+        {
+            if (IsRussianLetter(character))
+            {
+                russian++;
+            }
+            else if (character is >= 'A' and <= 'Z' or >= 'a' and <= 'z')
+            {
+                english++;
+            }
+        }
+
+        if (russian > english)
+        {
+            return "russian";
+        }
+        if (english > russian)
+        {
+            return "english";
+        }
+
+        return null;
+    }
+
+    private static bool IsRussianLetter(char character)
+    {
+        return character is >= 'а' and <= 'я'
+            or >= 'А' and <= 'Я'
+            or 'ё'
+            or 'Ё';
+    }
+
+    private void Submit()
+    {
+        if (!File.Exists(_cliPath))
+        {
+            SetStatus("stepler-cli.exe не найден");
+            return;
+        }
+
+        var text = _input.Text;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        var result = RunCli(new[] { "qwen-submit", "--text", text });
+        if (result.ExitCode == 0)
+        {
+            SetStatus("Отправлено в Qwen");
+            _input.Clear();
+        }
+        else
+        {
+            SetStatus("Qwen input-file не найден");
+        }
+    }
+
+    private CliResult RunCli(IEnumerable<string> arguments)
+    {
+        try
+        {
+            using var process = new Process();
+            process.StartInfo = new ProcessStartInfo
+            {
+                FileName = _cliPath,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (var argument in arguments)
+            {
+                process.StartInfo.ArgumentList.Add(argument);
+            }
+
+            process.Start();
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
+            process.WaitForExit(5000);
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                return new CliResult(1, stdout, "timeout");
+            }
+
+            if (!string.IsNullOrWhiteSpace(stderr))
+            {
+                Program.SafeLog($"qwen input cli stderr {stderr.Trim()}");
+            }
+            return new CliResult(process.ExitCode, stdout, stderr);
+        }
+        catch (Exception error)
+        {
+            Program.SafeLog($"qwen input cli error {error}");
+            return new CliResult(1, string.Empty, error.Message);
+        }
+    }
+
+    private void SetStatus(string text)
+    {
+        _status.Text = text;
+    }
+
+    private void ShowSuccess(string hotkeyLabel, string details)
+    {
+        var text = $"{hotkeyLabel} {details}";
+        ShowTiming(text, failed: false);
+        SetStatus(text);
+    }
+
+    private void ShowFailure(string hotkeyLabel, string details)
+    {
+        var text = $"{hotkeyLabel} failed";
+        ShowTiming(text, failed: true);
+        SetStatus($"{text}: {details}");
+    }
+
+    private void ShowTiming(string text, bool failed)
+    {
+        _showTiming(text, failed);
+        _status.Refresh();
+        Update();
+    }
+
+    private static Button Button(string text, int x, int y, Action action)
+    {
+        var button = new Button
+        {
+            Text = text,
+            Location = new Point(x, y),
+            Size = new Size(92, 30),
+        };
+        button.Click += (_, _) => action();
+        return button;
+    }
+
+    private readonly record struct CliResult(int ExitCode, string Stdout, string Stderr);
 }

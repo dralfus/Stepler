@@ -166,6 +166,22 @@ fn terminal_passthrough_keeps_only_local_powershell_forwardable() {
         terminal_passthrough_for_window(
             "CASCADIA_HOSTING_WINDOW_CLASS",
             "Windows.UI.Input.InputSite.WindowClass",
+            "Qwen CLI"
+        ),
+        TerminalPassthrough::TerminalApp
+    );
+    assert_eq!(
+        terminal_passthrough_for_window(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass",
+            "stepler-terminal-app qwen"
+        ),
+        TerminalPassthrough::TerminalApp
+    );
+    assert_eq!(
+        terminal_passthrough_for_window(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass",
             ""
         ),
         TerminalPassthrough::UnknownTerminal

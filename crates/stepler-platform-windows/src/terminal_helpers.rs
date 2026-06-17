@@ -31,7 +31,12 @@ pub(super) fn foreground_terminal_passthrough() -> TerminalPassthrough {
     let app_class = window_class_name(foreground).unwrap_or_default();
     let focused_class = window_class_name(focused).unwrap_or_default();
     let title = window_title(foreground).unwrap_or_default();
-    let passthrough = terminal_passthrough_for_window(&app_class, &focused_class, &title);
+    let mut passthrough = terminal_passthrough_for_window(&app_class, &focused_class, &title);
+    if passthrough == TerminalPassthrough::PsReadLine
+        && active_terminal_app_marker_title().is_some()
+    {
+        passthrough = TerminalPassthrough::TerminalApp;
+    }
     append_hotkey_signal_log(&format!(
         "hook_terminal_detect kind={passthrough:?} app={app_class:?} focused={focused_class:?} title={title:?}"
     ));
@@ -54,6 +59,9 @@ pub(super) fn terminal_passthrough_for_window(
     }
     if is_ssh_terminal_title(title) {
         return TerminalPassthrough::Ssh;
+    }
+    if is_terminal_app_passthrough_title(title) {
+        return TerminalPassthrough::TerminalApp;
     }
     if is_local_psreadline_terminal_title(title) {
         return TerminalPassthrough::PsReadLine;
@@ -143,6 +151,34 @@ pub(super) fn is_ssh_remote_adapter_title(title: &str) -> bool {
     title.to_ascii_lowercase().contains("stepler-remote-ready")
 }
 
+pub(super) fn is_terminal_app_passthrough_title(title: &str) -> bool {
+    let title = title.to_ascii_lowercase();
+    title.contains("qwen") || title.contains("stepler-terminal-app")
+}
+
+pub(super) fn active_terminal_app_marker_title() -> Option<&'static str> {
+    if terminal_app_marker_exists("qwen") {
+        Some("stepler-terminal-app qwen")
+    } else {
+        None
+    }
+}
+
+pub(super) fn has_active_terminal_app_marker() -> bool {
+    active_terminal_app_marker_title().is_some()
+}
+
+fn terminal_app_marker_exists(name: &str) -> bool {
+    let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") else {
+        return false;
+    };
+    std::path::PathBuf::from(local_app_data)
+        .join("Stepler")
+        .join("state")
+        .join(format!("terminal-app-{name}.marker"))
+        .is_file()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TerminalPauseHandling {
     PassThrough,
@@ -156,5 +192,6 @@ pub(super) enum TerminalPassthrough {
     PsReadLine,
     SshRemote,
     Ssh,
+    TerminalApp,
     UnknownTerminal,
 }

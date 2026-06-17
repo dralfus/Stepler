@@ -36,6 +36,10 @@ fn main() {
         psreadline_self_test();
         return;
     }
+    if args.first().map(String::as_str) == Some("qwen-submit") {
+        qwen_submit(&args);
+        return;
+    }
     if args.first().map(String::as_str) == Some("switch-layout") {
         switch_layout(&args);
         return;
@@ -290,6 +294,56 @@ fn psreadline_self_test() {
             std::process::exit(1);
         }
     }
+}
+
+fn qwen_submit(args: &[String]) {
+    let text = match arg_value(args, "--text") {
+        Some(text) => text.to_owned(),
+        None => {
+            eprintln!("usage: stepler-cli qwen-submit --text <text>");
+            std::process::exit(2);
+        }
+    };
+    let input_file = match qwen_input_file_from_marker() {
+        Some(path) => path,
+        None => {
+            eprintln!("qwen-submit error: active Qwen input file marker was not found");
+            std::process::exit(1);
+        }
+    };
+    let line = format!("{{\"type\":\"submit\",\"text\":{}}}\n", json_string(&text));
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&input_file)
+        .and_then(|mut file| file.write_all(line.as_bytes()))
+    {
+        Ok(()) => println!("submitted: {}", input_file.display()),
+        Err(error) => {
+            eprintln!("qwen-submit error: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn qwen_input_file_from_marker() -> Option<std::path::PathBuf> {
+    let local_app_data = std::env::var_os("LOCALAPPDATA")?;
+    let marker_path = std::path::PathBuf::from(local_app_data)
+        .join("Stepler")
+        .join("state")
+        .join("terminal-app-qwen.marker");
+    let marker = std::fs::read_to_string(marker_path).ok()?;
+    for part in marker.split(['\n', ';']) {
+        let part = part.trim();
+        let Some(value) = part.strip_prefix("input_file=") else {
+            continue;
+        };
+        let value = value.trim();
+        if !value.is_empty() {
+            return Some(std::path::PathBuf::from(value));
+        }
+    }
+    None
 }
 
 fn psreadline_plan(args: &[String]) {

@@ -321,6 +321,20 @@ pub fn default_app_policies() -> Vec<AppPolicy> {
             allow_risky_methods: true,
         },
         AppPolicy {
+            app_matcher: String::from("qwen"),
+            preferred_context_methods: vec![MethodId::XtermKeyboardSelection],
+            preferred_replace_methods: vec![MethodId::XtermKeyboardSelection],
+            forbidden_methods: vec![MethodId::PsReadLine, MethodId::TerminalClipboardShortcut],
+            allow_risky_methods: false,
+        },
+        AppPolicy {
+            app_matcher: String::from("stepler-terminal-app"),
+            preferred_context_methods: vec![MethodId::XtermKeyboardSelection],
+            preferred_replace_methods: vec![MethodId::XtermKeyboardSelection],
+            forbidden_methods: vec![MethodId::PsReadLine, MethodId::TerminalClipboardShortcut],
+            allow_risky_methods: false,
+        },
+        AppPolicy {
             app_matcher: String::from("CASCADIA_HOSTING_WINDOW_CLASS"),
             preferred_context_methods: vec![MethodId::PsReadLine],
             preferred_replace_methods: vec![MethodId::PsReadLine],
@@ -650,6 +664,71 @@ mod tests {
         assert_eq!(
             error,
             ResolveError::ForbiddenByPolicy(MethodId::ClipboardSelection)
+        );
+    }
+
+    #[test]
+    fn resolver_uses_xterm_keyboard_for_qwen_inside_windows_terminal() {
+        let resolver = MethodResolver::default();
+        let mut target = target(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass",
+        );
+        target.title = String::from("Qwen CLI");
+        let probes = vec![
+            MethodProbe::risky(MethodId::TerminalClipboardShortcut, "terminal shortcut"),
+            MethodProbe::safe(MethodId::XtermKeyboardSelection, "xterm keyboard"),
+        ];
+
+        let decision = resolver.resolve(&target, &probes).unwrap();
+
+        assert_eq!(decision.context_method, MethodId::XtermKeyboardSelection);
+        assert_eq!(
+            decision.replacement_method,
+            MethodId::XtermKeyboardSelection
+        );
+    }
+
+    #[test]
+    fn resolver_blocks_terminal_clipboard_for_qwen_inside_windows_terminal() {
+        let resolver = MethodResolver::default();
+        let mut target = target(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass",
+        );
+        target.title = String::from("Qwen CLI");
+        let probes = vec![MethodProbe::risky(
+            MethodId::TerminalClipboardShortcut,
+            "terminal shortcut",
+        )];
+
+        let error = resolver.resolve(&target, &probes).unwrap_err();
+
+        assert_eq!(
+            error,
+            ResolveError::ForbiddenByPolicy(MethodId::TerminalClipboardShortcut)
+        );
+    }
+
+    #[test]
+    fn resolver_allows_xterm_keyboard_selection_inside_windows_terminal() {
+        let resolver = MethodResolver::default();
+        let mut target = target(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass",
+        );
+        target.title = String::from("Windows PowerShell");
+        let probes = vec![MethodProbe::safe(
+            MethodId::XtermKeyboardSelection,
+            "xterm textarea keyboard selection with terminal copy/paste shortcuts",
+        )];
+
+        let decision = resolver.resolve(&target, &probes).unwrap();
+
+        assert_eq!(decision.context_method, MethodId::XtermKeyboardSelection);
+        assert_eq!(
+            decision.replacement_method,
+            MethodId::XtermKeyboardSelection
         );
     }
 

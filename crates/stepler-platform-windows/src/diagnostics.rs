@@ -64,10 +64,16 @@ pub(super) fn method_diagnostics_impl() -> Result<WindowsMethodDiagnostics, Plat
     let focused = focused_window(foreground).unwrap_or(foreground);
     let app_class = window_class_name(foreground).unwrap_or_else(|| String::from("unknown"));
     let focused_class = window_class_name(focused).unwrap_or_else(|| String::from("unknown"));
+    let mut title = window_title(foreground).unwrap_or_default();
+    if let Some(marker_title) = active_terminal_app_marker_title() {
+        if !title.contains(marker_title) {
+            title = format!("{title} {marker_title}");
+        }
+    }
     let target = ForegroundTarget {
         app_class: app_class.clone(),
         focused_class: focused_class.clone(),
-        title: window_title(foreground).unwrap_or_default(),
+        title,
         process_name: window_process_name(foreground),
         window_id: hwnd_id(foreground),
         control_id: hwnd_id(focused),

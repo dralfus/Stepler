@@ -112,6 +112,11 @@ pub fn try_forward_embedded_terminal_hotkey(
         return Ok(false);
     }
 
+    let foreground = foreground_hwnd()?;
+    if !foreground_is_codex_embedded_terminal(foreground) {
+        return Ok(false);
+    }
+
     let focus = uia_focus_diagnostics()?;
     if !is_embedded_terminal_uia_focus(&focus) {
         return Ok(false);
@@ -144,6 +149,21 @@ fn is_embedded_terminal_uia_focus(focus: &WindowsUiaFocusDiagnostics) -> bool {
     focus
         .class_name
         .eq_ignore_ascii_case("xterm-helper-textarea")
+}
+
+#[cfg(windows)]
+fn foreground_is_stepler_qwen_input() -> bool {
+    let Ok(hwnd) = foreground_hwnd() else {
+        return false;
+    };
+    let title = window_title(hwnd).unwrap_or_default();
+    if !title.eq_ignore_ascii_case("Stepler Qwen Input") {
+        return false;
+    }
+
+    window_class_name(hwnd)
+        .map(|class_name| class_name.starts_with("WindowsForms10.Window."))
+        .unwrap_or(false)
 }
 
 impl RegisteredHotkey {
@@ -492,10 +512,16 @@ fn text_context() -> Result<TextContext, PlatformError> {
     let focused = focused_window(foreground).unwrap_or(foreground);
     let app_class = window_class_name(foreground).unwrap_or_else(|| String::from("unknown"));
     let focused_class = window_class_name(focused).unwrap_or_else(|| String::from("unknown"));
+    let mut title = window_title(foreground).unwrap_or_default();
+    if let Some(marker_title) = active_terminal_app_marker_title() {
+        if !title.contains(marker_title) {
+            title = format!("{title} {marker_title}");
+        }
+    }
     let target = ForegroundTarget {
         app_class: app_class.clone(),
         focused_class: focused_class.clone(),
-        title: window_title(foreground).unwrap_or_default(),
+        title,
         process_name: window_process_name(foreground),
         window_id: hwnd_id(foreground),
         control_id: hwnd_id(focused),
@@ -765,6 +791,12 @@ fn focused_is_xterm_textarea() -> bool {
     uia_focus_diagnostics()
         .map(|focus| is_embedded_terminal_uia_focus(&focus))
         .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn is_xterm_terminal_target(target: &ForegroundTarget) -> bool {
+    is_supported_terminal_class(&target.app_class, &target.focused_class)
+        && focused_is_xterm_textarea()
 }
 
 #[cfg(windows)]
@@ -1963,6 +1995,25 @@ unsafe extern "system" fn low_level_keyboard_proc(
         return CallNextHookEx(0, code, wparam, lparam);
     }
     if matches!(vk_code, VK_PAUSE | VK_CANCEL) {
+        if foreground_is_stepler_qwen_input() {
+            let _ = KEYBOARD_CONTROL_STATE
+                .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
+                .lock()
+                .map(|mut state| {
+                    if is_down {
+                        state.mark_pause_down();
+                        state.left_ctrl_used |= state.left_ctrl_down;
+                        state.right_ctrl_used |= state.right_ctrl_down;
+                    }
+                    if is_up {
+                        state.mark_pause_up();
+                    }
+                });
+            append_hotkey_signal_log(&format!(
+                "hook_qwen_input_passthrough vk={vk_code} down={is_down} up={is_up}"
+            ));
+            return CallNextHookEx(0, code, wparam, lparam);
+        }
         if foreground_is_classic_console() {
             let mode = KEYBOARD_CONTROL_STATE
                 .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
@@ -2038,6 +2089,27 @@ unsafe extern "system" fn low_level_keyboard_proc(
                         state.mark_pause_up();
                     }
                 });
+            return 1;
+        }
+        if terminal_passthrough == TerminalPassthrough::TerminalApp {
+            let mode = KEYBOARD_CONTROL_STATE
+                .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
+                .lock()
+                .ok()
+                .and_then(|mut state| {
+                    let mode = state.handle_correction_hotkey(vk_code, is_down, is_up);
+                    mode.or_else(|| state.take_pending_scroll_lock_if_released())
+                });
+            if let Some(mode) = mode {
+                append_hotkey_signal_log(&format!(
+                    "hook_terminal_app_posted mode={mode:?} vk={vk_code} down={is_down} up={is_up}"
+                ));
+                post_correction_hotkey_from_hook(mode, vk_code, is_down, is_up);
+            } else {
+                append_hotkey_signal_log(&format!(
+                    "hook_terminal_app_suppressed vk={vk_code} down={is_down} up={is_up}"
+                ));
+            }
             return 1;
         }
         if terminal_passthrough == TerminalPassthrough::PsReadLine {

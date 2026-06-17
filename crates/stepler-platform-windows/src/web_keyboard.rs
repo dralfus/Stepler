@@ -11,10 +11,14 @@ pub(super) struct XtermKeyboardSelectionMethod;
 #[cfg(windows)]
 impl XtermKeyboardSelectionMethod {
     pub(super) fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
-        if !env_flag_enabled("STEPLER_ENABLE_XTERM_KEYBOARD_SELECTION", false) {
-            return None;
-        }
-        if !is_browser_like_target(target) || !focused_is_xterm_textarea() {
+        let enabled_for_browser =
+            env_flag_enabled("STEPLER_ENABLE_XTERM_KEYBOARD_SELECTION", false)
+                && is_browser_like_target(target)
+                && focused_is_xterm_textarea();
+        let enabled_for_terminal = is_xterm_terminal_target(target)
+            || has_active_terminal_app_marker()
+                && is_supported_terminal_class(&target.app_class, &target.focused_class);
+        if !enabled_for_browser && !enabled_for_terminal {
             return None;
         }
 
@@ -33,8 +37,22 @@ impl XtermKeyboardSelectionMethod {
         app_class: &str,
         focused_class: &str,
     ) -> Result<TextContext, PlatformError> {
+        append_hotkey_signal_log(&format!(
+            "xterm_capture start app={app_class:?} focused={focused_class:?} marker={}",
+            has_active_terminal_app_marker()
+        ));
         if foreground_hwnd()? != foreground {
+            append_hotkey_signal_log("xterm_capture fail=foreground_changed");
             return Err(PlatformError::PreflightFailed);
+        }
+        if has_active_terminal_app_marker()
+            && is_supported_terminal_class(app_class, focused_class)
+            && !focused_is_xterm_textarea()
+        {
+            append_hotkey_signal_log("xterm_capture fail=terminal_app_no_safe_text_capture");
+            return Err(PlatformError::ReplacementUnavailableReason(String::from(
+                "terminal_app_no_safe_text_capture",
+            )));
         }
 
         let snapshot = capture_clipboard_text_only()?;
@@ -49,6 +67,10 @@ impl XtermKeyboardSelectionMethod {
         let _ = restore_clipboard_text_only(&snapshot);
         if let Some(text) = selected {
             let text_len = text.len();
+            append_hotkey_signal_log(&format!(
+                "xterm_capture branch=selected len={}",
+                text.encode_utf16().count()
+            ));
             return Ok(TextContext {
                 app_id: format!("{app_class}/{focused_class}"),
                 window_id: hwnd_id(foreground),
@@ -84,6 +106,10 @@ impl XtermKeyboardSelectionMethod {
 
         if let Some(text) = copied {
             let text_len = text.len();
+            append_hotkey_signal_log(&format!(
+                "xterm_capture branch=line_left len={}",
+                text.encode_utf16().count()
+            ));
             return Ok(TextContext {
                 app_id: format!("{app_class}/{focused_class}"),
                 window_id: hwnd_id(foreground),
@@ -103,6 +129,7 @@ impl XtermKeyboardSelectionMethod {
             });
         }
 
+        append_hotkey_signal_log("xterm_capture fail=empty_after_selected_and_line_left");
         Err(PlatformError::ReplacementUnavailableReason(String::from(
             "xterm_keyboard_capture_empty",
         )))

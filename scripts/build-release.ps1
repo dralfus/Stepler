@@ -86,6 +86,8 @@ New-Item -ItemType Directory -Force -Path $distResourcesPath | Out-Null
 Copy-Item ".\target\release\stepler-cli.exe" (Join-Path $distPath "stepler-cli.exe") -Force
 Copy-Item ".\scripts\Stepler.PSReadLine.ps1" (Join-Path $distScriptsPath "Stepler.PSReadLine.ps1") -Force
 Copy-Item ".\scripts\Stepler.SSHReadline.bash" (Join-Path $distScriptsPath "Stepler.SSHReadline.bash") -Force
+Copy-Item ".\scripts\Stepler.Qwen.ps1" (Join-Path $distScriptsPath "Stepler.Qwen.ps1") -Force
+Copy-Item ".\scripts\stepler-qwen.cmd" (Join-Path $distScriptsPath "stepler-qwen.cmd") -Force
 Copy-Item ".\crates\stepler-core\resources\layout-overrides.tsv" (Join-Path $distResourcesPath "layout-overrides.tsv") -Force
 
 if ($BuildLinuxRemote) {
@@ -123,6 +125,8 @@ Included:
   stepler-cli.exe          hotkey runner and diagnostics
   scripts\Stepler.PSReadLine.ps1
   scripts\Stepler.SSHReadline.bash
+  scripts\Stepler.Qwen.ps1
+  scripts\stepler-qwen.cmd
   resources\layout-overrides.tsv
   BUILD_INFO.txt
 
@@ -145,6 +149,13 @@ SSH Bash/readline adapter:
   to the Linux host. Cargo is not needed on the remote VPS.
   Open a new SSH session after installation. The remote script marks the terminal title only
   when stepler-remote is available; Stepler forwards Pause/Ctrl+Pause only to marked SSH tabs.
+
+Qwen CLI inside PowerShell/Windows Terminal:
+  Run:
+    scripts\Stepler.Qwen.ps1
+  or:
+    scripts\stepler-qwen.cmd
+  The launcher marks the terminal title as "stepler-terminal-app qwen" while Qwen is running.
 
 Main shortcuts:
   Pause                    convert current word/selection

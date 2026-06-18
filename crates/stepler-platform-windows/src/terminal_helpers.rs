@@ -31,12 +31,7 @@ pub(super) fn foreground_terminal_passthrough() -> TerminalPassthrough {
     let app_class = window_class_name(foreground).unwrap_or_default();
     let focused_class = window_class_name(focused).unwrap_or_default();
     let title = window_title(foreground).unwrap_or_default();
-    let mut passthrough = terminal_passthrough_for_window(&app_class, &focused_class, &title);
-    if passthrough == TerminalPassthrough::PsReadLine
-        && active_terminal_app_marker_title().is_some()
-    {
-        passthrough = TerminalPassthrough::TerminalApp;
-    }
+    let passthrough = terminal_passthrough_for_window(&app_class, &focused_class, &title);
     append_hotkey_signal_log(&format!(
         "hook_terminal_detect kind={passthrough:?} app={app_class:?} focused={focused_class:?} title={title:?}"
     ));

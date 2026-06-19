@@ -259,6 +259,66 @@ fn win32_edit_method_probes_supported_edit_controls() {
 
 #[cfg(windows)]
 #[test]
+fn win32_edit_method_probes_outlook_richedit_controls() {
+    let target = ForegroundTarget {
+        app_class: String::from("rctrl_renwnd32"),
+        focused_class: String::from("RICHEDIT60W"),
+        title: String::from("Inbox - Outlook"),
+        process_name: Some(String::from("OUTLOOK")),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("hwnd:2"),
+    };
+
+    assert_eq!(
+        Win32EditMessagesMethod
+            .probe(&target)
+            .map(|probe| probe.method_id),
+        Some(MethodId::Win32EditMessages)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn win32_edit_method_still_probes_outlook_plain_edit_controls() {
+    let target = ForegroundTarget {
+        app_class: String::from("rctrl_renwnd32"),
+        focused_class: String::from("Edit"),
+        title: String::from("Inbox - Outlook"),
+        process_name: Some(String::from("OUTLOOK")),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("hwnd:2"),
+    };
+
+    assert_eq!(
+        Win32EditMessagesMethod
+            .probe(&target)
+            .map(|probe| probe.method_id),
+        Some(MethodId::Win32EditMessages)
+    );
+}
+
+#[test]
+fn win32_edit_adjusts_caret_after_replacement_before_caret() {
+    let text = "house вальс gjkt long привет мир";
+    let expected = "gjkt";
+    let start = text.find(expected).unwrap();
+    let end = start + expected.len();
+    let context = TextContext::new(text).with_caret(TextRange::caret(text.len()));
+    let plan = ReplacementPlan {
+        range: TextRange::new(start, end),
+        replacement_text: String::from("поле"),
+        reason: String::from("test"),
+        confidence: 1.0,
+        expected_before_text: String::from(expected),
+    };
+
+    let adjusted = win32_adjusted_caret_after_replacement(&context, &plan);
+
+    assert_eq!(adjusted, "house вальс поле long привет мир".len());
+}
+
+#[cfg(windows)]
+#[test]
 fn console_buffer_method_probes_classic_console() {
     let target = ForegroundTarget {
         app_class: String::from("ConsoleWindowClass"),
@@ -427,6 +487,30 @@ fn web_keyboard_selection_method_probes_browser_like_controls() {
 
 #[cfg(windows)]
 #[test]
+fn fast_web_keyboard_primary_target_skips_slow_uia_probe_stack() {
+    let target = ForegroundTarget {
+        app_class: String::from("Chrome_WidgetWin_1"),
+        focused_class: String::from("Chrome_WidgetWin_1"),
+        title: String::from("Codex"),
+        process_name: Some(String::from("Codex")),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("hwnd:2"),
+    };
+
+    let probes = windows_method_probes(&target);
+    let method_ids = probes
+        .iter()
+        .map(|probe| probe.method_id)
+        .collect::<Vec<_>>();
+
+    assert_eq!(method_ids.first(), Some(&MethodId::WebKeyboardSelection));
+    assert!(!method_ids.contains(&MethodId::UiAutomationEditableText));
+    assert!(!method_ids.contains(&MethodId::UiAutomationDocumentText));
+    assert!(!method_ids.contains(&MethodId::UiAutomationText));
+}
+
+#[cfg(windows)]
+#[test]
 fn web_keyboard_fast_context_is_line_compatible() {
     assert!(web_keyboard_fast_context(
         "web-keyboard-fast-selection:hwnd:1"
@@ -498,7 +582,7 @@ fn web_keyboard_fast_profile_matches_checked_web_apps() {
     assert!(web_keyboard_fast_profile_title_matches(
         "2 unread messages - general - GS.Chat"
     ));
-    assert!(!web_keyboard_fast_profile_title_matches("Codex"));
+    assert!(web_keyboard_fast_profile_title_matches("Codex"));
 }
 
 #[cfg(windows)]
@@ -954,7 +1038,7 @@ fn keyboard_control_state_marks_ctrl_pause_as_used_when_terminal_handles_it() {
     assert_eq!(state.handle_key(VK_LCONTROL, true, false), None);
     assert_eq!(
         state.handle_terminal_pause_key(VK_PAUSE, true, false),
-        TerminalPauseHandling::TranslateToCtrlF12
+        TerminalPauseHandling::TranslateToF14
     );
     assert_eq!(
         state.handle_terminal_pause_key(VK_PAUSE, false, true),
@@ -966,7 +1050,7 @@ fn keyboard_control_state_marks_ctrl_pause_as_used_when_terminal_handles_it() {
     assert_eq!(state.handle_key(VK_RCONTROL, true, false), None);
     assert_eq!(
         state.handle_terminal_pause_key(VK_CANCEL, true, false),
-        TerminalPauseHandling::TranslateToCtrlF12
+        TerminalPauseHandling::TranslateToF14
     );
     assert_eq!(
         state.handle_terminal_pause_key(VK_CANCEL, false, true),
@@ -1007,16 +1091,16 @@ fn keyboard_control_state_maps_classic_console_plain_pause_immediately() {
 }
 
 #[test]
-fn keyboard_control_state_passes_plain_terminal_pause_through() {
+fn keyboard_control_state_maps_plain_terminal_pause_to_psreadline_chord() {
     let mut state = KeyboardControlHookState::default();
 
     assert_eq!(
         state.handle_terminal_pause_key(VK_PAUSE, true, false),
-        TerminalPauseHandling::PassThrough
+        TerminalPauseHandling::TranslateToF13
     );
     assert_eq!(
         state.handle_terminal_pause_key(VK_PAUSE, false, true),
-        TerminalPauseHandling::PassThrough
+        TerminalPauseHandling::Suppress
     );
 }
 

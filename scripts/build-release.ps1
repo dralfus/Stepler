@@ -38,12 +38,17 @@ if ([string]::IsNullOrWhiteSpace($FileVersion)) {
 $distPath = [System.IO.Path]::GetFullPath($DistDir)
 $distScriptsPath = Join-Path $distPath "scripts"
 $distResourcesPath = Join-Path $distPath "resources"
+$cargoTargetDir = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
+    Join-Path $repoRoot "target"
+} else {
+    [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
+}
 
 Write-Host "Build version: $BuildVersion"
 Write-Host "File version:  $FileVersion"
 
 Write-Host "Building stepler-cli ($Configuration)..."
-cargo build -p stepler-cli --release
+cargo build -p stepler-cli --release --target-dir $cargoTargetDir
 if ($LASTEXITCODE -ne 0) {
     throw "cargo build failed with exit code $LASTEXITCODE"
 }
@@ -83,7 +88,7 @@ New-Item -ItemType Directory -Force -Path $distPath | Out-Null
 New-Item -ItemType Directory -Force -Path $distScriptsPath | Out-Null
 New-Item -ItemType Directory -Force -Path $distResourcesPath | Out-Null
 
-Copy-Item ".\target\release\stepler-cli.exe" (Join-Path $distPath "stepler-cli.exe") -Force
+Copy-Item (Join-Path $cargoTargetDir "release\stepler-cli.exe") (Join-Path $distPath "stepler-cli.exe") -Force
 Copy-Item ".\scripts\Stepler.PSReadLine.ps1" (Join-Path $distScriptsPath "Stepler.PSReadLine.ps1") -Force
 Copy-Item ".\scripts\Stepler.SSHReadline.bash" (Join-Path $distScriptsPath "Stepler.SSHReadline.bash") -Force
 Copy-Item ".\scripts\Stepler.Qwen.ps1" (Join-Path $distScriptsPath "Stepler.Qwen.ps1") -Force

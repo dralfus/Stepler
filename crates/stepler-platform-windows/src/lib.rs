@@ -582,9 +582,12 @@ fn capture_by_method(
     focused_class: &str,
 ) -> Result<TextContext, PlatformError> {
     match method {
-        MethodId::Win32EditMessages => {
-            Win32EditMessagesMethod.capture(foreground, focused, app_class.to_owned())
-        }
+        MethodId::Win32EditMessages => Win32EditMessagesMethod.capture(
+            foreground,
+            focused,
+            app_class.to_owned(),
+            focused_class.to_owned(),
+        ),
         MethodId::ConsoleBuffer => {
             ConsoleBufferMethod.capture(foreground, focused, app_class, focused_class)
         }
@@ -621,6 +624,13 @@ fn capture_by_method(
 #[cfg(windows)]
 fn windows_method_probes(target: &ForegroundTarget) -> Vec<MethodProbe> {
     let mut probes = Vec::new();
+    if is_fast_web_keyboard_primary_target(target) {
+        if let Some(probe) = WebKeyboardSelectionMethod.probe(target) {
+            probes.push(probe);
+        }
+        return probes;
+    }
+
     if let Some(probe) = Win32EditMessagesMethod.probe(target) {
         probes.push(probe);
     }
@@ -657,6 +667,15 @@ fn windows_method_probes(target: &ForegroundTarget) -> Vec<MethodProbe> {
         probes.push(probe);
     }
     probes
+}
+
+fn is_fast_web_keyboard_primary_target(target: &ForegroundTarget) -> bool {
+    web_keyboard_fast_profile_title_matches(&target.title)
+        && is_browser_like_class_or_process(
+            &target.app_class,
+            &target.focused_class,
+            target.process_name.as_deref(),
+        )
 }
 
 #[cfg(not(windows))]
@@ -801,12 +820,40 @@ fn is_xterm_terminal_target(target: &ForegroundTarget) -> bool {
 
 #[cfg(windows)]
 fn foreground_is_codex_embedded_terminal(foreground: isize) -> bool {
+    foreground_is_codex_embedded_terminal_cached(foreground, true)
+}
+
+#[cfg(windows)]
+fn refresh_foreground_is_codex_embedded_terminal(foreground: isize) -> bool {
+    foreground_is_codex_embedded_terminal_cached(foreground, false)
+}
+
+#[cfg(windows)]
+fn foreground_is_codex_embedded_terminal_cached(foreground: isize, allow_cached: bool) -> bool {
     let title = window_title(foreground).unwrap_or_default();
     if !title.eq_ignore_ascii_case("Codex") {
         return false;
     }
 
-    focused_is_xterm_textarea()
+    static CACHE: OnceLock<Mutex<Option<(isize, Instant, bool)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if allow_cached {
+        if let Ok(guard) = cache.lock() {
+            if let Some((cached_foreground, cached_at, cached_value)) = *guard {
+                if cached_foreground == foreground
+                    && cached_at.elapsed() < Duration::from_millis(750)
+                {
+                    return cached_value;
+                }
+            }
+        }
+    }
+
+    let value = focused_is_xterm_textarea();
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((foreground, Instant::now(), value));
+    }
+    value
 }
 
 fn allow_uia_document_caret_fallback(target: &ForegroundTarget) -> bool {
@@ -1184,28 +1231,78 @@ fn copy_selected_text_checked(snapshot: &ClipboardSnapshot, timeout: Duration) -
 }
 
 #[cfg(windows)]
+fn copy_selected_text_checked_fast(
+    snapshot: &ClipboardSnapshot,
+    timeout: Duration,
+    clipboard_timeout: Duration,
+) -> Option<String> {
+    copy_selected_text_checked_with_chord_and_clipboard_timeout(
+        snapshot,
+        &[VK_CONTROL],
+        VK_C,
+        timeout,
+        clipboard_timeout,
+    )
+}
+
+#[cfg(windows)]
 fn copy_selected_text_checked_with_chord(
     snapshot: &ClipboardSnapshot,
     modifiers: &[u32],
     key: u32,
     timeout: Duration,
 ) -> Option<String> {
+    copy_selected_text_checked_with_chord_and_clipboard_timeout(
+        snapshot,
+        modifiers,
+        key,
+        timeout,
+        Duration::from_millis(450),
+    )
+}
+
+#[cfg(windows)]
+fn copy_selected_text_checked_with_chord_and_clipboard_timeout(
+    snapshot: &ClipboardSnapshot,
+    modifiers: &[u32],
+    key: u32,
+    timeout: Duration,
+    clipboard_timeout: Duration,
+) -> Option<String> {
     let marker = format!(
         "__STEPLER_COPY_MARKER_{}__",
         snapshot.sequence_number.unwrap_or(0)
     );
-    let _ = restore_clipboard(clipboard_snapshot_from_text(&marker));
+    restore_clipboard_with_timeout(clipboard_snapshot_from_text(&marker), clipboard_timeout)
+        .ok()?;
     release_modifier_keys();
     std::thread::sleep(Duration::from_millis(8));
     send_key_chord_virtual(modifiers, key);
-    wait_for_clipboard_text_different_from(&marker, timeout)
+    wait_for_clipboard_text_different_from_with_clipboard_timeout(
+        &marker,
+        timeout,
+        clipboard_timeout,
+    )
 }
 
 #[cfg(windows)]
 fn wait_for_clipboard_text_different_from(marker: &str, timeout: Duration) -> Option<String> {
+    wait_for_clipboard_text_different_from_with_clipboard_timeout(
+        marker,
+        timeout,
+        Duration::from_millis(450),
+    )
+}
+
+#[cfg(windows)]
+fn wait_for_clipboard_text_different_from_with_clipboard_timeout(
+    marker: &str,
+    timeout: Duration,
+    clipboard_timeout: Duration,
+) -> Option<String> {
     let started = Instant::now();
     while started.elapsed() < timeout {
-        if let Ok(snapshot) = capture_clipboard_text_only() {
+        if let Ok(snapshot) = capture_clipboard_text_only_with_timeout(clipboard_timeout) {
             if let Some(text) = snapshot.text {
                 if text != marker {
                     return Some(text);
@@ -1647,22 +1744,20 @@ impl KeyboardControlHookState {
             if ctrl_down {
                 self.left_ctrl_used |= self.left_ctrl_down || physical_left_ctrl_down;
                 self.right_ctrl_used |= self.right_ctrl_down || physical_right_ctrl_down;
-                return TerminalPauseHandling::TranslateToCtrlF12;
+                return TerminalPauseHandling::TranslateToF14;
             }
-            return TerminalPauseHandling::PassThrough;
+            return TerminalPauseHandling::TranslateToF13;
         }
 
         if is_up {
             self.mark_pause_up();
-            if ctrl_down {
-                return TerminalPauseHandling::Suppress;
-            }
+            return TerminalPauseHandling::Suppress;
         }
 
         if ctrl_down {
             TerminalPauseHandling::Suppress
         } else {
-            TerminalPauseHandling::PassThrough
+            TerminalPauseHandling::Suppress
         }
     }
 
@@ -2014,6 +2109,30 @@ unsafe extern "system" fn low_level_keyboard_proc(
             ));
             return CallNextHookEx(0, code, wparam, lparam);
         }
+        if foreground_hwnd()
+            .map(refresh_foreground_is_codex_embedded_terminal)
+            .unwrap_or(false)
+        {
+            let mode = KEYBOARD_CONTROL_STATE
+                .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
+                .lock()
+                .ok()
+                .and_then(|mut state| {
+                    let mode = state.handle_correction_hotkey(vk_code, is_down, is_up);
+                    mode.or_else(|| state.take_pending_scroll_lock_if_released())
+                });
+            if let Some(mode) = mode {
+                append_hotkey_signal_log(&format!(
+                    "hook_codex_embedded_terminal_posted mode={mode:?} vk={vk_code} down={is_down} up={is_up}"
+                ));
+                post_correction_hotkey_from_hook(mode, vk_code, is_down, is_up);
+            } else {
+                append_hotkey_signal_log(&format!(
+                    "hook_codex_embedded_terminal_suppressed vk={vk_code} down={is_down} up={is_up}"
+                ));
+            }
+            return 1;
+        }
         if foreground_is_classic_console() {
             let mode = KEYBOARD_CONTROL_STATE
                 .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
@@ -2124,8 +2243,14 @@ unsafe extern "system" fn low_level_keyboard_proc(
                     return CallNextHookEx(0, code, wparam, lparam);
                 }
                 TerminalPauseHandling::Suppress => return 1,
-                TerminalPauseHandling::TranslateToCtrlF12 => {
-                    send_key_virtual(VK_F12);
+                TerminalPauseHandling::TranslateToF13 => {
+                    release_modifier_keys();
+                    send_key_virtual(VK_F13);
+                    return 1;
+                }
+                TerminalPauseHandling::TranslateToF14 => {
+                    release_modifier_keys();
+                    send_key_virtual(VK_F14);
                     return 1;
                 }
             }
@@ -2420,6 +2545,10 @@ const VK_A: u32 = 0x41;
 const VK_F11: u32 = 0x7A;
 #[cfg(windows)]
 const VK_F12: u32 = 0x7B;
+#[cfg(windows)]
+const VK_F13: u32 = 0x7C;
+#[cfg(windows)]
+const VK_F14: u32 = 0x7D;
 #[cfg(windows)]
 const VK_HOME: u32 = 0x24;
 #[cfg(windows)]

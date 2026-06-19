@@ -2,8 +2,8 @@ param(
     [string] $SteplerCli = $null,
     [string] $PauseChord = 'Pause',
     [string] $ScrollLockChord = 'Ctrl+Pause',
-    [string[]] $AdditionalPauseChords = @('Ctrl+F11'),
-    [string[]] $AdditionalScrollLockChords = @('Ctrl+F12'),
+    [string[]] $AdditionalPauseChords = @('F13', 'Ctrl+F11'),
+    [string[]] $AdditionalScrollLockChords = @('F14', 'Ctrl+F12'),
     [switch] $Quiet
 )
 

@@ -2,7 +2,14 @@ use super::*;
 
 #[cfg(windows)]
 pub(super) fn capture_clipboard_text_only() -> Result<ClipboardSnapshot, PlatformError> {
-    let _guard = ClipboardGuard::open()?;
+    capture_clipboard_text_only_with_timeout(Duration::from_millis(450))
+}
+
+#[cfg(windows)]
+pub(super) fn capture_clipboard_text_only_with_timeout(
+    timeout: Duration,
+) -> Result<ClipboardSnapshot, PlatformError> {
+    let _guard = ClipboardGuard::open(timeout)?;
     let sequence_number = Some(unsafe { GetClipboardSequenceNumber() });
     let text = if unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) } != 0 {
         Some(read_clipboard_text()?)
@@ -21,10 +28,18 @@ pub(super) fn capture_clipboard_text_only() -> Result<ClipboardSnapshot, Platfor
 pub(super) fn restore_clipboard_text_only(
     snapshot: &ClipboardSnapshot,
 ) -> Result<(), PlatformError> {
+    restore_clipboard_text_only_with_timeout(snapshot, Duration::from_millis(450))
+}
+
+#[cfg(windows)]
+pub(super) fn restore_clipboard_text_only_with_timeout(
+    snapshot: &ClipboardSnapshot,
+    timeout: Duration,
+) -> Result<(), PlatformError> {
     if let Some(text) = &snapshot.text {
-        restore_clipboard(clipboard_snapshot_from_text(text))
+        restore_clipboard_with_timeout(clipboard_snapshot_from_text(text), timeout)
     } else {
-        let _guard = ClipboardGuard::open()?;
+        let _guard = ClipboardGuard::open(timeout)?;
         unsafe {
             if EmptyClipboard() == 0 {
                 return Err(PlatformError::ClipboardUnavailable);
@@ -48,7 +63,7 @@ pub(super) fn clipboard_snapshot_from_text(text: &str) -> ClipboardSnapshot {
 
 #[cfg(windows)]
 pub(super) fn capture_clipboard() -> Result<ClipboardSnapshot, PlatformError> {
-    let _guard = ClipboardGuard::open()?;
+    let _guard = ClipboardGuard::open(Duration::from_millis(450))?;
     let sequence_number = Some(unsafe { GetClipboardSequenceNumber() });
     let formats = clipboard_formats();
     let mut snapshots = Vec::new();
@@ -81,7 +96,15 @@ pub(super) fn capture_clipboard() -> Result<ClipboardSnapshot, PlatformError> {
 
 #[cfg(windows)]
 pub(super) fn restore_clipboard(snapshot: ClipboardSnapshot) -> Result<(), PlatformError> {
-    let _guard = ClipboardGuard::open()?;
+    restore_clipboard_with_timeout(snapshot, Duration::from_millis(450))
+}
+
+#[cfg(windows)]
+pub(super) fn restore_clipboard_with_timeout(
+    snapshot: ClipboardSnapshot,
+    timeout: Duration,
+) -> Result<(), PlatformError> {
+    let _guard = ClipboardGuard::open(timeout)?;
     unsafe {
         if EmptyClipboard() == 0 {
             return Err(PlatformError::ClipboardUnavailable);
@@ -228,9 +251,9 @@ struct ClipboardGuard;
 
 #[cfg(windows)]
 impl ClipboardGuard {
-    fn open() -> Result<Self, PlatformError> {
+    fn open(timeout: Duration) -> Result<Self, PlatformError> {
         let started = Instant::now();
-        while started.elapsed() < Duration::from_millis(450) {
+        while started.elapsed() < timeout {
             let opened = unsafe { OpenClipboard(0) };
             if opened != 0 {
                 return Ok(Self);

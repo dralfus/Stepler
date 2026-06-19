@@ -121,6 +121,7 @@ fn main() {
                     &WindowsLayoutSwitcher::new(),
                     &plan.expected_before_text,
                     &plan.replacement_text,
+                    &context,
                     layout_hwnd_hint(&context.window_id, &context.control_id),
                 );
                 if let Some(layout_result) = layout_result {
@@ -617,27 +618,6 @@ fn handle_hotkey_event<F, C, R, B>(
     };
     append_log(log_path, &received_event.to_json_line());
     release_modifier_keys();
-    if matches!(try_forward_embedded_terminal_hotkey(mode), Ok(true)) {
-        eprintln!("{mode:?}: forwarded to embedded terminal PSReadLine");
-        let event = OperationLogEvent {
-            operation_id: String::from("embedded-terminal"),
-            timestamp_unix_ms: timestamp_unix_ms(),
-            trigger: LogTrigger::from(mode),
-            state: OperationState::Completed,
-            app: Some(String::from("embedded_terminal")),
-            provider: Some(String::from("WindowsTextContextProvider")),
-            replacer: Some(String::from("embedded_terminal_psreadline")),
-            range: None,
-            expected_before_text: Some(String::from("forwarded_to_embedded_terminal_psreadline")),
-            replacement_text: None,
-            clipboard_used: false,
-            duration_ms: started.elapsed().as_millis(),
-            timings: Vec::new(),
-        };
-        append_log(log_path, &event.to_json_line());
-        release_modifier_keys();
-        return;
-    }
     let result = runner.handle_hotkey(mode);
     release_modifier_keys();
 
@@ -647,6 +627,7 @@ fn handle_hotkey_event<F, C, R, B>(
                 layout_switcher,
                 &outcome.plan.expected_before_text,
                 &outcome.plan.replacement_text,
+                &outcome.context,
                 layout_hwnd_hint(&outcome.context.window_id, &outcome.context.control_id),
             );
             if let Some(layout_result) = &layout_result {
@@ -687,6 +668,29 @@ fn handle_hotkey_event<F, C, R, B>(
             eprintln!("{mode:?}: applied in {}ms", outcome.metrics.duration_ms);
         }
         Err(error) => {
+            if matches!(try_forward_embedded_terminal_hotkey(mode), Ok(true)) {
+                eprintln!("{mode:?}: forwarded to embedded terminal PSReadLine");
+                let event = OperationLogEvent {
+                    operation_id: String::from("embedded-terminal"),
+                    timestamp_unix_ms: timestamp_unix_ms(),
+                    trigger: LogTrigger::from(mode),
+                    state: OperationState::Completed,
+                    app: Some(String::from("embedded_terminal")),
+                    provider: Some(String::from("WindowsTextContextProvider")),
+                    replacer: Some(String::from("embedded_terminal_psreadline")),
+                    range: None,
+                    expected_before_text: Some(String::from(
+                        "forwarded_to_embedded_terminal_psreadline",
+                    )),
+                    replacement_text: None,
+                    clipboard_used: false,
+                    duration_ms: started.elapsed().as_millis(),
+                    timings: Vec::new(),
+                };
+                append_log(log_path, &event.to_json_line());
+                release_modifier_keys();
+                return;
+            }
             let event = OperationLogEvent {
                 operation_id: String::from("unknown"),
                 timestamp_unix_ms: timestamp_unix_ms(),
@@ -734,12 +738,16 @@ fn switch_layout_after_replacement(
     layout_switcher: &WindowsLayoutSwitcher,
     expected_before_text: &str,
     replacement_text: &str,
+    context: &stepler_core::TextContext,
     hwnd_hint: Option<isize>,
 ) -> Option<String> {
     let Some(layout) = desired_layout_after_replacement(expected_before_text, replacement_text)
     else {
         return None;
     };
+    if should_skip_layout_after_replacement(context) {
+        return Some(format!("skipped_for_{}", context.app_id));
+    }
 
     let action = match layout {
         DesiredLayout::Russian => KeyboardControlAction::SwitchToRussian,
@@ -775,6 +783,12 @@ fn switch_layout_after_replacement(
         return Some(format!("switch_failed_{error:?}"));
     }
     Some(format!("switch_failed_{layout:?}"))
+}
+
+fn should_skip_layout_after_replacement(context: &stepler_core::TextContext) -> bool {
+    context
+        .app_id
+        .eq_ignore_ascii_case("rctrl_renwnd32/RICHEDIT60W")
 }
 
 fn desired_layout_after_replacement(

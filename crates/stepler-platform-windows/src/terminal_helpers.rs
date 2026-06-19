@@ -178,7 +178,8 @@ fn terminal_app_marker_exists(name: &str) -> bool {
 pub(super) enum TerminalPauseHandling {
     PassThrough,
     Suppress,
-    TranslateToCtrlF12,
+    TranslateToF13,
+    TranslateToF14,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

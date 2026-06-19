@@ -334,6 +334,9 @@ internal sealed class SteplerTrayForm : Form
     private readonly ToolStripMenuItem _timingOverlayDurationItem;
     private readonly ToolStripMenuItem _autostartItem;
     private readonly ToolStripMenuItem _qwenInputItem;
+    private readonly ToolStripMenuItem _qwenWorkspaceItem;
+    private readonly ToolStripMenuItem _qwenWorkspaceContinueItem;
+    private readonly ToolStripMenuItem _qwenWorkspaceDirectoryItem;
     private readonly ToolStripMenuItem _openLayoutOverridesItem;
     private readonly ToolStripMenuItem _openHotkeyLogItem;
     private readonly ToolStripMenuItem _openTrayLogItem;
@@ -447,6 +450,15 @@ internal sealed class SteplerTrayForm : Form
         _qwenInputItem = new ToolStripMenuItem("Qwen input...");
         _qwenInputItem.Click += (_, _) => RunAfterMenuClose(ShowQwenInputWindow);
 
+        _qwenWorkspaceItem = new ToolStripMenuItem("Qwen workspace...");
+        _qwenWorkspaceItem.Click += (_, _) => RunAfterMenuClose(() => LaunchQwenWorkspace());
+
+        _qwenWorkspaceContinueItem = new ToolStripMenuItem("Qwen workspace (--continue)");
+        _qwenWorkspaceContinueItem.Click += (_, _) => RunAfterMenuClose(() => LaunchQwenWorkspace("--continue"));
+
+        _qwenWorkspaceDirectoryItem = new ToolStripMenuItem("Папка проекта Qwen...");
+        _qwenWorkspaceDirectoryItem.Click += (_, _) => RunAfterMenuClose(ShowQwenWorkspaceDirectoryDialog);
+
         _openLayoutOverridesItem = new ToolStripMenuItem("Открыть словарь исключений CP");
         _openLayoutOverridesItem.Click += (_, _) => OpenLayoutOverrides();
 
@@ -482,6 +494,9 @@ internal sealed class SteplerTrayForm : Form
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_autostartItem);
         menu.Items.Add(_qwenInputItem);
+        menu.Items.Add(_qwenWorkspaceItem);
+        menu.Items.Add(_qwenWorkspaceContinueItem);
+        menu.Items.Add(_qwenWorkspaceDirectoryItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_openLayoutOverridesItem);
         menu.Items.Add(_openHotkeyLogItem);
@@ -572,6 +587,59 @@ internal sealed class SteplerTrayForm : Form
                 }
             });
         ShowAndFocusWindow(_qwenInputWindow);
+    }
+
+    private void LaunchQwenWorkspace(params string[] arguments)
+    {
+        var workspacePath = ResolveQwenWorkspacePath();
+        if (!File.Exists(workspacePath))
+        {
+            Program.SafeLog($"qwen workspace not found path={workspacePath}");
+            return;
+        }
+
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = workspacePath,
+                WorkingDirectory = Path.GetDirectoryName(workspacePath) ?? AppContext.BaseDirectory,
+                UseShellExecute = true,
+            };
+            startInfo.ArgumentList.Add("--workdir");
+            startInfo.ArgumentList.Add(ResolveQwenWorkspaceWorkingDirectory());
+            startInfo.ArgumentList.Add("--dark-theme");
+            startInfo.ArgumentList.Add(_settings.DarkTheme ? "true" : "false");
+            foreach (var argument in arguments)
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
+            Process.Start(startInfo);
+        }
+        catch (Exception error)
+        {
+            Program.SafeLog($"qwen workspace launch error {error}");
+        }
+    }
+
+    private void ShowQwenWorkspaceDirectoryDialog()
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Выбери папку проекта, из которой запускать Qwen workspace",
+            UseDescriptionForTitle = true,
+            SelectedPath = ResolveQwenWorkspaceWorkingDirectory(),
+            ShowNewFolderButton = false,
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        UpdateSetting(
+            settings => settings.QwenWorkspaceDirectory = dialog.SelectedPath,
+            restartRunner: false);
     }
 
     private void ShowTrayMenu()
@@ -889,6 +957,7 @@ internal sealed class SteplerTrayForm : Form
         _showTimingOverlayItem.Checked = _settings.ShowTimingOverlay;
         _timingOverlayDurationItem.Text = $"Время индикатора: {_settings.TimingOverlayDurationMs} ms";
         _autostartItem.Checked = AutostartManager.IsEnabled();
+        _qwenWorkspaceDirectoryItem.Text = $"Папка проекта Qwen: {ShortPath(ResolveQwenWorkspaceWorkingDirectory())}";
     }
 
     private void StartHotkeyLogWatcher()
@@ -1274,6 +1343,66 @@ internal sealed class SteplerTrayForm : Form
 
         return sideBySide;
     }
+
+    private string ResolveQwenWorkspacePath()
+    {
+        var sideBySide = Path.Combine(AppContext.BaseDirectory, "Stepler.QwenWorkspace.exe");
+        if (File.Exists(sideBySide))
+        {
+            return sideBySide;
+        }
+
+        if (_repoRoot is not null)
+        {
+            var releaseDist = Path.Combine(_repoRoot, "dist", "Stepler", "Stepler.QwenWorkspace.exe");
+            if (File.Exists(releaseDist))
+            {
+                return releaseDist;
+            }
+
+            return Path.Combine(
+                _repoRoot,
+                "apps",
+                "Stepler.QwenWorkspace",
+                "bin",
+                "Debug",
+                "net9.0-windows",
+                "Stepler.QwenWorkspace.exe");
+        }
+
+        return sideBySide;
+    }
+
+    private string ResolveQwenWorkspaceWorkingDirectory()
+    {
+        if (!string.IsNullOrWhiteSpace(_settings.QwenWorkspaceDirectory)
+            && Directory.Exists(_settings.QwenWorkspaceDirectory))
+        {
+            return _settings.QwenWorkspaceDirectory;
+        }
+
+        var configured = Environment.GetEnvironmentVariable("STEPLER_QWEN_WORKDIR");
+        if (!string.IsNullOrWhiteSpace(configured) && Directory.Exists(configured))
+        {
+            return configured;
+        }
+
+        return _repoRoot ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    }
+
+    private static string ShortPath(string path)
+    {
+        if (path.Length <= 42)
+        {
+            return path;
+        }
+
+        var root = Path.GetPathRoot(path) ?? string.Empty;
+        var name = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        return string.IsNullOrWhiteSpace(name)
+            ? path
+            : $"{root}...\\{name}";
+    }
 }
 
 internal static class AutostartManager
@@ -1540,6 +1669,7 @@ internal sealed class SteplerSettings
     public bool DarkTheme { get; set; } = true;
     public bool ShowTimingOverlay { get; set; } = true;
     public int TimingOverlayDurationMs { get; set; } = 1000;
+    public string? QwenWorkspaceDirectory { get; set; }
 }
 
 internal readonly record struct ThemePalette(

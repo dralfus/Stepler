@@ -83,6 +83,22 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE"
 }
 
+Write-Host "Publishing Qwen workspace ($Configuration, $Runtime)..."
+dotnet publish ".\apps\Stepler.QwenWorkspace\Stepler.QwenWorkspace.csproj" `
+    -nologo `
+    -c $Configuration `
+    -r $Runtime `
+    --self-contained false `
+    -o $distPath `
+    -p:Version=1.0.0 `
+    -p:InformationalVersion=$BuildVersion `
+    -p:FileVersion=$FileVersion `
+    -p:AssemblyVersion=1.0.0.0 `
+    -p:IncludeSourceRevisionInInformationalVersion=false
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet publish Qwen workspace failed with exit code $LASTEXITCODE"
+}
+
 Write-Host "Copying runtime files..."
 New-Item -ItemType Directory -Force -Path $distPath | Out-Null
 New-Item -ItemType Directory -Force -Path $distScriptsPath | Out-Null
@@ -127,6 +143,7 @@ Run:
 
 Included:
   Stepler.exe              tray-only Windows UI
+  Stepler.QwenWorkspace.exe combined Qwen terminal/input workspace
   stepler-cli.exe          hotkey runner and diagnostics
   scripts\Stepler.PSReadLine.ps1
   scripts\Stepler.SSHReadline.bash

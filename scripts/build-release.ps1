@@ -3,7 +3,9 @@ param(
     [string]$Runtime = "win-x64",
     [string]$DistDir = "",
     [string]$BuildVersion = "",
-    [string]$FileVersion = ""
+    [string]$FileVersion = "",
+    [switch]$BuildLinuxRemote,
+    [string]$WslDistro = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,7 +21,7 @@ if ([string]::IsNullOrWhiteSpace($DistDir)) {
 if ([string]::IsNullOrWhiteSpace($BuildVersion)) {
     $buildDate = Get-Date -Format 'yyyyMMdd'
     $buildTime = Get-Date -Format 'HHmm'
-    $BuildVersion = "0.1.0-alpha.$buildDate.t$buildTime"
+    $BuildVersion = "1.0.$buildDate.t$buildTime"
 }
 
 if ([string]::IsNullOrWhiteSpace($FileVersion)) {
@@ -30,22 +32,36 @@ if ([string]::IsNullOrWhiteSpace($FileVersion)) {
     if ($daysSinceEpoch -gt 65535) {
         $daysSinceEpoch = $daysSinceEpoch % 65535
     }
-    $FileVersion = "0.1.0.$daysSinceEpoch"
+    $FileVersion = "1.0.0.$daysSinceEpoch"
 }
 
 $distPath = [System.IO.Path]::GetFullPath($DistDir)
 $distScriptsPath = Join-Path $distPath "scripts"
+$distResourcesPath = Join-Path $distPath "resources"
+$cargoTargetDir = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
+    Join-Path $repoRoot "target"
+} else {
+    [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
+}
 
 Write-Host "Build version: $BuildVersion"
 Write-Host "File version:  $FileVersion"
 
 Write-Host "Building stepler-cli ($Configuration)..."
-cargo build -p stepler-cli --release
+cargo build -p stepler-cli --release --target-dir $cargoTargetDir
+if ($LASTEXITCODE -ne 0) {
+    throw "cargo build failed with exit code $LASTEXITCODE"
+}
 
 Write-Host "Publishing Stepler tray host ($Configuration, $Runtime)..."
 if (Test-Path $distPath) {
     try {
-        Remove-Item $distPath -Recurse -Force
+        Get-ChildItem $distPath -Force | ForEach-Object {
+            if ($_.Name -eq "remote") {
+                return
+            }
+            Remove-Item $_.FullName -Recurse -Force
+        }
     }
     catch {
         throw "Cannot clean release output '$distPath'. Close Stepler if it is running from this folder and retry. $($_.Exception.Message)"
@@ -58,19 +74,51 @@ dotnet publish ".\apps\Stepler.Tray\Stepler.Tray.csproj" `
     -r $Runtime `
     --self-contained false `
     -o $distPath `
-    -p:Version=$BuildVersion `
+    -p:Version=1.0.0 `
     -p:InformationalVersion=$BuildVersion `
     -p:FileVersion=$FileVersion `
-    -p:AssemblyVersion=0.1.0.0 `
+    -p:AssemblyVersion=1.0.0.0 `
     -p:IncludeSourceRevisionInInformationalVersion=false
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet publish failed with exit code $LASTEXITCODE"
+}
+
+Write-Host "Publishing Qwen workspace ($Configuration, $Runtime)..."
+dotnet publish ".\apps\Stepler.QwenWorkspace\Stepler.QwenWorkspace.csproj" `
+    -nologo `
+    -c $Configuration `
+    -r $Runtime `
+    --self-contained false `
+    -o $distPath `
+    -p:Version=1.0.0 `
+    -p:InformationalVersion=$BuildVersion `
+    -p:FileVersion=$FileVersion `
+    -p:AssemblyVersion=1.0.0.0 `
+    -p:IncludeSourceRevisionInInformationalVersion=false
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet publish Qwen workspace failed with exit code $LASTEXITCODE"
+}
 
 Write-Host "Copying runtime files..."
 New-Item -ItemType Directory -Force -Path $distPath | Out-Null
 New-Item -ItemType Directory -Force -Path $distScriptsPath | Out-Null
+New-Item -ItemType Directory -Force -Path $distResourcesPath | Out-Null
 
-Copy-Item ".\target\release\stepler-cli.exe" (Join-Path $distPath "stepler-cli.exe") -Force
+Copy-Item (Join-Path $cargoTargetDir "release\stepler-cli.exe") (Join-Path $distPath "stepler-cli.exe") -Force
 Copy-Item ".\scripts\Stepler.PSReadLine.ps1" (Join-Path $distScriptsPath "Stepler.PSReadLine.ps1") -Force
 Copy-Item ".\scripts\Stepler.SSHReadline.bash" (Join-Path $distScriptsPath "Stepler.SSHReadline.bash") -Force
+Copy-Item ".\scripts\Stepler.Qwen.ps1" (Join-Path $distScriptsPath "Stepler.Qwen.ps1") -Force
+Copy-Item ".\scripts\stepler-qwen.cmd" (Join-Path $distScriptsPath "stepler-qwen.cmd") -Force
+Copy-Item ".\crates\stepler-core\resources\layout-overrides.tsv" (Join-Path $distResourcesPath "layout-overrides.tsv") -Force
+
+if ($BuildLinuxRemote) {
+    $remoteDistPath = Join-Path $distPath "remote\linux-x64"
+    $remoteArgs = @("-DistDir", $remoteDistPath)
+    if (-not [string]::IsNullOrWhiteSpace($WslDistro)) {
+        $remoteArgs += @("-WslDistro", $WslDistro)
+    }
+    & ".\scripts\build-remote-linux.ps1" @remoteArgs
+}
 
 $buildInfo = @"
 Stepler build
@@ -85,7 +133,7 @@ BuiltAt: $((Get-Date).ToString("yyyy-MM-dd HH:mm:ss zzz"))
 Set-Content -Path (Join-Path $distPath "BUILD_INFO.txt") -Value $buildInfo -Encoding UTF8
 
 $readme = @"
-Stepler alpha build
+Stepler 1.0 build
 
 Version:
   $BuildVersion
@@ -95,9 +143,13 @@ Run:
 
 Included:
   Stepler.exe              tray-only Windows UI
+  Stepler.QwenWorkspace.exe combined Qwen terminal/input workspace
   stepler-cli.exe          hotkey runner and diagnostics
   scripts\Stepler.PSReadLine.ps1
   scripts\Stepler.SSHReadline.bash
+  scripts\Stepler.Qwen.ps1
+  scripts\stepler-qwen.cmd
+  resources\layout-overrides.tsv
   BUILD_INFO.txt
 
 Logs:
@@ -112,10 +164,20 @@ PowerShell PSReadLine adapter:
     . <this folder>\scripts\Stepler.PSReadLine.ps1
 
 SSH Bash/readline adapter:
-  Copy scripts\Stepler.SSHReadline.bash to the Linux host and source it from ~/.bashrc.
-  Set STEPLER_ENABLE_SSH_REMOTE_ADAPTER=1 before starting Stepler to forward Pause/Ctrl+Pause
-  as private readline sequences in SSH tabs. Without this opt-in Stepler only suppresses the
-  unsafe terminal hotkeys.
+  Preferred: build the Linux helper on the developer machine with:
+    .\scripts\build-remote-linux.ps1
+  or run build-release with -BuildLinuxRemote.
+  Copy remote\linux-x64\stepler-remote and remote\linux-x64\Stepler.SSHReadline.bash
+  to the Linux host. Cargo is not needed on the remote VPS.
+  Open a new SSH session after installation. The remote script marks the terminal title only
+  when stepler-remote is available; Stepler forwards Pause/Ctrl+Pause only to marked SSH tabs.
+
+Qwen CLI inside PowerShell/Windows Terminal:
+  Run:
+    scripts\Stepler.Qwen.ps1
+  or:
+    scripts\stepler-qwen.cmd
+  The launcher marks the terminal title as "stepler-terminal-app qwen" while Qwen is running.
 
 Main shortcuts:
   Pause                    convert current word/selection

@@ -54,13 +54,9 @@ stepler/
     stepler-platform-windows/
     stepler-platform-linux/
     stepler-app/
-    stepler-testkit/
   apps/
     Stepler.Tray/
   docs/
-  tests/
-    fixtures/
-    ui/
 ```
 
 ## 3. Архитектура: method adapters + policies + resolver
@@ -443,8 +439,7 @@ Wayland может ограничивать глобальные hooks и synthe
 
 Тесты:
 
-- создать fixture-файл `known_cases.json`;
-- каждый known bug должен получить ожидаемый результат или статус `expected_failure`.
+- каждый known bug должен получить unit/smoke regression или явный статус `expected_failure` в `known_bugs.txt`.
 
 Готово, когда:
 
@@ -458,9 +453,8 @@ Wayland может ограничивать глобальные hooks и synthe
 
 - создать cargo workspace;
 - добавить `stepler-core`;
-- добавить `stepler-testkit`;
 - настроить CI/local commands;
-- выбрать формат логов и fixtures.
+- выбрать формат логов и regression-тестов.
 
 Тесты:
 

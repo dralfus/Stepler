@@ -321,6 +321,20 @@ pub fn default_app_policies() -> Vec<AppPolicy> {
             allow_risky_methods: true,
         },
         AppPolicy {
+            app_matcher: String::from("qwen"),
+            preferred_context_methods: vec![MethodId::XtermKeyboardSelection],
+            preferred_replace_methods: vec![MethodId::XtermKeyboardSelection],
+            forbidden_methods: vec![MethodId::PsReadLine, MethodId::TerminalClipboardShortcut],
+            allow_risky_methods: false,
+        },
+        AppPolicy {
+            app_matcher: String::from("stepler-terminal-app"),
+            preferred_context_methods: vec![MethodId::XtermKeyboardSelection],
+            preferred_replace_methods: vec![MethodId::XtermKeyboardSelection],
+            forbidden_methods: vec![MethodId::PsReadLine, MethodId::TerminalClipboardShortcut],
+            allow_risky_methods: false,
+        },
+        AppPolicy {
             app_matcher: String::from("CASCADIA_HOSTING_WINDOW_CLASS"),
             preferred_context_methods: vec![MethodId::PsReadLine],
             preferred_replace_methods: vec![MethodId::PsReadLine],
@@ -401,6 +415,20 @@ pub fn default_app_policies() -> Vec<AppPolicy> {
             ],
             forbidden_methods: vec![
                 MethodId::Win32EditMessages,
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationText,
+                MethodId::TerminalClipboardShortcut,
+                MethodId::ClipboardSelection,
+                MethodId::SendInput,
+            ],
+            allow_risky_methods: false,
+        },
+        AppPolicy {
+            app_matcher: String::from("OUTLOOK"),
+            preferred_context_methods: vec![MethodId::Win32EditMessages, MethodId::WordCom],
+            preferred_replace_methods: vec![MethodId::Win32EditMessages, MethodId::WordCom],
+            forbidden_methods: vec![
+                MethodId::UiAutomationEditableText,
                 MethodId::UiAutomationDocumentText,
                 MethodId::UiAutomationText,
                 MethodId::TerminalClipboardShortcut,
@@ -640,10 +668,126 @@ mod tests {
     }
 
     #[test]
+    fn resolver_uses_xterm_keyboard_for_qwen_inside_windows_terminal() {
+        let resolver = MethodResolver::default();
+        let mut target = target(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass",
+        );
+        target.title = String::from("Qwen CLI");
+        let probes = vec![
+            MethodProbe::risky(MethodId::TerminalClipboardShortcut, "terminal shortcut"),
+            MethodProbe::safe(MethodId::XtermKeyboardSelection, "xterm keyboard"),
+        ];
+
+        let decision = resolver.resolve(&target, &probes).unwrap();
+
+        assert_eq!(decision.context_method, MethodId::XtermKeyboardSelection);
+        assert_eq!(
+            decision.replacement_method,
+            MethodId::XtermKeyboardSelection
+        );
+    }
+
+    #[test]
+    fn resolver_blocks_terminal_clipboard_for_qwen_inside_windows_terminal() {
+        let resolver = MethodResolver::default();
+        let mut target = target(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass",
+        );
+        target.title = String::from("Qwen CLI");
+        let probes = vec![MethodProbe::risky(
+            MethodId::TerminalClipboardShortcut,
+            "terminal shortcut",
+        )];
+
+        let error = resolver.resolve(&target, &probes).unwrap_err();
+
+        assert_eq!(
+            error,
+            ResolveError::ForbiddenByPolicy(MethodId::TerminalClipboardShortcut)
+        );
+    }
+
+    #[test]
+    fn resolver_allows_xterm_keyboard_selection_inside_windows_terminal() {
+        let resolver = MethodResolver::default();
+        let mut target = target(
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass",
+        );
+        target.title = String::from("Windows PowerShell");
+        let probes = vec![MethodProbe::safe(
+            MethodId::XtermKeyboardSelection,
+            "xterm textarea keyboard selection with terminal copy/paste shortcuts",
+        )];
+
+        let decision = resolver.resolve(&target, &probes).unwrap();
+
+        assert_eq!(decision.context_method, MethodId::XtermKeyboardSelection);
+        assert_eq!(
+            decision.replacement_method,
+            MethodId::XtermKeyboardSelection
+        );
+    }
+
+    #[test]
+    fn resolver_prefers_word_com_for_outlook_policy() {
+        let resolver = MethodResolver::default();
+        let mut target = target("rctrl_renwnd32", "_WwG");
+        target.process_name = Some(String::from("OUTLOOK"));
+        let probes = vec![
+            MethodProbe::safe(MethodId::UiAutomationEditableText, "uia fallback"),
+            MethodProbe::safe(MethodId::WordCom, "outlook word editor"),
+        ];
+
+        let decision = resolver.resolve(&target, &probes).unwrap();
+
+        assert_eq!(decision.context_method, MethodId::WordCom);
+        assert_eq!(decision.replacement_method, MethodId::WordCom);
+    }
+
+    #[test]
+    fn resolver_allows_win32_edit_for_outlook_search_policy() {
+        let resolver = MethodResolver::default();
+        let mut target = target("rctrl_renwnd32", "Edit");
+        target.process_name = Some(String::from("OUTLOOK"));
+        let probes = vec![MethodProbe::safe(
+            MethodId::Win32EditMessages,
+            "outlook search edit",
+        )];
+
+        let decision = resolver.resolve(&target, &probes).unwrap();
+
+        assert_eq!(decision.context_method, MethodId::Win32EditMessages);
+        assert_eq!(decision.replacement_method, MethodId::Win32EditMessages);
+    }
+
+    #[test]
+    fn resolver_forbids_uia_for_outlook_policy() {
+        let resolver = MethodResolver::default();
+        let mut target = target("rctrl_renwnd32", "SUPERGRID");
+        target.process_name = Some(String::from("OUTLOOK"));
+        let probes = vec![MethodProbe::safe(
+            MethodId::UiAutomationEditableText,
+            "uia fallback",
+        )];
+
+        let error = resolver.resolve(&target, &probes).unwrap_err();
+
+        assert_eq!(
+            error,
+            ResolveError::ForbiddenByPolicy(MethodId::UiAutomationEditableText)
+        );
+    }
+
+    #[test]
     fn resolver_prefers_web_keyboard_for_browser_like_classes() {
         let resolver = MethodResolver::default();
         let target = target("Chrome_WidgetWin_1", "Chrome_WidgetWin_1");
         let probes = vec![
+            MethodProbe::safe(MethodId::XtermKeyboardSelection, "xterm keyboard"),
             MethodProbe::safe(MethodId::WebKeyboardSelection, "web keyboard"),
             MethodProbe::safe(MethodId::UiAutomationDocumentText, "document selection"),
             MethodProbe::safe(MethodId::UiAutomationText, "uia text"),

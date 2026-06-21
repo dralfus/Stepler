@@ -54,6 +54,21 @@ mod tests {
     }
 
     #[test]
+    fn pause_keeps_layout_punctuation_inside_word_before_trailing_space() {
+        let context = TextContext::new("prefix ckf,fz\u{a0}")
+            .with_caret(TextRange::caret("prefix ckf,fz\u{a0}".len()));
+
+        let plan = build_replacement_plan(&context, CorrectionMode::Pause).unwrap();
+
+        assert_eq!(
+            plan.range,
+            TextRange::new("prefix ".len(), "prefix ckf,fz\u{a0}".len())
+        );
+        assert_eq!(plan.expected_before_text, "ckf,fz\u{a0}");
+        assert_eq!(plan.replacement_text, "слабая\u{a0}");
+    }
+
+    #[test]
     fn pause_does_not_cross_line_break_for_trailing_space_lookup() {
         let context = TextContext::new("k.,jdm\n").with_caret(TextRange::caret(7));
 
@@ -116,6 +131,16 @@ mod tests {
         assert_eq!(plan.range, TextRange::new(0, "пше".len()));
         assert_eq!(plan.expected_before_text, "пше");
         assert_eq!(plan.replacement_text, "git");
+    }
+
+    #[test]
+    fn scrolllock_uses_layout_override_for_plausible_source_word() {
+        let context = TextContext::new("ddble");
+
+        let plan = build_replacement_plan(&context, CorrectionMode::ScrollLock).unwrap();
+
+        assert_eq!(plan.expected_before_text, "ddble");
+        assert_eq!(plan.replacement_text, "ввиду");
     }
 
     #[test]
@@ -288,6 +313,7 @@ mod tests {
     fn operation_log_event_formats_jsonl() {
         let event = OperationLogEvent {
             operation_id: String::from("op-1"),
+            timestamp_unix_ms: 1_718_000_000_123,
             trigger: LogTrigger::Pause,
             state: OperationState::ReplacementApplied,
             app: Some(String::from("Notepad")),
@@ -307,6 +333,7 @@ mod tests {
         let json = event.to_json_line();
 
         assert!(json.contains("\"operation_id\":\"op-1\""));
+        assert!(json.contains("\"timestamp_unix_ms\":1718000000123"));
         assert!(json.contains("\"trigger\":\"Pause\""));
         assert!(json.contains("\"range\":[10,16]"));
         assert!(json.contains("\"timings_ms\":[{\"state\":\"ContextCaptured\",\"elapsed_ms\":2}]"));

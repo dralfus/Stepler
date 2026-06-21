@@ -2,8 +2,8 @@ param(
     [string] $SteplerCli = $null,
     [string] $PauseChord = 'Pause',
     [string] $ScrollLockChord = 'Ctrl+Pause',
-    [string[]] $AdditionalPauseChords = @('Ctrl+F11'),
-    [string[]] $AdditionalScrollLockChords = @('Ctrl+F12'),
+    [string[]] $AdditionalPauseChords = @('F13', 'Ctrl+F11'),
+    [string[]] $AdditionalScrollLockChords = @('F14', 'Ctrl+F12'),
     [switch] $Quiet
 )
 
@@ -38,6 +38,7 @@ public static class SteplerUser32 {
 
 $script:SteplerCli = (Resolve-Path -LiteralPath $SteplerCli).Path
 $script:SteplerPsReadLineEnabled = $false
+$script:SteplerTerminalAppWrapperNames = @()
 
 function Resolve-SteplerPsReadLineChord {
     param(
@@ -258,6 +259,95 @@ function Get-SteplerTargetLayout {
     return $null
 }
 
+function Invoke-SteplerTerminalAppCommand {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Name,
+
+        [Parameter(Mandatory)]
+        [string] $WindowTitle,
+
+        [AllowNull()]
+        [string[]] $Arguments
+    )
+
+    $command = Get-Command $Name -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $command) {
+        throw "External command '$Name' was not found."
+    }
+
+    $previousTitle = $Host.UI.RawUI.WindowTitle
+    $stateDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Stepler\state'
+    $logDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Stepler\logs'
+    $markerPath = Join-Path $stateDir "terminal-app-$Name.marker"
+    $inputFile = Join-Path $stateDir ("{0}-input-{1}.jsonl" -f $Name, $PID)
+    $jsonFile = Join-Path $logDir ("{0}-events-{1}.jsonl" -f $Name, $PID)
+    try {
+        New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+        New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+        New-Item -ItemType File -Force -Path $inputFile | Out-Null
+        Clear-Content -LiteralPath $inputFile
+        New-Item -ItemType File -Force -Path $jsonFile | Out-Null
+        Clear-Content -LiteralPath $jsonFile
+        Set-Content -LiteralPath $markerPath -Value @(
+            "pid=$PID"
+            "started=$([DateTimeOffset]::Now.ToString('o'))"
+            "input_file=$inputFile"
+            "json_file=$jsonFile"
+        ) -Encoding UTF8
+        $Host.UI.RawUI.WindowTitle = $WindowTitle
+        $commandArgs = @($Arguments)
+        if ($Name -eq 'qwen' -and $commandArgs -notcontains '--input-file') {
+            $commandArgs = @('--input-file', $inputFile) + $commandArgs
+        }
+        if ($Name -eq 'qwen' -and $commandArgs -notcontains '--json-file') {
+            $commandArgs = @('--json-file', $jsonFile) + $commandArgs
+        }
+        & $command.Source @commandArgs
+    } finally {
+        Remove-Item -LiteralPath $markerPath -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $inputFile -ErrorAction SilentlyContinue
+        try {
+            $Host.UI.RawUI.WindowTitle = $previousTitle
+        } catch {
+        }
+    }
+}
+
+function Register-SteplerTerminalAppWrapper {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Name,
+
+        [Parameter(Mandatory)]
+        [string] $WindowTitle
+    )
+
+    $command = Get-Command $Name -CommandType Application,ExternalScript -All -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $command) {
+        return
+    }
+
+    $functionName = "global:$Name"
+    $scriptBlock = {
+        param(
+            [Parameter(ValueFromRemainingArguments = $true)]
+            [string[]] $Arguments
+        )
+
+        Invoke-SteplerTerminalAppCommand -Name '__STEPLER_TERMINAL_APP_NAME__' -WindowTitle '__STEPLER_TERMINAL_APP_TITLE__' -Arguments $Arguments
+    }.ToString().
+        Replace('__STEPLER_TERMINAL_APP_NAME__', $Name).
+        Replace('__STEPLER_TERMINAL_APP_TITLE__', $WindowTitle)
+
+    Set-Item -Path "Function:\$functionName" -Value ([scriptblock]::Create($scriptBlock)) -Force
+    if ($script:SteplerTerminalAppWrapperNames -notcontains $Name) {
+        $script:SteplerTerminalAppWrapperNames += $Name
+    }
+}
+
 $script:SteplerPauseChord = Resolve-SteplerPsReadLineChord -Chord $PauseChord -FallbackChord 'Ctrl+F11'
 $script:SteplerPauseChords = @($script:SteplerPauseChord)
 $script:SteplerScrollLockChord = Resolve-SteplerPsReadLineChord -Chord $ScrollLockChord -FallbackChord 'Ctrl+F12'
@@ -289,6 +379,8 @@ foreach ($chord in $script:SteplerScrollLockChords) {
     }
 }
 
+Register-SteplerTerminalAppWrapper -Name 'qwen' -WindowTitle 'stepler-terminal-app qwen'
+
 $script:SteplerPsReadLineEnabled = $true
 
 function Get-SteplerPsReadLineStatus {
@@ -297,6 +389,7 @@ function Get-SteplerPsReadLineStatus {
         Enabled = $script:SteplerPsReadLineEnabled
         PauseChords = $script:SteplerPauseChords -join ', '
         ScrollLockChords = $script:SteplerScrollLockChords -join ', '
+        TerminalAppWrappers = $script:SteplerTerminalAppWrapperNames -join ', '
     }
 }
 
@@ -325,6 +418,11 @@ function Disable-SteplerPsReadLine {
     Remove-Item Function:\Set-SteplerPowerShellInputLanguage -ErrorAction SilentlyContinue
     Remove-Item Function:\Write-SteplerPsReadLineLog -ErrorAction SilentlyContinue
     Remove-Item Function:\Get-SteplerTargetLayout -ErrorAction SilentlyContinue
+    Remove-Item Function:\Invoke-SteplerTerminalAppCommand -ErrorAction SilentlyContinue
+    Remove-Item Function:\Register-SteplerTerminalAppWrapper -ErrorAction SilentlyContinue
+    foreach ($wrapperName in $script:SteplerTerminalAppWrapperNames) {
+        Remove-Item "Function:\$wrapperName" -ErrorAction SilentlyContinue
+    }
     Remove-Item Function:\Resolve-SteplerPsReadLineChord -ErrorAction SilentlyContinue
 
     if (-not $KeepStatusCommand) {

@@ -19,6 +19,7 @@ impl From<CorrectionMode> for LogTrigger {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationLogEvent {
     pub operation_id: String,
+    pub timestamp_unix_ms: u128,
     pub trigger: LogTrigger,
     pub state: OperationState,
     pub app: Option<String>,
@@ -36,6 +37,7 @@ impl OperationLogEvent {
     pub fn to_json_line(&self) -> String {
         let mut fields = Vec::new();
         fields.push(json_string_field("operation_id", &self.operation_id));
+        fields.push(format!("\"timestamp_unix_ms\":{}", self.timestamp_unix_ms));
         fields.push(json_string_field("trigger", self.trigger.as_str()));
         fields.push(json_string_field("state", self.state.as_str()));
         if let Some(app) = &self.app {

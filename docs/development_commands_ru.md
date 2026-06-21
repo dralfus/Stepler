@@ -152,19 +152,6 @@ stepler_hotkey_log.jsonl
 
 Если `Ctrl` используется вместе с другой клавишей, переключение по отпусканию `Ctrl` не выполняется. Обработка `Ctrl+колесо мыши` еще не подключена в Rust runner.
 
-## Fixtures
-
-Regression fixtures лежат в:
-
-```text
-tests\fixtures\known_cases.json
-```
-
-Статусы:
-
-- `active` - кейс должен проходить в Stepler.
-- `expected_failure` - известный сценарий, который зафиксирован, но еще не включен как обязательный regression test.
-
 ## Логи операций
 
 Основной машинно-читаемый формат для будущего runtime: JSONL, одна строка на событие lifecycle операции.

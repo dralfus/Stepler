@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 mod psreadline;
 
 use psreadline::{PsReadLineMethod, PsReadLineRequest};
@@ -34,6 +34,10 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("psreadline-self-test") {
         psreadline_self_test();
+        return;
+    }
+    if args.first().map(String::as_str) == Some("qwen-submit") {
+        qwen_submit(&args);
         return;
     }
     if args.first().map(String::as_str) == Some("switch-layout") {
@@ -117,6 +121,7 @@ fn main() {
                     &WindowsLayoutSwitcher::new(),
                     &plan.expected_before_text,
                     &plan.replacement_text,
+                    &context,
                     layout_hwnd_hint(&context.window_id, &context.control_id),
                 );
                 if let Some(layout_result) = layout_result {
@@ -292,6 +297,56 @@ fn psreadline_self_test() {
     }
 }
 
+fn qwen_submit(args: &[String]) {
+    let text = match arg_value(args, "--text") {
+        Some(text) => text.to_owned(),
+        None => {
+            eprintln!("usage: stepler-cli qwen-submit --text <text>");
+            std::process::exit(2);
+        }
+    };
+    let input_file = match qwen_input_file_from_marker() {
+        Some(path) => path,
+        None => {
+            eprintln!("qwen-submit error: active Qwen input file marker was not found");
+            std::process::exit(1);
+        }
+    };
+    let line = format!("{{\"type\":\"submit\",\"text\":{}}}\n", json_string(&text));
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&input_file)
+        .and_then(|mut file| file.write_all(line.as_bytes()))
+    {
+        Ok(()) => println!("submitted: {}", input_file.display()),
+        Err(error) => {
+            eprintln!("qwen-submit error: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn qwen_input_file_from_marker() -> Option<std::path::PathBuf> {
+    let local_app_data = std::env::var_os("LOCALAPPDATA")?;
+    let marker_path = std::path::PathBuf::from(local_app_data)
+        .join("Stepler")
+        .join("state")
+        .join("terminal-app-qwen.marker");
+    let marker = std::fs::read_to_string(marker_path).ok()?;
+    for part in marker.split(['\n', ';']) {
+        let part = part.trim();
+        let Some(value) = part.strip_prefix("input_file=") else {
+            continue;
+        };
+        let value = value.trim();
+        if !value.is_empty() {
+            return Some(std::path::PathBuf::from(value));
+        }
+    }
+    None
+}
+
 fn psreadline_plan(args: &[String]) {
     let mode = match arg_value(args, "--mode").map(|value| value.to_ascii_lowercase()) {
         Some(value) if value == "pause" => CorrectionMode::Pause,
@@ -450,8 +505,14 @@ fn run_hotkeys() {
             if !settings.layout_action_enabled(action) {
                 eprintln!("{action:?}: disabled");
             } else if let Err(error) = layout_switcher.handle_action(action) {
+                stepler_platform_windows::append_hotkey_signal_log(&format!(
+                    "runner_layout_action_result action={action:?} result=error error={error:?}"
+                ));
                 eprintln!("{action:?}: {error:?}");
             } else {
+                stepler_platform_windows::append_hotkey_signal_log(&format!(
+                    "runner_layout_action_result action={action:?} result=ok"
+                ));
                 eprintln!("{action:?}: ok");
             }
         },
@@ -540,27 +601,23 @@ fn handle_hotkey_event<F, C, R, B>(
 {
     let started = Instant::now();
     set_active_correction_mode(mode);
+    let received_event = OperationLogEvent {
+        operation_id: String::from("hotkey"),
+        timestamp_unix_ms: timestamp_unix_ms(),
+        trigger: LogTrigger::from(mode),
+        state: OperationState::HotkeyReceived,
+        app: None,
+        provider: Some(String::from("WindowsTextContextProvider")),
+        replacer: None,
+        range: None,
+        expected_before_text: Some(String::from("hotkey_received")),
+        replacement_text: None,
+        clipboard_used: false,
+        duration_ms: 0,
+        timings: Vec::new(),
+    };
+    append_log(log_path, &received_event.to_json_line());
     release_modifier_keys();
-    if matches!(try_forward_embedded_terminal_hotkey(mode), Ok(true)) {
-        eprintln!("{mode:?}: forwarded to embedded terminal");
-        let event = OperationLogEvent {
-            operation_id: String::from("embedded-terminal"),
-            trigger: LogTrigger::from(mode),
-            state: OperationState::Completed,
-            app: Some(String::from("embedded_terminal")),
-            provider: Some(String::from("WindowsTextContextProvider")),
-            replacer: Some(String::from("embedded_terminal_passthrough")),
-            range: None,
-            expected_before_text: Some(String::from("forwarded_to_psreadline")),
-            replacement_text: None,
-            clipboard_used: false,
-            duration_ms: started.elapsed().as_millis(),
-            timings: Vec::new(),
-        };
-        append_log(log_path, &event.to_json_line());
-        release_modifier_keys();
-        return;
-    }
     let result = runner.handle_hotkey(mode);
     release_modifier_keys();
 
@@ -570,6 +627,7 @@ fn handle_hotkey_event<F, C, R, B>(
                 layout_switcher,
                 &outcome.plan.expected_before_text,
                 &outcome.plan.replacement_text,
+                &outcome.context,
                 layout_hwnd_hint(&outcome.context.window_id, &outcome.context.control_id),
             );
             if let Some(layout_result) = &layout_result {
@@ -593,6 +651,7 @@ fn handle_hotkey_event<F, C, R, B>(
             }
             let event = OperationLogEvent {
                 operation_id: outcome.operation_id.clone(),
+                timestamp_unix_ms: timestamp_unix_ms(),
                 trigger: LogTrigger::from(mode),
                 state: OperationState::Completed,
                 app: Some(outcome.context.app_id.clone()),
@@ -609,8 +668,32 @@ fn handle_hotkey_event<F, C, R, B>(
             eprintln!("{mode:?}: applied in {}ms", outcome.metrics.duration_ms);
         }
         Err(error) => {
+            if matches!(try_forward_embedded_terminal_hotkey(mode), Ok(true)) {
+                eprintln!("{mode:?}: forwarded to embedded terminal PSReadLine");
+                let event = OperationLogEvent {
+                    operation_id: String::from("embedded-terminal"),
+                    timestamp_unix_ms: timestamp_unix_ms(),
+                    trigger: LogTrigger::from(mode),
+                    state: OperationState::Completed,
+                    app: Some(String::from("embedded_terminal")),
+                    provider: Some(String::from("WindowsTextContextProvider")),
+                    replacer: Some(String::from("embedded_terminal_psreadline")),
+                    range: None,
+                    expected_before_text: Some(String::from(
+                        "forwarded_to_embedded_terminal_psreadline",
+                    )),
+                    replacement_text: None,
+                    clipboard_used: false,
+                    duration_ms: started.elapsed().as_millis(),
+                    timings: Vec::new(),
+                };
+                append_log(log_path, &event.to_json_line());
+                release_modifier_keys();
+                return;
+            }
             let event = OperationLogEvent {
                 operation_id: String::from("unknown"),
+                timestamp_unix_ms: timestamp_unix_ms(),
                 trigger: LogTrigger::from(mode),
                 state: OperationState::RolledBackOrFailed,
                 app: None,
@@ -638,6 +721,13 @@ fn set_active_correction_mode(mode: CorrectionMode) {
     std::env::set_var("STEPLER_ACTIVE_CORRECTION_MODE", value);
 }
 
+fn timestamp_unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DesiredLayout {
     Russian,
@@ -648,12 +738,16 @@ fn switch_layout_after_replacement(
     layout_switcher: &WindowsLayoutSwitcher,
     expected_before_text: &str,
     replacement_text: &str,
+    context: &stepler_core::TextContext,
     hwnd_hint: Option<isize>,
 ) -> Option<String> {
     let Some(layout) = desired_layout_after_replacement(expected_before_text, replacement_text)
     else {
         return None;
     };
+    if should_skip_layout_after_replacement(context) {
+        return Some(format!("skipped_for_{}", context.app_id));
+    }
 
     let action = match layout {
         DesiredLayout::Russian => KeyboardControlAction::SwitchToRussian,
@@ -689,6 +783,12 @@ fn switch_layout_after_replacement(
         return Some(format!("switch_failed_{error:?}"));
     }
     Some(format!("switch_failed_{layout:?}"))
+}
+
+fn should_skip_layout_after_replacement(context: &stepler_core::TextContext) -> bool {
+    context
+        .app_id
+        .eq_ignore_ascii_case("rctrl_renwnd32/RICHEDIT60W")
 }
 
 fn desired_layout_after_replacement(

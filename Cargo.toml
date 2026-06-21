@@ -5,7 +5,7 @@ members = [
     "crates/stepler-core",
     "crates/stepler-platform",
     "crates/stepler-platform-windows",
-    "crates/stepler-testkit",
+    "crates/stepler-remote",
 ]
 resolver = "2"
 

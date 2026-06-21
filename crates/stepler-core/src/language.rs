@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +20,10 @@ pub struct PhraseScore {
 }
 
 pub fn is_converted_phrase_more_likely(source: &str, converted: &str) -> Option<f32> {
+    if is_forced_layout_override(source, converted) {
+        return Some(0.99);
+    }
+
     let source_score = score_phrase(source)?;
     let converted_score = score_phrase(converted)?;
 
@@ -123,6 +129,7 @@ fn models() -> &'static LanguageModels {
 struct LanguageModels {
     ru_dictionary: HashSet<String>,
     en_dictionary: HashSet<String>,
+    layout_overrides: HashMap<String, String>,
     ru_ngrams: CharNGramModel,
     en_ngrams: CharNGramModel,
 }
@@ -131,6 +138,9 @@ impl LanguageModels {
     fn load() -> Self {
         let ru_dictionary = load_dictionary(include_str!("../resources/lexicons/ru-words.txt"));
         let en_dictionary = load_dictionary(include_str!("../resources/lexicons/en-words.txt"));
+        let layout_overrides = load_runtime_layout_overrides().unwrap_or_else(|| {
+            load_layout_overrides(include_str!("../resources/layout-overrides.tsv"))
+        });
 
         Self {
             ru_ngrams: CharNGramModel::from_count_file(
@@ -143,6 +153,7 @@ impl LanguageModels {
             ),
             ru_dictionary,
             en_dictionary,
+            layout_overrides,
         }
     }
 }
@@ -221,6 +232,65 @@ fn load_dictionary(input: &str) -> HashSet<String> {
         .collect()
 }
 
+fn load_layout_overrides(input: &str) -> HashMap<String, String> {
+    let mut overrides = HashMap::new();
+    for line in input.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.split('\t');
+        let Some(source) = parts.next() else {
+            continue;
+        };
+        let Some(target) = parts.next() else {
+            continue;
+        };
+        let source = normalize_override_text(source);
+        let target = normalize_override_text(target);
+        if !source.is_empty() && !target.is_empty() {
+            overrides.insert(source, target);
+        }
+    }
+    overrides
+}
+
+fn load_runtime_layout_overrides() -> Option<HashMap<String, String>> {
+    let path = runtime_layout_overrides_path()?;
+    let input = fs::read_to_string(path).ok()?;
+    Some(load_layout_overrides(&input))
+}
+
+fn runtime_layout_overrides_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let base = exe.parent()?;
+    Some(base.join("resources").join("layout-overrides.tsv"))
+}
+
+fn is_forced_layout_override(source: &str, converted: &str) -> bool {
+    let source = normalize_override_text(source);
+    let converted = normalize_override_text(converted);
+    if source.is_empty() || converted.is_empty() {
+        return false;
+    }
+
+    models()
+        .layout_overrides
+        .get(&source)
+        .is_some_and(|target| target == &converted)
+}
+
+fn normalize_override_text(text: &str) -> String {
+    text.split_whitespace()
+        .map(|token| {
+            token
+                .chars()
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn normalize_letters_only(token: &str) -> String {
     token
         .chars()
@@ -262,5 +332,10 @@ mod tests {
     #[test]
     fn unknown_english_typed_in_russian_layout_can_win_by_ngram_score() {
         assert!(is_converted_phrase_more_likely("ыеи ьфекшч", "stb matrix").is_some());
+    }
+
+    #[test]
+    fn forced_layout_override_beats_plausible_source_word() {
+        assert!(is_converted_phrase_more_likely("ddble", "ввиду").is_some());
     }
 }

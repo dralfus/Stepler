@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -12,8 +13,15 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (TryRunWatchdog(args))
+        {
+            return;
+        }
+
         if (args.Any(arg => string.Equals(arg, "--stop", StringComparison.OrdinalIgnoreCase)))
         {
+            SuppressWatchdogRestart();
+            MarkNormalShutdown("stop-requested");
             StopExistingProcesses();
             return;
         }
@@ -29,6 +37,8 @@ internal static class Program
             }
 
             SafeLog($"tray main start pid={Environment.ProcessId}");
+            var watchdogToken = Guid.NewGuid().ToString("N");
+            StartWatchdog(watchdogToken);
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             ApplicationConfiguration.Initialize();
             Application.ThreadException += (_, error) =>
@@ -37,13 +47,194 @@ internal static class Program
                 SafeLog($"tray unhandled exception terminating={error.IsTerminating} {error.ExceptionObject}");
             Application.ApplicationExit += (_, _) =>
                 SafeLog("tray application exit");
-            Application.Run(new SteplerTrayForm());
+            Application.Run(new SteplerTrayForm(watchdogToken));
             SafeLog("tray main stop");
         }
         catch (Exception error)
         {
             SafeLog($"tray fatal {error}");
         }
+    }
+
+    private static bool TryRunWatchdog(string[] args)
+    {
+        if (args.Length < 3 || !string.Equals(args[0], "--watchdog", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!int.TryParse(args[1], out var parentProcessId))
+        {
+            SafeLog($"watchdog invalid parent pid arg={args[1]}");
+            return true;
+        }
+
+        var token = args[2];
+        RunWatchdog(parentProcessId, token);
+        return true;
+    }
+
+    private static void RunWatchdog(int parentProcessId, string token)
+    {
+        SafeLog($"watchdog start parent={parentProcessId} token={token}");
+        try
+        {
+            using var parent = Process.GetProcessById(parentProcessId);
+            parent.WaitForExit();
+            Thread.Sleep(1000);
+        }
+        catch (ArgumentException)
+        {
+            Thread.Sleep(1000);
+        }
+        catch (Exception error)
+        {
+            SafeLog($"watchdog wait failed parent={parentProcessId} {error.GetType().Name}: {error.Message}");
+            Thread.Sleep(1000);
+        }
+
+        if (WasNormalShutdown(token) || IsWatchdogRestartSuppressed())
+        {
+            SafeLog($"watchdog normal shutdown parent={parentProcessId}");
+            return;
+        }
+
+        var executablePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
+        {
+            SafeLog("watchdog restart skipped executable path unavailable");
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = executablePath,
+                WorkingDirectory = AppContext.BaseDirectory,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+            });
+            SafeLog($"watchdog restarted tray exe={executablePath}");
+        }
+        catch (Exception error)
+        {
+            SafeLog($"watchdog restart failed {error}");
+        }
+    }
+
+    private static void StartWatchdog(string token)
+    {
+        var executablePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
+        {
+            SafeLog("watchdog start skipped executable path unavailable");
+            return;
+        }
+
+        try
+        {
+            ClearNormalShutdown(token);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = executablePath,
+                ArgumentList = { "--watchdog", Environment.ProcessId.ToString(), token },
+                WorkingDirectory = AppContext.BaseDirectory,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+            });
+            SafeLog($"watchdog spawned token={token}");
+        }
+        catch (Exception error)
+        {
+            SafeLog($"watchdog spawn failed {error}");
+        }
+    }
+
+    internal static void MarkNormalShutdown(string token)
+    {
+        try
+        {
+            Directory.CreateDirectory(StateDirectory());
+            File.WriteAllText(WatchdogShutdownPath(token), DateTimeOffset.Now.ToString("o"));
+        }
+        catch (Exception error)
+        {
+            SafeLog($"watchdog shutdown marker failed token={token} {error.GetType().Name}: {error.Message}");
+        }
+    }
+
+    private static void SuppressWatchdogRestart()
+    {
+        try
+        {
+            Directory.CreateDirectory(StateDirectory());
+            File.WriteAllText(WatchdogSuppressPath(), DateTimeOffset.Now.ToString("o"));
+        }
+        catch (Exception error)
+        {
+            SafeLog($"watchdog suppress marker failed {error.GetType().Name}: {error.Message}");
+        }
+    }
+
+    private static bool IsWatchdogRestartSuppressed()
+    {
+        try
+        {
+            var path = WatchdogSuppressPath();
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            var age = DateTimeOffset.UtcNow - new DateTimeOffset(File.GetLastWriteTimeUtc(path));
+            return age >= TimeSpan.Zero && age < TimeSpan.FromSeconds(45);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool WasNormalShutdown(string token)
+    {
+        try
+        {
+            return File.Exists(WatchdogShutdownPath(token));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void ClearNormalShutdown(string token)
+    {
+        try
+        {
+            var path = WatchdogShutdownPath(token);
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+            // A stale marker only affects this unique token, so cleanup is best-effort.
+        }
+    }
+
+    private static string WatchdogShutdownPath(string token)
+    {
+        var safeToken = string.Concat(token.Where(char.IsLetterOrDigit));
+        return Path.Combine(StateDirectory(), $"watchdog-normal-exit-{safeToken}.txt");
+    }
+
+    private static string WatchdogSuppressPath()
+    {
+        return Path.Combine(StateDirectory(), "watchdog-suppress-restart.txt");
     }
 
     internal static void SafeLog(string message)
@@ -79,8 +270,15 @@ internal static class Program
 
     internal static string LogDirectory()
     {
+        var directory = Path.Combine(StateDirectory(), "logs");
+        Directory.CreateDirectory(directory);
+        return directory;
+    }
+
+    internal static string StateDirectory()
+    {
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var directory = Path.Combine(localAppData, "Stepler", "logs");
+        var directory = Path.Combine(localAppData, "Stepler");
         Directory.CreateDirectory(directory);
         return directory;
     }
@@ -115,7 +313,9 @@ internal static class Program
 
 internal sealed class SteplerTrayForm : Form
 {
+    private readonly string _watchdogToken;
     private readonly NotifyIcon _notifyIcon;
+    private readonly ContextMenuStrip _trayMenu;
     private readonly Icon _appIcon;
     private readonly string? _repoRoot;
     private readonly ToolStripMenuItem _versionItem;
@@ -129,18 +329,31 @@ internal sealed class SteplerTrayForm : Form
     private readonly ToolStripMenuItem _disableCapsLockItem;
     private readonly ToolStripMenuItem _insertAsBackspaceItem;
     private readonly ToolStripMenuItem _riskyFallbacksItem;
+    private readonly ToolStripMenuItem _darkThemeItem;
+    private readonly ToolStripMenuItem _showTimingOverlayItem;
+    private readonly ToolStripMenuItem _timingOverlayDurationItem;
     private readonly ToolStripMenuItem _autostartItem;
+    private readonly ToolStripMenuItem _qwenInputItem;
+    private readonly ToolStripMenuItem _qwenWorkspaceItem;
+    private readonly ToolStripMenuItem _qwenWorkspaceContinueItem;
+    private readonly ToolStripMenuItem _qwenWorkspaceDirectoryItem;
+    private readonly ToolStripMenuItem _openLayoutOverridesItem;
     private readonly ToolStripMenuItem _openHotkeyLogItem;
     private readonly ToolStripMenuItem _openTrayLogItem;
     private ControlWindow? _controlWindow;
+    private QwenInputWindow? _qwenInputWindow;
+    private HotkeyTimingOverlay? _timingOverlay;
+    private FileSystemWatcher? _hotkeyLogWatcher;
     private Process? _runner;
     private RunnerJob? _runnerJob;
     private SteplerSettings _settings;
+    private long _hotkeyLogPosition;
     private bool _stoppingRunner;
     private bool _closing;
 
-    public SteplerTrayForm()
+    public SteplerTrayForm(string watchdogToken)
     {
+        _watchdogToken = watchdogToken;
         _repoRoot = FindRepoRoot();
         _settings = SteplerSettingsStore.Load();
         Program.SafeLog($"settings loaded path={SteplerSettingsStore.SettingsPath()} {JsonSerializer.Serialize(_settings)}");
@@ -214,8 +427,40 @@ internal sealed class SteplerTrayForm : Form
         };
         _riskyFallbacksItem.Click += (_, _) => UpdateSetting(settings => settings.RiskyFallbacksEnabled = _riskyFallbacksItem.Checked);
 
+        _darkThemeItem = new ToolStripMenuItem("Темная тема")
+        {
+            CheckOnClick = true,
+        };
+        _darkThemeItem.Click += (_, _) =>
+            UpdateSetting(settings => settings.DarkTheme = _darkThemeItem.Checked, restartRunner: false);
+
+        _showTimingOverlayItem = new ToolStripMenuItem("Показывать время P/CP")
+        {
+            CheckOnClick = true,
+        };
+        _showTimingOverlayItem.Click += (_, _) =>
+            UpdateSetting(settings => settings.ShowTimingOverlay = _showTimingOverlayItem.Checked, restartRunner: false);
+
+        _timingOverlayDurationItem = new ToolStripMenuItem("Время индикатора...");
+        _timingOverlayDurationItem.Click += (_, _) => ShowTimingOverlayDurationDialog();
+
         _autostartItem = new ToolStripMenuItem("Автозапуск Windows");
         _autostartItem.Click += (_, _) => ToggleAutostart();
+
+        _qwenInputItem = new ToolStripMenuItem("Qwen input...");
+        _qwenInputItem.Click += (_, _) => RunAfterMenuClose(ShowQwenInputWindow);
+
+        _qwenWorkspaceItem = new ToolStripMenuItem("Qwen workspace...");
+        _qwenWorkspaceItem.Click += (_, _) => RunAfterMenuClose(() => LaunchQwenWorkspace());
+
+        _qwenWorkspaceContinueItem = new ToolStripMenuItem("Qwen workspace (--continue)");
+        _qwenWorkspaceContinueItem.Click += (_, _) => RunAfterMenuClose(() => LaunchQwenWorkspace("--continue"));
+
+        _qwenWorkspaceDirectoryItem = new ToolStripMenuItem("Папка проекта Qwen...");
+        _qwenWorkspaceDirectoryItem.Click += (_, _) => RunAfterMenuClose(ShowQwenWorkspaceDirectoryDialog);
+
+        _openLayoutOverridesItem = new ToolStripMenuItem("Открыть словарь исключений CP");
+        _openLayoutOverridesItem.Click += (_, _) => OpenLayoutOverrides();
 
         _openHotkeyLogItem = new ToolStripMenuItem("Открыть лог hotkeys");
         _openHotkeyLogItem.Click += (_, _) => OpenHotkeyLog();
@@ -243,27 +488,44 @@ internal sealed class SteplerTrayForm : Form
         menu.Items.Add(_disableCapsLockItem);
         menu.Items.Add(_insertAsBackspaceItem);
         menu.Items.Add(_riskyFallbacksItem);
+        menu.Items.Add(_darkThemeItem);
+        menu.Items.Add(_showTimingOverlayItem);
+        menu.Items.Add(_timingOverlayDurationItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_autostartItem);
+        menu.Items.Add(_qwenInputItem);
+        menu.Items.Add(_qwenWorkspaceItem);
+        menu.Items.Add(_qwenWorkspaceContinueItem);
+        menu.Items.Add(_qwenWorkspaceDirectoryItem);
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(_openLayoutOverridesItem);
         menu.Items.Add(_openHotkeyLogItem);
         menu.Items.Add(_openTrayLogItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(showItem);
         menu.Items.Add(exitItem);
         menu.Opening += (_, _) => UpdateMenuState();
+        ThemeApplier.Apply(menu, ThemePalette.FromDarkTheme(_settings.DarkTheme));
+        _trayMenu = menu;
 
         _notifyIcon = new NotifyIcon
         {
             Icon = _appIcon,
             Text = "Stepler",
-            ContextMenuStrip = menu,
+        };
+        _notifyIcon.MouseUp += (_, eventArgs) =>
+        {
+            if (eventArgs.Button is MouseButtons.Left or MouseButtons.Right)
+            {
+                ShowTrayMenu();
+            }
         };
 
         Load += (_, _) =>
         {
             _notifyIcon.Visible = true;
             EnsurePowerShellProfileAdapter();
+            StartHotkeyLogWatcher();
             StartRunner();
             Program.SafeLog($"tray form ready handle={Handle}");
         };
@@ -274,7 +536,11 @@ internal sealed class SteplerTrayForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        Program.MarkNormalShutdown(_watchdogToken);
         _closing = true;
+        StopHotkeyLogWatcher();
+        _timingOverlay?.Close();
+        _timingOverlay?.Dispose();
         StopRunner();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
@@ -297,11 +563,113 @@ internal sealed class SteplerTrayForm : Form
             RestartRunner,
             OpenHotkeyLog,
             () => OpenFileInNotepad(Program.LogPath()),
-            Close);
+            Close,
+            _settings.DarkTheme);
         ShowAndFocusControlWindow(_controlWindow);
     }
 
+    private void ShowQwenInputWindow()
+    {
+        if (_qwenInputWindow is { IsDisposed: false })
+        {
+            ShowAndFocusWindow(_qwenInputWindow);
+            return;
+        }
+
+        _qwenInputWindow = new QwenInputWindow(
+            ResolveCliPath(),
+            _settings.DarkTheme,
+            (text, failed) =>
+            {
+                if (_settings.ShowTimingOverlay)
+                {
+                    ShowTimingOverlay(text, failed);
+                }
+            });
+        ShowAndFocusWindow(_qwenInputWindow);
+    }
+
+    private void LaunchQwenWorkspace(params string[] arguments)
+    {
+        var workspacePath = ResolveQwenWorkspacePath();
+        if (!File.Exists(workspacePath))
+        {
+            Program.SafeLog($"qwen workspace not found path={workspacePath}");
+            return;
+        }
+
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = workspacePath,
+                WorkingDirectory = Path.GetDirectoryName(workspacePath) ?? AppContext.BaseDirectory,
+                UseShellExecute = true,
+            };
+            startInfo.ArgumentList.Add("--workdir");
+            startInfo.ArgumentList.Add(ResolveQwenWorkspaceWorkingDirectory());
+            startInfo.ArgumentList.Add("--dark-theme");
+            startInfo.ArgumentList.Add(_settings.DarkTheme ? "true" : "false");
+            foreach (var argument in arguments)
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
+            Process.Start(startInfo);
+        }
+        catch (Exception error)
+        {
+            Program.SafeLog($"qwen workspace launch error {error}");
+        }
+    }
+
+    private void ShowQwenWorkspaceDirectoryDialog()
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Выбери папку проекта, из которой запускать Qwen workspace",
+            UseDescriptionForTitle = true,
+            SelectedPath = ResolveQwenWorkspaceWorkingDirectory(),
+            ShowNewFolderButton = false,
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        UpdateSetting(
+            settings => settings.QwenWorkspaceDirectory = dialog.SelectedPath,
+            restartRunner: false);
+    }
+
+    private void ShowTrayMenu()
+    {
+        UpdateMenuState();
+        NativeMethods.SetForegroundWindow(Handle);
+        _trayMenu.Show(Cursor.Position);
+    }
+
+    private void RunAfterMenuClose(Action action)
+    {
+        var timer = new System.Windows.Forms.Timer
+        {
+            Interval = 75,
+        };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            action();
+        };
+        timer.Start();
+    }
+
     private static void ShowAndFocusControlWindow(ControlWindow window)
+    {
+        ShowAndFocusWindow(window);
+    }
+
+    private static void ShowAndFocusWindow(Form window)
     {
         if (window.WindowState == FormWindowState.Minimized)
         {
@@ -313,6 +681,23 @@ internal sealed class SteplerTrayForm : Form
         window.TopMost = false;
         window.BringToFront();
         window.Activate();
+
+        var timer = new System.Windows.Forms.Timer
+        {
+            Interval = 100,
+        };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            if (!window.IsDisposed)
+            {
+                window.Show();
+                window.BringToFront();
+                window.Activate();
+            }
+        };
+        timer.Start();
     }
 
     private void StartRunner()
@@ -382,8 +767,8 @@ internal sealed class SteplerTrayForm : Form
                 return;
             }
 
-            PowerShellProfileManager.EnsureInstalled(adapterPath);
-            Program.SafeLog($"psreadline profile installed adapter={adapterPath}");
+            PowerShellProfileManager.EnsureInstalled(adapterPath, ResolveCliPath());
+            Program.SafeLog($"psreadline profile installed adapter={adapterPath} cli={ResolveCliPath()}");
         }
         catch (Exception error)
         {
@@ -520,13 +905,14 @@ internal sealed class SteplerTrayForm : Form
         StartRunner();
     }
 
-    private void UpdateSetting(Action<SteplerSettings> update)
+    private void UpdateSetting(Action<SteplerSettings> update, bool restartRunner = true)
     {
         update(_settings);
         SteplerSettingsStore.Save(_settings);
         Program.SafeLog($"settings saved {JsonSerializer.Serialize(_settings)}");
+        ApplyCurrentTheme();
 
-        if (IsRunnerAlive())
+        if (restartRunner && IsRunnerAlive())
         {
             RestartRunner();
         }
@@ -567,7 +953,237 @@ internal sealed class SteplerTrayForm : Form
         _disableCapsLockItem.Checked = _settings.DisableCapsLock;
         _insertAsBackspaceItem.Checked = _settings.InsertAsBackspaceEnabled;
         _riskyFallbacksItem.Checked = _settings.RiskyFallbacksEnabled;
+        _darkThemeItem.Checked = _settings.DarkTheme;
+        _showTimingOverlayItem.Checked = _settings.ShowTimingOverlay;
+        _timingOverlayDurationItem.Text = $"Время индикатора: {_settings.TimingOverlayDurationMs} ms";
         _autostartItem.Checked = AutostartManager.IsEnabled();
+        _qwenWorkspaceDirectoryItem.Text = $"Папка проекта Qwen: {ShortPath(ResolveQwenWorkspaceWorkingDirectory())}";
+    }
+
+    private void StartHotkeyLogWatcher()
+    {
+        StopHotkeyLogWatcher();
+
+        var logPath = Program.HotkeyLogPath();
+        var directory = Path.GetDirectoryName(logPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(directory);
+        if (!File.Exists(logPath))
+        {
+            File.WriteAllText(logPath, string.Empty);
+        }
+
+        _hotkeyLogPosition = new FileInfo(logPath).Length;
+        _hotkeyLogWatcher = new FileSystemWatcher(directory, Path.GetFileName(logPath))
+        {
+            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
+            EnableRaisingEvents = true,
+        };
+        _hotkeyLogWatcher.Changed += (_, _) => BeginInvoke((Action)ReadNewHotkeyLogLines);
+        _hotkeyLogWatcher.Created += (_, _) => BeginInvoke((Action)ReadNewHotkeyLogLines);
+        Program.SafeLog($"hotkey timing watcher started path={logPath} position={_hotkeyLogPosition}");
+    }
+
+    private void StopHotkeyLogWatcher()
+    {
+        if (_hotkeyLogWatcher is null)
+        {
+            return;
+        }
+
+        _hotkeyLogWatcher.EnableRaisingEvents = false;
+        _hotkeyLogWatcher.Dispose();
+        _hotkeyLogWatcher = null;
+    }
+
+    private void ReadNewHotkeyLogLines()
+    {
+        if (!_settings.ShowTimingOverlay)
+        {
+            SyncHotkeyLogPosition();
+            return;
+        }
+
+        var logPath = Program.HotkeyLogPath();
+        try
+        {
+            if (!File.Exists(logPath))
+            {
+                _hotkeyLogPosition = 0;
+                return;
+            }
+
+            using var stream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (stream.Length < _hotkeyLogPosition)
+            {
+                _hotkeyLogPosition = 0;
+            }
+
+            stream.Seek(_hotkeyLogPosition, SeekOrigin.Begin);
+            using var reader = new StreamReader(stream);
+            string? line;
+            while ((line = reader.ReadLine()) is not null)
+            {
+                if (TryFormatHotkeyTiming(line, out var text, out var failed))
+                {
+                    ShowTimingOverlay(text, failed);
+                }
+            }
+
+            _hotkeyLogPosition = stream.Position;
+        }
+        catch (Exception error)
+        {
+            Program.SafeLog($"hotkey timing watcher read error {error.GetType().Name}: {error.Message}");
+        }
+    }
+
+    private void SyncHotkeyLogPosition()
+    {
+        try
+        {
+            var logPath = Program.HotkeyLogPath();
+            _hotkeyLogPosition = File.Exists(logPath) ? new FileInfo(logPath).Length : 0;
+        }
+        catch
+        {
+            _hotkeyLogPosition = 0;
+        }
+    }
+
+    private void ShowTimingOverlay(string text, bool failed)
+    {
+        if (_timingOverlay is null || _timingOverlay.IsDisposed)
+        {
+            _timingOverlay = new HotkeyTimingOverlay();
+        }
+
+        _timingOverlay.ShowTiming(text, failed, _settings.TimingOverlayDurationMs, _settings.DarkTheme);
+    }
+
+    private void ApplyCurrentTheme()
+    {
+        var palette = ThemePalette.FromDarkTheme(_settings.DarkTheme);
+        ThemeApplier.Apply(_trayMenu, palette);
+        _controlWindow?.ApplyTheme(_settings.DarkTheme);
+        _qwenInputWindow?.ApplyTheme(_settings.DarkTheme);
+    }
+
+    private static bool TryFormatHotkeyTiming(string line, out string text, out bool failed)
+    {
+        text = string.Empty;
+        failed = false;
+
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("trigger", out var triggerElement))
+            {
+                return false;
+            }
+
+            var trigger = triggerElement.GetString();
+            var label = trigger switch
+            {
+                "Pause" => "P",
+                "ScrollLock" => "CP",
+                _ => null,
+            };
+            if (label is null)
+            {
+                return false;
+            }
+
+            var state = root.TryGetProperty("state", out var stateElement)
+                ? stateElement.GetString()
+                : null;
+            if (string.Equals(state, "HotkeyReceived", StringComparison.Ordinal))
+            {
+                failed = false;
+                text = $"{label} нажата";
+                return true;
+            }
+
+            failed = !string.Equals(state, "Completed", StringComparison.Ordinal);
+            if (failed)
+            {
+                text = $"{label} failed";
+                return true;
+            }
+
+            var duration = root.TryGetProperty("duration_ms", out var durationElement)
+                && durationElement.TryGetInt64(out var value)
+                    ? value
+                    : 0;
+            text = $"{label} {duration} ms";
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void ShowTimingOverlayDurationDialog()
+    {
+        using var form = new Form
+        {
+            Text = "Время индикатора",
+            ShowInTaskbar = false,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            StartPosition = FormStartPosition.CenterScreen,
+            ClientSize = new Size(260, 116),
+        };
+        var label = new Label
+        {
+            Text = "Показывать, мс:",
+            Location = new Point(16, 18),
+            Size = new Size(112, 24),
+        };
+        var input = new NumericUpDown
+        {
+            Minimum = 200,
+            Maximum = 5000,
+            Increment = 100,
+            Value = Math.Clamp(_settings.TimingOverlayDurationMs, 200, 5000),
+            Location = new Point(132, 16),
+            Size = new Size(96, 24),
+        };
+        var ok = new Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            Location = new Point(54, 68),
+            Size = new Size(72, 28),
+        };
+        var cancel = new Button
+        {
+            Text = "Отмена",
+            DialogResult = DialogResult.Cancel,
+            Location = new Point(136, 68),
+            Size = new Size(72, 28),
+        };
+        form.Controls.AddRange(new Control[] { label, input, ok, cancel });
+        ThemeApplier.Apply(form, ThemePalette.FromDarkTheme(_settings.DarkTheme));
+        form.AcceptButton = ok;
+        form.CancelButton = cancel;
+
+        if (form.ShowDialog(this) == DialogResult.OK)
+        {
+            UpdateSetting(settings => settings.TimingOverlayDurationMs = (int)input.Value, restartRunner: false);
+        }
     }
 
     private void ToggleAutostart()
@@ -599,6 +1215,55 @@ internal sealed class SteplerTrayForm : Form
     private void OpenHotkeyLog()
     {
         OpenFileInNotepad(Program.HotkeyLogPath());
+    }
+
+    private void OpenLayoutOverrides()
+    {
+        var path = ResolveLayoutOverridesPath();
+        try
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            if (!File.Exists(path))
+            {
+                File.WriteAllText(
+                    path,
+                    "# source\ttarget" + Environment.NewLine +
+                    "# Пример: ddble\tввиду" + Environment.NewLine);
+            }
+
+            OpenFileInNotepad(path);
+        }
+        catch (Exception error)
+        {
+            Program.SafeLog($"open layout overrides error path={path} {error}");
+            MessageBox.Show(
+                "Не удалось открыть словарь исключений. Подробности записаны в лог tray.",
+                "Stepler",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+    }
+
+    private string ResolveLayoutOverridesPath()
+    {
+        var sideBySide = Path.Combine(AppContext.BaseDirectory, "resources", "layout-overrides.tsv");
+        if (File.Exists(sideBySide) || _repoRoot is null)
+        {
+            return sideBySide;
+        }
+
+        var repoResource = Path.Combine(
+            _repoRoot,
+            "crates",
+            "stepler-core",
+            "resources",
+            "layout-overrides.tsv");
+        return File.Exists(repoResource) ? repoResource : sideBySide;
     }
 
     private static void OpenFileInNotepad(string path)
@@ -678,6 +1343,66 @@ internal sealed class SteplerTrayForm : Form
 
         return sideBySide;
     }
+
+    private string ResolveQwenWorkspacePath()
+    {
+        var sideBySide = Path.Combine(AppContext.BaseDirectory, "Stepler.QwenWorkspace.exe");
+        if (File.Exists(sideBySide))
+        {
+            return sideBySide;
+        }
+
+        if (_repoRoot is not null)
+        {
+            var releaseDist = Path.Combine(_repoRoot, "dist", "Stepler", "Stepler.QwenWorkspace.exe");
+            if (File.Exists(releaseDist))
+            {
+                return releaseDist;
+            }
+
+            return Path.Combine(
+                _repoRoot,
+                "apps",
+                "Stepler.QwenWorkspace",
+                "bin",
+                "Debug",
+                "net9.0-windows",
+                "Stepler.QwenWorkspace.exe");
+        }
+
+        return sideBySide;
+    }
+
+    private string ResolveQwenWorkspaceWorkingDirectory()
+    {
+        if (!string.IsNullOrWhiteSpace(_settings.QwenWorkspaceDirectory)
+            && Directory.Exists(_settings.QwenWorkspaceDirectory))
+        {
+            return _settings.QwenWorkspaceDirectory;
+        }
+
+        var configured = Environment.GetEnvironmentVariable("STEPLER_QWEN_WORKDIR");
+        if (!string.IsNullOrWhiteSpace(configured) && Directory.Exists(configured))
+        {
+            return configured;
+        }
+
+        return _repoRoot ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    }
+
+    private static string ShortPath(string path)
+    {
+        if (path.Length <= 42)
+        {
+            return path;
+        }
+
+        var root = Path.GetPathRoot(path) ?? string.Empty;
+        var name = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        return string.IsNullOrWhiteSpace(name)
+            ? path
+            : $"{root}...\\{name}";
+    }
 }
 
 internal static class AutostartManager
@@ -715,13 +1440,13 @@ internal static class PowerShellProfileManager
     private const string BeginMarker = "# >>> Stepler PSReadLine adapter >>>";
     private const string EndMarker = "# <<< Stepler PSReadLine adapter <<<";
 
-    public static void EnsureInstalled(string adapterPath)
+    public static void EnsureInstalled(string adapterPath, string cliPath)
     {
         foreach (var profilePath in ProfilePaths())
         {
             try
             {
-                EnsureProfileBlock(profilePath, adapterPath);
+                EnsureProfileBlock(profilePath, adapterPath, cliPath);
             }
             catch (Exception error)
             {
@@ -764,7 +1489,7 @@ internal static class PowerShellProfileManager
         }
     }
 
-    private static void EnsureProfileBlock(string profilePath, string adapterPath)
+    private static void EnsureProfileBlock(string profilePath, string adapterPath, string cliPath)
     {
         var directory = Path.GetDirectoryName(profilePath);
         if (!string.IsNullOrWhiteSpace(directory))
@@ -773,7 +1498,7 @@ internal static class PowerShellProfileManager
         }
 
         var existing = File.Exists(profilePath) ? File.ReadAllText(profilePath) : string.Empty;
-        var block = BuildProfileBlock(adapterPath);
+        var block = BuildProfileBlock(adapterPath, cliPath);
         var next = ReplaceManagedBlock(existing, block);
         if (!string.Equals(existing, next, StringComparison.Ordinal))
         {
@@ -783,17 +1508,25 @@ internal static class PowerShellProfileManager
 
     private static string ReplaceManagedBlock(string existing, string block)
     {
-        var begin = existing.IndexOf(BeginMarker, StringComparison.Ordinal);
-        var end = existing.IndexOf(EndMarker, StringComparison.Ordinal);
-        if (begin >= 0 && end >= begin)
-        {
-            end += EndMarker.Length;
-            var before = existing[..begin].TrimEnd();
-            var after = existing[end..].TrimStart();
-            return JoinProfileParts(before, block, after);
-        }
+        var cleaned = RemoveManagedBlocks(existing);
+        return JoinProfileParts(cleaned.TrimEnd(), block, string.Empty);
+    }
 
-        return JoinProfileParts(existing.TrimEnd(), block, string.Empty);
+    private static string RemoveManagedBlocks(string existing)
+    {
+        var cleaned = existing;
+        while (true)
+        {
+            var begin = cleaned.IndexOf(BeginMarker, StringComparison.Ordinal);
+            var end = cleaned.IndexOf(EndMarker, StringComparison.Ordinal);
+            if (begin < 0 || end < begin)
+            {
+                return cleaned;
+            }
+
+            end += EndMarker.Length;
+            cleaned = (cleaned[..begin].TrimEnd() + Environment.NewLine + cleaned[end..].TrimStart()).Trim();
+        }
     }
 
     private static string JoinProfileParts(string before, string block, string after)
@@ -816,21 +1549,121 @@ internal static class PowerShellProfileManager
         return before + Environment.NewLine + Environment.NewLine + block + Environment.NewLine + Environment.NewLine + after.TrimStart();
     }
 
-    private static string BuildProfileBlock(string adapterPath)
+    private static string BuildProfileBlock(string adapterPath, string cliPath)
     {
         var quotedAdapterPath = adapterPath.Replace("'", "''", StringComparison.Ordinal);
+        var quotedCliPath = cliPath.Replace("'", "''", StringComparison.Ordinal);
         return string.Join(
             Environment.NewLine,
             BeginMarker,
             "try {",
             $"    $steplerPsReadLine = '{quotedAdapterPath}'",
+            $"    $steplerCli = '{quotedCliPath}'",
             "    if (Test-Path -LiteralPath $steplerPsReadLine) {",
             "        Import-Module PSReadLine -ErrorAction SilentlyContinue",
-            "        . $steplerPsReadLine -Quiet",
+            "        . $steplerPsReadLine -SteplerCli $steplerCli -Quiet",
             "    }",
             "} catch {",
             "}",
             EndMarker);
+    }
+}
+
+internal sealed class HotkeyTimingOverlay : Form
+{
+    private const int WsExNoActivate = 0x08000000;
+    private const int WsExToolWindow = 0x00000080;
+
+    private readonly Label _label;
+    private readonly System.Windows.Forms.Timer _hideTimer;
+
+    public HotkeyTimingOverlay()
+    {
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.Manual;
+        TopMost = true;
+        BackColor = Color.FromArgb(28, 32, 36);
+        Padding = new Padding(14, 8, 14, 8);
+        AutoSize = true;
+        AutoSizeMode = AutoSizeMode.GrowAndShrink;
+
+        _label = new Label
+        {
+            AutoSize = true,
+            Font = new Font("Segoe UI", 11, FontStyle.Bold, GraphicsUnit.Point),
+            ForeColor = Color.White,
+            BackColor = Color.Transparent,
+            Text = "P 0 ms",
+        };
+        Controls.Add(_label);
+
+        _hideTimer = new System.Windows.Forms.Timer
+        {
+            Interval = 1000,
+        };
+        _hideTimer.Tick += (_, _) =>
+        {
+            _hideTimer.Stop();
+            Hide();
+        };
+    }
+
+    protected override bool ShowWithoutActivation => true;
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var parameters = base.CreateParams;
+            parameters.ExStyle |= WsExNoActivate | WsExToolWindow;
+            return parameters;
+        }
+    }
+
+    public void ShowTiming(string text, bool failed, int durationMs, bool darkTheme)
+    {
+        _label.Text = text;
+        BackColor = failed
+            ? Color.FromArgb(118, 33, 43)
+            : darkTheme
+                ? Color.FromArgb(28, 32, 36)
+                : Color.FromArgb(245, 247, 250);
+        _label.ForeColor = failed
+            ? Color.FromArgb(255, 235, 238)
+            : darkTheme
+                ? Color.White
+                : Color.FromArgb(30, 32, 36);
+
+        PerformLayout();
+        PositionNearTray();
+        Show();
+        _label.Refresh();
+        Refresh();
+        Update();
+
+        _hideTimer.Stop();
+        _hideTimer.Interval = Math.Clamp(durationMs, 200, 5000);
+        _hideTimer.Start();
+    }
+
+    private void PositionNearTray()
+    {
+        var area = Screen.PrimaryScreen?.WorkingArea ?? Screen.FromControl(this).WorkingArea;
+        var margin = 18;
+        Location = new Point(
+            Math.Max(area.Left + margin, area.Right - Width - margin),
+            Math.Max(area.Top + margin, area.Bottom - Height - margin));
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _hideTimer.Dispose();
+        }
+
+        base.Dispose(disposing);
     }
 }
 
@@ -843,6 +1676,167 @@ internal sealed class SteplerSettings
     public bool DisableCapsLock { get; set; } = true;
     public bool InsertAsBackspaceEnabled { get; set; } = true;
     public bool RiskyFallbacksEnabled { get; set; }
+    public bool DarkTheme { get; set; } = true;
+    public bool ShowTimingOverlay { get; set; } = true;
+    public int TimingOverlayDurationMs { get; set; } = 1000;
+    public string? QwenWorkspaceDirectory { get; set; }
+}
+
+internal readonly record struct ThemePalette(
+    Color Window,
+    Color Control,
+    Color ControlHover,
+    Color Border,
+    Color Text,
+    Color MutedText,
+    Color Input,
+    Color InputText)
+{
+    public static ThemePalette FromDarkTheme(bool darkTheme)
+    {
+        return darkTheme
+            ? new ThemePalette(
+                Color.FromArgb(30, 32, 36),
+                Color.FromArgb(43, 47, 53),
+                Color.FromArgb(55, 61, 69),
+                Color.FromArgb(75, 82, 92),
+                Color.FromArgb(245, 247, 250),
+                Color.FromArgb(190, 197, 207),
+                Color.FromArgb(22, 24, 27),
+                Color.FromArgb(245, 247, 250))
+            : new ThemePalette(
+                SystemColors.Window,
+                SystemColors.Control,
+                SystemColors.ButtonFace,
+                SystemColors.ControlDark,
+                SystemColors.ControlText,
+                SystemColors.GrayText,
+                SystemColors.Window,
+                SystemColors.WindowText);
+    }
+}
+
+internal static class ThemeApplier
+{
+    public static void Apply(Form form, ThemePalette palette)
+    {
+        form.BackColor = palette.Window;
+        form.ForeColor = palette.Text;
+        NativeMethods.SetImmersiveDarkMode(form.Handle, palette.Window.GetBrightness() < 0.5f);
+        ApplyControls(form.Controls, palette);
+    }
+
+    public static void Apply(ContextMenuStrip menu, ThemePalette palette)
+    {
+        menu.BackColor = palette.Control;
+        menu.ForeColor = palette.Text;
+        menu.ShowCheckMargin = false;
+        menu.ShowImageMargin = true;
+        menu.Renderer = new ThemedToolStripRenderer(palette);
+        foreach (ToolStripItem item in menu.Items)
+        {
+            item.BackColor = palette.Control;
+            item.ForeColor = item.Enabled ? palette.Text : palette.MutedText;
+        }
+    }
+
+    private static void ApplyControls(Control.ControlCollection controls, ThemePalette palette)
+    {
+        foreach (Control control in controls)
+        {
+            switch (control)
+            {
+                case TextBoxBase textBox:
+                    textBox.BackColor = palette.Input;
+                    textBox.ForeColor = palette.InputText;
+                    break;
+                case Button button:
+                    button.BackColor = palette.Control;
+                    button.ForeColor = palette.Text;
+                    button.FlatStyle = FlatStyle.Flat;
+                    button.FlatAppearance.BorderColor = palette.Border;
+                    button.FlatAppearance.MouseOverBackColor = palette.ControlHover;
+                    break;
+                case NumericUpDown numeric:
+                    numeric.BackColor = palette.Input;
+                    numeric.ForeColor = palette.InputText;
+                    break;
+                case Label label:
+                    label.BackColor = Color.Transparent;
+                    label.ForeColor = palette.Text;
+                    break;
+                default:
+                    control.BackColor = palette.Window;
+                    control.ForeColor = palette.Text;
+                    break;
+            }
+
+            if (control.HasChildren)
+            {
+                ApplyControls(control.Controls, palette);
+            }
+        }
+    }
+}
+
+internal sealed class ThemedToolStripRenderer : ToolStripProfessionalRenderer
+{
+    private readonly ThemePalette _palette;
+
+    public ThemedToolStripRenderer(ThemePalette palette)
+    {
+        _palette = palette;
+    }
+
+    protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
+    {
+        using var brush = new SolidBrush(_palette.Control);
+        e.Graphics.FillRectangle(brush, e.AffectedBounds);
+    }
+
+    protected override void OnRenderImageMargin(ToolStripRenderEventArgs e)
+    {
+        using var brush = new SolidBrush(_palette.Control);
+        e.Graphics.FillRectangle(brush, e.AffectedBounds);
+    }
+
+    protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+    {
+        var color = e.Item.Selected ? _palette.ControlHover : _palette.Control;
+        using var brush = new SolidBrush(color);
+        e.Graphics.FillRectangle(brush, new Rectangle(Point.Empty, e.Item.Size));
+    }
+
+    protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+    {
+        var box = new Rectangle(e.ImageRectangle.X + 2, e.ImageRectangle.Y + 2, 14, 14);
+        using var background = new SolidBrush(_palette.ControlHover);
+        using var border = new Pen(_palette.Border);
+        using var check = new Pen(Color.FromArgb(93, 213, 181), 2f)
+        {
+            StartCap = System.Drawing.Drawing2D.LineCap.Round,
+            EndCap = System.Drawing.Drawing2D.LineCap.Round,
+        };
+
+        e.Graphics.FillRectangle(background, box);
+        e.Graphics.DrawRectangle(border, box);
+        e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        e.Graphics.DrawLines(check, new[]
+        {
+            new Point(box.Left + 3, box.Top + 7),
+            new Point(box.Left + 6, box.Top + 10),
+            new Point(box.Left + 11, box.Top + 4),
+        });
+    }
+
+    protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+    {
+        using var brush = new SolidBrush(_palette.Control);
+        e.Graphics.FillRectangle(brush, new Rectangle(Point.Empty, e.Item.Size));
+        using var pen = new Pen(_palette.Border);
+        var y = e.Item.Height / 2;
+        e.Graphics.DrawLine(pen, 0, y, e.Item.Width, y);
+    }
 }
 
 internal static class SteplerSettingsStore
@@ -965,8 +1959,35 @@ internal static class SteplerIcon
 
 internal static class NativeMethods
 {
+    private const int DwmwaUseImmersiveDarkMode = 20;
+    private const int DwmwaUseImmersiveDarkModeBefore20H1 = 19;
+
     [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
     public static extern bool DestroyIcon(IntPtr handle);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr handle);
+
+    public static void SetImmersiveDarkMode(IntPtr handle, bool enabled)
+    {
+        if (handle == IntPtr.Zero || !OperatingSystem.IsWindowsVersionAtLeast(10))
+        {
+            return;
+        }
+
+        var value = enabled ? 1 : 0;
+        if (DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkMode, ref value, sizeof(int)) != 0)
+        {
+            _ = DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkModeBefore20H1, ref value, sizeof(int));
+        }
+    }
+
+    [DllImport("dwmapi.dll", PreserveSig = true)]
+    private static extern int DwmSetWindowAttribute(
+        IntPtr hwnd,
+        int dwAttribute,
+        ref int pvAttribute,
+        int cbAttribute);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string? lpName);
@@ -1087,7 +2108,8 @@ internal sealed class ControlWindow : Form
         Action restartRunner,
         Action openHotkeyLog,
         Action openTrayLog,
-        Action exit)
+        Action exit,
+        bool darkTheme)
     {
         Text = "Stepler";
         ShowInTaskbar = true;
@@ -1134,11 +2156,17 @@ internal sealed class ControlWindow : Form
             trayLogButton,
             exitButton,
         });
+        ApplyTheme(darkTheme);
     }
 
     public void UpdateStatus(string status)
     {
         _statusLabel.Text = status;
+    }
+
+    public void ApplyTheme(bool darkTheme)
+    {
+        ThemeApplier.Apply(this, ThemePalette.FromDarkTheme(darkTheme));
     }
 
     private static Button Button(string text, int x, int y, Action action)
@@ -1152,4 +2180,630 @@ internal sealed class ControlWindow : Form
         button.Click += (_, _) => action();
         return button;
     }
+}
+
+internal sealed class QwenInputWindow : Form
+{
+    private readonly string _cliPath;
+    private readonly Action<string, bool> _showTiming;
+    private readonly TextBox _input;
+    private readonly Label _status;
+
+    public QwenInputWindow(string cliPath, bool darkTheme, Action<string, bool> showTiming)
+    {
+        _cliPath = cliPath;
+        _showTiming = showTiming;
+
+        Text = "Stepler Qwen Input";
+        ShowInTaskbar = true;
+        FormBorderStyle = FormBorderStyle.Sizable;
+        MaximizeBox = true;
+        MinimizeBox = false;
+        ClientSize = new Size(520, 236);
+        MinimumSize = new Size(540, 220);
+        StartPosition = FormStartPosition.CenterScreen;
+        KeyPreview = true;
+
+        _input = new TextBox
+        {
+            AcceptsReturn = true,
+            AcceptsTab = true,
+            Multiline = true,
+            ScrollBars = ScrollBars.Vertical,
+            Location = new Point(12, 12),
+            Size = new Size(496, 144),
+            Font = new Font("Segoe UI", 10),
+            Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+            AllowDrop = true,
+        };
+        _input.DragEnter += OnInputDragEnter;
+        _input.DragDrop += OnInputDragDrop;
+
+        var submitButton = Button("Отправить", 12, 194, Submit);
+        submitButton.Size = new Size(496, 30);
+        submitButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+
+        _status = new Label
+        {
+            AutoSize = false,
+            Text = "Готово",
+            TextAlign = ContentAlignment.MiddleLeft,
+            Location = new Point(12, 164),
+            Size = new Size(496, 24),
+            Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+        };
+
+        Controls.AddRange(new Control[]
+        {
+            _input,
+            submitButton,
+            _status,
+        });
+
+        KeyDown += OnQwenInputKeyDown;
+        ApplyTheme(darkTheme);
+    }
+
+    public void ApplyTheme(bool darkTheme)
+    {
+        ThemeApplier.Apply(this, ThemePalette.FromDarkTheme(darkTheme));
+    }
+
+    private void OnQwenInputKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyCode != Keys.Pause)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        e.SuppressKeyPress = true;
+        ApplyCorrection(e.Control ? "scrolllock" : "pause");
+    }
+
+    private void OnInputDragEnter(object? sender, DragEventArgs e)
+    {
+        e.Effect = e.Data?.GetDataPresent(DataFormats.FileDrop) == true
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+    }
+
+    private void OnInputDragDrop(object? sender, DragEventArgs e)
+    {
+        if (e.Data?.GetData(DataFormats.FileDrop) is not string[] paths || paths.Length == 0)
+        {
+            return;
+        }
+
+        var clientPoint = _input.PointToClient(new Point(e.X, e.Y));
+        var insertionPoint = _input.GetCharIndexFromPosition(clientPoint);
+        if (clientPoint.Y >= _input.ClientSize.Height - 4 && insertionPoint < _input.TextLength)
+        {
+            insertionPoint = _input.TextLength;
+        }
+
+        _input.Focus();
+        _input.SelectionStart = Math.Clamp(insertionPoint, 0, _input.TextLength);
+        _input.SelectedText = string.Join(Environment.NewLine, paths);
+        SetStatus(paths.Length == 1 ? "Путь файла вставлен" : $"Пути файлов вставлены: {paths.Length}");
+    }
+
+    private void ApplyCorrection(string mode)
+    {
+        var hotkeyStarted = Stopwatch.StartNew();
+        var hotkeyLabel = mode == "pause" ? "P" : "CP";
+        ShowTiming($"{hotkeyLabel} нажата", failed: false);
+        SetStatus($"{hotkeyLabel} нажата");
+
+        if (mode == "pause" && TryApplyFastPause(hotkeyStarted, hotkeyLabel))
+        {
+            return;
+        }
+
+        if (!File.Exists(_cliPath))
+        {
+            ShowFailure(hotkeyLabel, "stepler-cli.exe не найден");
+            return;
+        }
+
+        var line = _input.Text;
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            ShowFailure(hotkeyLabel, "пустой ввод");
+            return;
+        }
+
+        var args = new List<string>
+        {
+            "psreadline-plan",
+            "--mode",
+            mode,
+            "--text-b64",
+            Convert.ToBase64String(Encoding.Unicode.GetBytes(line)),
+            "--cursor",
+            _input.SelectionStart.ToString(),
+        };
+        if (_input.SelectionLength > 0)
+        {
+            args.Add("--selection-start");
+            args.Add(_input.SelectionStart.ToString());
+            args.Add("--selection-length");
+            args.Add(_input.SelectionLength.ToString());
+        }
+
+        var result = RunCli(args);
+        if (result.ExitCode != 0)
+        {
+            ShowFailure(hotkeyLabel, $"нет замены {hotkeyStarted.ElapsedMilliseconds} ms");
+            return;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(result.Stdout);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("applied", out var applied) || !applied.GetBoolean())
+            {
+                ShowFailure(hotkeyLabel, $"нет замены {hotkeyStarted.ElapsedMilliseconds} ms");
+                return;
+            }
+
+            var nextText = root.TryGetProperty("text_b64", out var textBase64)
+                ? Encoding.Unicode.GetString(Convert.FromBase64String(textBase64.GetString() ?? string.Empty))
+                : root.GetProperty("text").GetString() ?? string.Empty;
+            var cursor = root.TryGetProperty("cursor", out var cursorElement)
+                ? cursorElement.GetInt32()
+                : nextText.Length;
+
+            _input.Text = nextText;
+            RestoreEditorSelection(cursor);
+
+            var layoutStarted = Stopwatch.StartNew();
+            var layout = SwitchLayoutAfterCorrection(nextText);
+            layoutStarted.Stop();
+
+            var totalMs = hotkeyStarted.ElapsedMilliseconds;
+            if (layout.Target is null)
+            {
+                ShowSuccess(hotkeyLabel, $"{totalMs} ms");
+            }
+            else if (layout.Applied)
+            {
+                ShowSuccess(hotkeyLabel, $"{totalMs} ms, язык {layout.Target} {layoutStarted.ElapsedMilliseconds} ms");
+            }
+            else
+            {
+                ShowSuccess(hotkeyLabel, $"{totalMs} ms, язык fail {layoutStarted.ElapsedMilliseconds} ms");
+            }
+            ScheduleEditorFocusRestore(cursor);
+        }
+        catch (Exception error)
+        {
+            Program.SafeLog($"qwen input correction parse error {error}");
+            ShowFailure(hotkeyLabel, $"ошибка ответа {hotkeyStarted.ElapsedMilliseconds} ms");
+            ScheduleEditorFocusRestore(_input.SelectionStart);
+        }
+    }
+
+    private bool TryApplyFastPause(Stopwatch hotkeyStarted, string hotkeyLabel)
+    {
+        var text = _input.Text;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            ShowFailure(hotkeyLabel, "пустой ввод");
+            return true;
+        }
+
+        var selectionStart = _input.SelectionStart;
+        var selectionLength = _input.SelectionLength;
+        var range = selectionLength > 0
+            ? new TextRange(selectionStart, selectionStart + selectionLength)
+            : WordRangeBeforeOrAroundCaret(text, selectionStart);
+        if (range.IsEmpty || string.IsNullOrWhiteSpace(text[range.Start..range.End]))
+        {
+            ShowFailure(hotkeyLabel, $"нет замены {hotkeyStarted.ElapsedMilliseconds} ms");
+            ScheduleEditorFocusRestore(selectionStart);
+            return true;
+        }
+
+        var expected = text[range.Start..range.End];
+        var replacement = selectionLength > 0
+            ? ConvertSelectedText(expected)
+            : ConvertLayoutText(expected);
+        if (replacement == expected)
+        {
+            ShowFailure(hotkeyLabel, $"нет замены {hotkeyStarted.ElapsedMilliseconds} ms");
+            ScheduleEditorFocusRestore(selectionStart);
+            return true;
+        }
+
+        _input.Text = string.Concat(text.AsSpan(0, range.Start), replacement, text.AsSpan(range.End));
+        var cursor = selectionLength > 0
+            ? range.Start + replacement.Length
+            : AdjustedCursorAfterReplacement(selectionStart, range, replacement.Length);
+        RestoreEditorSelection(cursor);
+
+        var layoutStarted = Stopwatch.StartNew();
+        var layout = SwitchLayoutAfterCorrection(_input.Text);
+        layoutStarted.Stop();
+
+        var totalMs = hotkeyStarted.ElapsedMilliseconds;
+        if (layout.Target is null)
+        {
+            ShowSuccess(hotkeyLabel, $"{totalMs} ms");
+        }
+        else if (layout.Applied)
+        {
+            ShowSuccess(hotkeyLabel, $"{totalMs} ms, язык {layout.Target} {layoutStarted.ElapsedMilliseconds} ms");
+        }
+        else
+        {
+            ShowSuccess(hotkeyLabel, $"{totalMs} ms, язык fail {layoutStarted.ElapsedMilliseconds} ms");
+        }
+        ScheduleEditorFocusRestore(cursor);
+        return true;
+    }
+
+    private void RestoreEditorSelection(int cursor)
+    {
+        _input.SelectionStart = Math.Clamp(cursor, 0, _input.TextLength);
+        _input.SelectionLength = 0;
+    }
+
+    private void RestoreEditorFocus(int cursor)
+    {
+        if (WindowState == FormWindowState.Minimized)
+        {
+            WindowState = FormWindowState.Normal;
+        }
+
+        Show();
+        BringToFront();
+        NativeMethods.SetForegroundWindow(Handle);
+        Activate();
+        _input.Focus();
+        RestoreEditorSelection(cursor);
+    }
+
+    private void ScheduleEditorFocusRestore(int cursor)
+    {
+        RestoreEditorFocus(cursor);
+        BeginInvoke((Action)(() => RestoreEditorFocus(cursor)));
+
+        var timer = new System.Windows.Forms.Timer
+        {
+            Interval = 150,
+        };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            if (!IsDisposed)
+            {
+                RestoreEditorFocus(cursor);
+            }
+        };
+        timer.Start();
+    }
+
+    private (string? Target, bool Applied) SwitchLayoutAfterCorrection(string text)
+    {
+        var targetLayout = DesiredLayoutForText(text);
+        if (targetLayout is null)
+        {
+            return (null, false);
+        }
+
+        if (TrySwitchInputLanguage(targetLayout))
+        {
+            return (targetLayout, true);
+        }
+
+        Program.SafeLog($"qwen input layout switch failed target={targetLayout} reason=input_language_not_found");
+        return (targetLayout, false);
+    }
+
+    private static string? DesiredLayoutForText(string text)
+    {
+        var russian = 0;
+        var english = 0;
+        foreach (var character in text)
+        {
+            if (IsRussianLetter(character))
+            {
+                russian++;
+            }
+            else if (character is >= 'A' and <= 'Z' or >= 'a' and <= 'z')
+            {
+                english++;
+            }
+        }
+
+        if (russian > english)
+        {
+            return "russian";
+        }
+        if (english > russian)
+        {
+            return "english";
+        }
+
+        return null;
+    }
+
+    private static bool IsRussianLetter(char character)
+    {
+        return character is >= 'а' and <= 'я'
+            or >= 'А' and <= 'Я'
+            or 'ё'
+            or 'Ё';
+    }
+
+    private static bool TrySwitchInputLanguage(string targetLayout)
+    {
+        var culturePrefix = targetLayout == "russian" ? "ru" : "en";
+        foreach (InputLanguage language in InputLanguage.InstalledInputLanguages)
+        {
+            if (language.Culture.TwoLetterISOLanguageName.Equals(culturePrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                InputLanguage.CurrentInputLanguage = language;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static TextRange WordRangeBeforeOrAroundCaret(string text, int caret)
+    {
+        caret = Math.Clamp(caret, 0, text.Length);
+        var wordEnd = caret;
+        while (wordEnd > 0 && char.IsWhiteSpace(text[wordEnd - 1]))
+        {
+            wordEnd--;
+        }
+
+        var start = wordEnd;
+        while (start > 0 && !char.IsWhiteSpace(text[start - 1]))
+        {
+            start--;
+        }
+
+        var end = wordEnd;
+        if (end == caret)
+        {
+            while (end < text.Length && !char.IsWhiteSpace(text[end]))
+            {
+                end++;
+            }
+        }
+
+        return start == wordEnd ? TextRange.Caret(caret) : new TextRange(start, end);
+    }
+
+    private static int AdjustedCursorAfterReplacement(int cursor, TextRange range, int replacementLength)
+    {
+        if (cursor <= range.Start)
+        {
+            return cursor;
+        }
+        if (cursor <= range.End)
+        {
+            return range.Start + replacementLength;
+        }
+
+        return cursor + replacementLength - (range.End - range.Start);
+    }
+
+    private static string ConvertSelectedText(string input)
+    {
+        var result = new StringBuilder(input.Length);
+        var token = new StringBuilder();
+        foreach (var character in input)
+        {
+            if (char.IsWhiteSpace(character))
+            {
+                if (token.Length > 0)
+                {
+                    result.Append(ConvertTokenByScript(token.ToString()));
+                    token.Clear();
+                }
+                result.Append(character);
+            }
+            else
+            {
+                token.Append(character);
+            }
+        }
+
+        if (token.Length > 0)
+        {
+            result.Append(ConvertTokenByScript(token.ToString()));
+        }
+
+        return result.ToString();
+    }
+
+    private static string ConvertTokenByScript(string token)
+    {
+        var hasRussian = token.Any(IsRussianLetter);
+        var hasEnglish = token.Any(character => character is >= 'A' and <= 'Z' or >= 'a' and <= 'z');
+
+        return (hasRussian, hasEnglish) switch
+        {
+            (true, false) => ConvertWithDirection(token, russianToEnglish: true),
+            (false, true) => ConvertWithDirection(token, russianToEnglish: false),
+            _ => ConvertLayoutText(token),
+        };
+    }
+
+    private static string ConvertLayoutText(string input)
+    {
+        var russianCount = input.Count(character => RussianToEnglish(character) is not null);
+        var englishCount = input.Count(character => EnglishToRussian(character) is not null);
+        return ConvertWithDirection(input, russianToEnglish: russianCount > englishCount);
+    }
+
+    private static string ConvertWithDirection(string input, bool russianToEnglish)
+    {
+        var result = new StringBuilder(input.Length);
+        foreach (var character in input)
+        {
+            result.Append(russianToEnglish
+                ? RussianToEnglish(character) ?? character
+                : EnglishToRussian(character) ?? character);
+        }
+
+        return result.ToString();
+    }
+
+    private static char? RussianToEnglish(char character)
+    {
+        return character switch
+        {
+            'й' => 'q', 'ц' => 'w', 'у' => 'e', 'к' => 'r', 'е' => 't', 'н' => 'y', 'г' => 'u',
+            'ш' => 'i', 'щ' => 'o', 'з' => 'p', 'х' => '[', 'ъ' => ']', 'ф' => 'a', 'ы' => 's',
+            'в' => 'd', 'а' => 'f', 'п' => 'g', 'р' => 'h', 'о' => 'j', 'л' => 'k', 'д' => 'l',
+            'ж' => ';', 'э' => '\'', 'я' => 'z', 'ч' => 'x', 'с' => 'c', 'м' => 'v', 'и' => 'b',
+            'т' => 'n', 'ь' => 'm', 'б' => ',', 'ю' => '.', 'ё' => '`', ',' => '?', '.' => '/',
+            'Й' => 'Q', 'Ц' => 'W', 'У' => 'E', 'К' => 'R', 'Е' => 'T', 'Н' => 'Y', 'Г' => 'U',
+            'Ш' => 'I', 'Щ' => 'O', 'З' => 'P', 'Х' => '[', 'Ъ' => ']', 'Ф' => 'A', 'Ы' => 'S',
+            'В' => 'D', 'А' => 'F', 'П' => 'G', 'Р' => 'H', 'О' => 'J', 'Л' => 'K', 'Д' => 'L',
+            'Ж' => ':', 'Э' => '"', 'Я' => 'Z', 'Ч' => 'X', 'С' => 'C', 'М' => 'V', 'И' => 'B',
+            'Т' => 'N', 'Ь' => 'M', 'Б' => '<', 'Ю' => '>', 'Ё' => '~',
+            _ => null,
+        };
+    }
+
+    private static char? EnglishToRussian(char character)
+    {
+        return character switch
+        {
+            'q' => 'й', 'w' => 'ц', 'e' => 'у', 'r' => 'к', 't' => 'е', 'y' => 'н', 'u' => 'г',
+            'i' => 'ш', 'o' => 'щ', 'p' => 'з', '[' => 'х', ']' => 'ъ', 'a' => 'ф', 's' => 'ы',
+            'd' => 'в', 'f' => 'а', 'g' => 'п', 'h' => 'р', 'j' => 'о', 'k' => 'л', 'l' => 'д',
+            ';' => 'ж', '\'' => 'э', 'z' => 'я', 'x' => 'ч', 'c' => 'с', 'v' => 'м', 'b' => 'и',
+            'n' => 'т', 'm' => 'ь', ',' => 'б', '.' => 'ю', '`' => 'ё', '?' => ',', '/' => '.',
+            'Q' => 'Й', 'W' => 'Ц', 'E' => 'У', 'R' => 'К', 'T' => 'Е', 'Y' => 'Н', 'U' => 'Г',
+            'I' => 'Ш', 'O' => 'Щ', 'P' => 'З', 'A' => 'Ф', 'S' => 'Ы', 'D' => 'В', 'F' => 'А',
+            'G' => 'П', 'H' => 'Р', 'J' => 'О', 'K' => 'Л', 'L' => 'Д', 'Z' => 'Я', 'X' => 'Ч',
+            'C' => 'С', 'V' => 'М', 'B' => 'И', 'N' => 'Т', 'M' => 'Ь', '{' => 'Х', '}' => 'Ъ',
+            ':' => 'Ж', '"' => 'Э', '<' => 'Б', '>' => 'Ю', '~' => 'Ё',
+            _ => null,
+        };
+    }
+
+    private void Submit()
+    {
+        if (!File.Exists(_cliPath))
+        {
+            SetStatus("stepler-cli.exe не найден");
+            return;
+        }
+
+        var text = _input.Text;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        var result = RunCli(new[] { "qwen-submit", "--text", text });
+        if (result.ExitCode == 0)
+        {
+            SetStatus("Отправлено в Qwen");
+            _input.Clear();
+        }
+        else
+        {
+            SetStatus("Qwen input-file не найден");
+        }
+    }
+
+    private CliResult RunCli(IEnumerable<string> arguments)
+    {
+        try
+        {
+            using var process = new Process();
+            process.StartInfo = new ProcessStartInfo
+            {
+                FileName = _cliPath,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (var argument in arguments)
+            {
+                process.StartInfo.ArgumentList.Add(argument);
+            }
+
+            process.Start();
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
+            process.WaitForExit(5000);
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                return new CliResult(1, stdout, "timeout");
+            }
+
+            if (!string.IsNullOrWhiteSpace(stderr))
+            {
+                Program.SafeLog($"qwen input cli stderr {stderr.Trim()}");
+            }
+            return new CliResult(process.ExitCode, stdout, stderr);
+        }
+        catch (Exception error)
+        {
+            Program.SafeLog($"qwen input cli error {error}");
+            return new CliResult(1, string.Empty, error.Message);
+        }
+    }
+
+    private void SetStatus(string text)
+    {
+        _status.Text = text;
+    }
+
+    private void ShowSuccess(string hotkeyLabel, string details)
+    {
+        var text = $"{hotkeyLabel} {details}";
+        ShowTiming(text, failed: false);
+        SetStatus(text);
+    }
+
+    private void ShowFailure(string hotkeyLabel, string details)
+    {
+        var text = $"{hotkeyLabel} failed";
+        ShowTiming(text, failed: true);
+        SetStatus($"{text}: {details}");
+    }
+
+    private void ShowTiming(string text, bool failed)
+    {
+        _showTiming(text, failed);
+        _status.Refresh();
+        Update();
+    }
+
+    private static Button Button(string text, int x, int y, Action action)
+    {
+        var button = new Button
+        {
+            Text = text,
+            Location = new Point(x, y),
+            Size = new Size(92, 30),
+        };
+        button.Click += (_, _) => action();
+        return button;
+    }
+
+    private readonly record struct TextRange(int Start, int End)
+    {
+        public bool IsEmpty => Start == End;
+
+        public static TextRange Caret(int offset) => new(offset, offset);
+    }
+
+    private readonly record struct CliResult(int ExitCode, string Stdout, string Stderr);
 }

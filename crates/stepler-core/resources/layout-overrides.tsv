@@ -1,0 +1,4 @@
+# source	target
+# Ambiguous tokens that look plausible in the source layout but are commonly
+# produced while typing Russian in the English layout.
+ddble	ввиду

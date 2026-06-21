@@ -1223,7 +1223,7 @@ impl WebKeyboardSelectionMethod {
                 let copied = copied_raw
                     .filter(|text| !text.trim().is_empty())
                     .filter(|text| !looks_like_hotkeyhandler_marker(text));
-                send_key(VK_RIGHT);
+                restore_web_line_left_context_caret();
                 let _ = restore_clipboard_text_only(&snapshot);
 
                 if let Some(text) = copied {
@@ -1369,7 +1369,11 @@ impl WebKeyboardSelectionMethod {
             );
         }
         if selected.as_deref() != Some(expected_selection) {
-            send_key(VK_RIGHT);
+            if use_line_selection {
+                restore_web_line_left_context_caret();
+            } else {
+                send_key(VK_RIGHT);
+            }
             let _ = restore_clipboard_text_only(&snapshot);
             return Err(PlatformError::ReplacementUnavailableReason(format!(
                 "web_keyboard_preflight expected={} actual={}",
@@ -5243,6 +5247,12 @@ fn select_web_line_left_context() {
         KeyboardInputEvent::new(VK_HOME, true, KeyboardInputMode::ScanCode),
         KeyboardInputEvent::new(VK_LSHIFT, true, KeyboardInputMode::ScanCode),
     ]);
+    release_modifier_keys();
+}
+
+#[cfg(windows)]
+fn restore_web_line_left_context_caret() {
+    send_key(VK_END);
     release_modifier_keys();
 }
 

@@ -767,8 +767,8 @@ internal sealed class SteplerTrayForm : Form
                 return;
             }
 
-            PowerShellProfileManager.EnsureInstalled(adapterPath);
-            Program.SafeLog($"psreadline profile installed adapter={adapterPath}");
+            PowerShellProfileManager.EnsureInstalled(adapterPath, ResolveCliPath());
+            Program.SafeLog($"psreadline profile installed adapter={adapterPath} cli={ResolveCliPath()}");
         }
         catch (Exception error)
         {
@@ -1440,13 +1440,13 @@ internal static class PowerShellProfileManager
     private const string BeginMarker = "# >>> Stepler PSReadLine adapter >>>";
     private const string EndMarker = "# <<< Stepler PSReadLine adapter <<<";
 
-    public static void EnsureInstalled(string adapterPath)
+    public static void EnsureInstalled(string adapterPath, string cliPath)
     {
         foreach (var profilePath in ProfilePaths())
         {
             try
             {
-                EnsureProfileBlock(profilePath, adapterPath);
+                EnsureProfileBlock(profilePath, adapterPath, cliPath);
             }
             catch (Exception error)
             {
@@ -1489,7 +1489,7 @@ internal static class PowerShellProfileManager
         }
     }
 
-    private static void EnsureProfileBlock(string profilePath, string adapterPath)
+    private static void EnsureProfileBlock(string profilePath, string adapterPath, string cliPath)
     {
         var directory = Path.GetDirectoryName(profilePath);
         if (!string.IsNullOrWhiteSpace(directory))
@@ -1498,7 +1498,7 @@ internal static class PowerShellProfileManager
         }
 
         var existing = File.Exists(profilePath) ? File.ReadAllText(profilePath) : string.Empty;
-        var block = BuildProfileBlock(adapterPath);
+        var block = BuildProfileBlock(adapterPath, cliPath);
         var next = ReplaceManagedBlock(existing, block);
         if (!string.Equals(existing, next, StringComparison.Ordinal))
         {
@@ -1508,17 +1508,25 @@ internal static class PowerShellProfileManager
 
     private static string ReplaceManagedBlock(string existing, string block)
     {
-        var begin = existing.IndexOf(BeginMarker, StringComparison.Ordinal);
-        var end = existing.IndexOf(EndMarker, StringComparison.Ordinal);
-        if (begin >= 0 && end >= begin)
-        {
-            end += EndMarker.Length;
-            var before = existing[..begin].TrimEnd();
-            var after = existing[end..].TrimStart();
-            return JoinProfileParts(before, block, after);
-        }
+        var cleaned = RemoveManagedBlocks(existing);
+        return JoinProfileParts(cleaned.TrimEnd(), block, string.Empty);
+    }
 
-        return JoinProfileParts(existing.TrimEnd(), block, string.Empty);
+    private static string RemoveManagedBlocks(string existing)
+    {
+        var cleaned = existing;
+        while (true)
+        {
+            var begin = cleaned.IndexOf(BeginMarker, StringComparison.Ordinal);
+            var end = cleaned.IndexOf(EndMarker, StringComparison.Ordinal);
+            if (begin < 0 || end < begin)
+            {
+                return cleaned;
+            }
+
+            end += EndMarker.Length;
+            cleaned = (cleaned[..begin].TrimEnd() + Environment.NewLine + cleaned[end..].TrimStart()).Trim();
+        }
     }
 
     private static string JoinProfileParts(string before, string block, string after)
@@ -1541,17 +1549,19 @@ internal static class PowerShellProfileManager
         return before + Environment.NewLine + Environment.NewLine + block + Environment.NewLine + Environment.NewLine + after.TrimStart();
     }
 
-    private static string BuildProfileBlock(string adapterPath)
+    private static string BuildProfileBlock(string adapterPath, string cliPath)
     {
         var quotedAdapterPath = adapterPath.Replace("'", "''", StringComparison.Ordinal);
+        var quotedCliPath = cliPath.Replace("'", "''", StringComparison.Ordinal);
         return string.Join(
             Environment.NewLine,
             BeginMarker,
             "try {",
             $"    $steplerPsReadLine = '{quotedAdapterPath}'",
+            $"    $steplerCli = '{quotedCliPath}'",
             "    if (Test-Path -LiteralPath $steplerPsReadLine) {",
             "        Import-Module PSReadLine -ErrorAction SilentlyContinue",
-            "        . $steplerPsReadLine -Quiet",
+            "        . $steplerPsReadLine -SteplerCli $steplerCli -Quiet",
             "    }",
             "} catch {",
             "}",

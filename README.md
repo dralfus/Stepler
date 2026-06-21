@@ -162,7 +162,6 @@ Risky/fallback методы по умолчанию не должны включ
 - `crates/stepler-platform` - platform-neutral контракты resolver-а и адаптеров.
 - `crates/stepler-platform-windows` - Windows method adapters, hotkey hook и layout switch.
 - `crates/stepler-remote` - маленький Linux/SSH helper для Bash/readline, использующий тот же `stepler-core`.
-- `crates/stepler-testkit` - тестовые helpers.
 - `apps/Stepler.Tray` - tray-only Windows host, который запускает `stepler-cli run-hotkeys`.
 - `scripts` - сборка release/installer и PSReadLine adapter.
 - `docs` - release notes, smoke checklist и команды разработки.

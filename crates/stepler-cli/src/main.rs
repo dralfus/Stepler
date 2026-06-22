@@ -418,42 +418,81 @@ fn diagnose_focus(args: &[String]) {
         }
     }
 
-    if args.iter().any(|arg| arg == "--methods") {
+    let show_methods = args.iter().any(|arg| arg == "--methods");
+    let show_surface = args.iter().any(|arg| arg == "--surface");
+    if show_methods || show_surface {
         match method_diagnostics() {
             Ok(info) => {
-                println!("method probes:");
-                for probe in info.probes {
+                if show_surface {
                     println!(
-                        "  - method={} safety={} clipboard={} focus_stability={} preflight={} verify={} reason={}",
-                        probe.method,
-                        probe.safety,
-                        probe.requires_clipboard,
-                        probe.requires_focus_stability,
-                        probe.can_preflight,
-                        probe.can_verify,
-                        probe.reason
+                        "surface: kind={} confidence={} web_profile={} risky_allowed={}",
+                        info.surface.kind,
+                        info.surface.confidence,
+                        info.surface.web_keyboard_profile,
+                        info.surface.allow_risky_methods
+                    );
+                    for evidence in &info.surface.evidence {
+                        println!("  evidence: {evidence}");
+                    }
+                    println!(
+                        "policy: pause_context=[{}] pause_replace=[{}]",
+                        info.surface.pause_context_methods.join(","),
+                        info.surface.pause_replace_methods.join(",")
+                    );
+                    println!(
+                        "policy: scrolllock_context=[{}] scrolllock_replace=[{}]",
+                        info.surface.scrolllock_context_methods.join(","),
+                        info.surface.scrolllock_replace_methods.join(",")
+                    );
+                    println!(
+                        "policy: forbidden=[{}]",
+                        info.surface.forbidden_methods.join(",")
+                    );
+                    println!(
+                        "resolver_pause: context={:?} replacement={:?}",
+                        info.selected_pause_context_method, info.selected_pause_replacement_method
+                    );
+                    println!(
+                        "resolver_scrolllock: context={:?} replacement={:?}",
+                        info.selected_scrolllock_context_method,
+                        info.selected_scrolllock_replacement_method
                     );
                 }
-                if let Some(uia) = info.uia_focus {
+                if show_methods {
+                    println!("method probes:");
+                    for probe in info.probes {
+                        println!(
+                            "  - method={} safety={} clipboard={} focus_stability={} preflight={} verify={} reason={}",
+                            probe.method,
+                            probe.safety,
+                            probe.requires_clipboard,
+                            probe.requires_focus_stability,
+                            probe.can_preflight,
+                            probe.can_verify,
+                            probe.reason
+                        );
+                    }
+                    if let Some(uia) = info.uia_focus {
+                        println!(
+                            "uia_focus: name={:?} control_type={} automation_id={:?} class_name={:?} framework_id={:?} keyboard_focus={} keyboard_focusable={}",
+                            uia.name,
+                            uia.control_type,
+                            uia.automation_id,
+                            uia.class_name,
+                            uia.framework_id,
+                            uia.has_keyboard_focus,
+                            uia.is_keyboard_focusable
+                        );
+                    }
                     println!(
-                        "uia_focus: name={:?} control_type={} automation_id={:?} class_name={:?} framework_id={:?} keyboard_focus={} keyboard_focusable={}",
-                        uia.name,
-                        uia.control_type,
-                        uia.automation_id,
-                        uia.class_name,
-                        uia.framework_id,
-                        uia.has_keyboard_focus,
-                        uia.is_keyboard_focusable
+                        "resolver_first: context={:?} replacement={:?}",
+                        info.selected_context_method, info.selected_replacement_method
+                    );
+                    println!(
+                        "context: method={:?} error={:?} skipped={}",
+                        info.context_method, info.context_error, info.context_skipped
                     );
                 }
-                println!(
-                    "resolver_first: context={:?} replacement={:?}",
-                    info.selected_context_method, info.selected_replacement_method
-                );
-                println!(
-                    "context: method={:?} error={:?} skipped={}",
-                    info.context_method, info.context_error, info.context_skipped
-                );
             }
             Err(error) => {
                 eprintln!("method diagnose error: {error:?}");

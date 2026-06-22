@@ -13,13 +13,32 @@ pub struct WindowsFocusDiagnostics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsMethodDiagnostics {
     pub foreground: WindowsFocusDiagnostics,
+    pub surface: WindowsSurfaceDiagnostics,
     pub uia_focus: Option<WindowsUiaFocusDiagnostics>,
     pub probes: Vec<WindowsMethodProbeDiagnostics>,
     pub selected_context_method: Option<String>,
     pub selected_replacement_method: Option<String>,
+    pub selected_pause_context_method: Option<String>,
+    pub selected_pause_replacement_method: Option<String>,
+    pub selected_scrolllock_context_method: Option<String>,
+    pub selected_scrolllock_replacement_method: Option<String>,
     pub context_method: Option<String>,
     pub context_error: Option<String>,
     pub context_skipped: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsSurfaceDiagnostics {
+    pub kind: String,
+    pub confidence: u8,
+    pub evidence: Vec<String>,
+    pub web_keyboard_profile: String,
+    pub allow_risky_methods: bool,
+    pub pause_context_methods: Vec<String>,
+    pub pause_replace_methods: Vec<String>,
+    pub scrolllock_context_methods: Vec<String>,
+    pub scrolllock_replace_methods: Vec<String>,
+    pub forbidden_methods: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,7 +98,16 @@ pub(super) fn method_diagnostics_impl() -> Result<WindowsMethodDiagnostics, Plat
         control_id: hwnd_id(focused),
     };
     let probes = windows_method_probes(&target);
-    let decision = MethodResolver::default().resolve(&target, &probes).ok();
+    let classification = classify_surface(&target);
+    let policy = surface_policy_for(classification.kind);
+    let resolver = MethodResolver::default();
+    let pause_decision = resolver
+        .resolve_for_mode(&target, &probes, stepler_core::CorrectionMode::Pause)
+        .ok();
+    let scrolllock_decision = resolver
+        .resolve_for_mode(&target, &probes, stepler_core::CorrectionMode::ScrollLock)
+        .ok();
+    let decision = pause_decision.clone();
     let run_context = std::env::var("STEPLER_DIAGNOSE_CONTEXT")
         .map(|value| value == "1")
         .unwrap_or(false);
@@ -110,6 +138,45 @@ pub(super) fn method_diagnostics_impl() -> Result<WindowsMethodDiagnostics, Plat
             focused_class,
             focused_title: window_title(focused).unwrap_or_default(),
         },
+        surface: WindowsSurfaceDiagnostics {
+            kind: format!("{:?}", classification.kind),
+            confidence: classification.confidence,
+            evidence: classification.evidence,
+            web_keyboard_profile: format!(
+                "{:?}",
+                web_keyboard_profile_for_surface(classification.kind)
+            ),
+            allow_risky_methods: policy.allow_risky_methods,
+            pause_context_methods: policy
+                .pause_methods
+                .context_methods
+                .iter()
+                .map(|method| method.as_str().to_owned())
+                .collect(),
+            pause_replace_methods: policy
+                .pause_methods
+                .replace_methods
+                .iter()
+                .map(|method| method.as_str().to_owned())
+                .collect(),
+            scrolllock_context_methods: policy
+                .scrolllock_methods
+                .context_methods
+                .iter()
+                .map(|method| method.as_str().to_owned())
+                .collect(),
+            scrolllock_replace_methods: policy
+                .scrolllock_methods
+                .replace_methods
+                .iter()
+                .map(|method| method.as_str().to_owned())
+                .collect(),
+            forbidden_methods: policy
+                .forbidden_methods
+                .iter()
+                .map(|method| method.as_str().to_owned())
+                .collect(),
+        },
         uia_focus: uia_focus_diagnostics().ok(),
         probes: probes
             .into_iter()
@@ -127,6 +194,18 @@ pub(super) fn method_diagnostics_impl() -> Result<WindowsMethodDiagnostics, Plat
             .as_ref()
             .map(|decision| decision.context_method.as_str().to_owned()),
         selected_replacement_method: decision
+            .as_ref()
+            .map(|decision| decision.replacement_method.as_str().to_owned()),
+        selected_pause_context_method: pause_decision
+            .as_ref()
+            .map(|decision| decision.context_method.as_str().to_owned()),
+        selected_pause_replacement_method: pause_decision
+            .as_ref()
+            .map(|decision| decision.replacement_method.as_str().to_owned()),
+        selected_scrolllock_context_method: scrolllock_decision
+            .as_ref()
+            .map(|decision| decision.context_method.as_str().to_owned()),
+        selected_scrolllock_replacement_method: scrolllock_decision
             .as_ref()
             .map(|decision| decision.replacement_method.as_str().to_owned()),
         context_method,

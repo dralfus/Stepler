@@ -514,6 +514,29 @@ fn web_keyboard_selection_method_probes_sticky_notes() {
 
 #[cfg(windows)]
 #[test]
+fn sticky_notes_probe_stack_is_not_terminal() {
+    let target = ForegroundTarget {
+        app_class: String::from("ApplicationFrameWindow"),
+        focused_class: String::from("Windows.UI.Input.InputSite.WindowClass"),
+        title: String::from("Sticky Notes"),
+        process_name: Some(String::from("Microsoft.Notes")),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("hwnd:2"),
+    };
+
+    let method_ids = windows_method_probes(&target)
+        .iter()
+        .map(|probe| probe.method_id)
+        .collect::<Vec<_>>();
+
+    assert!(method_ids.contains(&MethodId::UiAutomationDocumentText));
+    assert!(method_ids.contains(&MethodId::WebKeyboardSelection));
+    assert!(!method_ids.contains(&MethodId::TerminalClipboardShortcut));
+    assert!(!method_ids.contains(&MethodId::XtermKeyboardSelection));
+}
+
+#[cfg(windows)]
+#[test]
 fn fast_web_keyboard_primary_target_skips_slow_uia_probe_stack() {
     let target = ForegroundTarget {
         app_class: String::from("Chrome_WidgetWin_1"),

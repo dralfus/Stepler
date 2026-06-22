@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using Stepler.Shared;
 
 namespace Stepler.QwenWorkspace;
 
@@ -44,6 +45,7 @@ internal sealed class WorkspaceForm : Form
     private readonly TextBox _input;
     private readonly Label _status;
     private readonly Button _submitButton;
+    private readonly QwenInputCorrectionController _correction;
     private readonly System.Windows.Forms.Timer _syncTimer;
     private Process? _terminalProcess;
     private IntPtr _terminalHwnd;
@@ -64,6 +66,7 @@ internal sealed class WorkspaceForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(820, 560);
         ClientSize = new Size(1100, 760);
+        KeyPreview = true;
 
         _split = new SplitContainer
         {
@@ -93,6 +96,15 @@ internal sealed class WorkspaceForm : Form
         };
         _input.DragEnter += OnInputDragEnter;
         _input.DragDrop += OnInputDragDrop;
+        KeyDown += OnWorkspaceKeyDown;
+        _correction = new QwenInputCorrectionController(
+            _cliPath,
+            this,
+            _input,
+            SetStatus,
+            Program.SafeLog,
+            showTiming: null,
+            "qwen workspace");
 
         _submitButton = new Button
         {
@@ -347,6 +359,18 @@ internal sealed class WorkspaceForm : Form
         SetStatus(paths.Length == 1 ? "Путь файла вставлен" : $"Пути файлов вставлены: {paths.Length}");
     }
 
+    private void OnWorkspaceKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyCode != Keys.Pause)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        e.SuppressKeyPress = true;
+        _correction.ApplyCorrection(e.Control ? "scrolllock" : "pause");
+    }
+
     private void SetStatus(string text)
     {
         _status.Text = text;
@@ -415,6 +439,7 @@ internal sealed class WorkspaceForm : Form
         }
         return IntPtr.Zero;
     }
+
 }
 
 internal sealed record WorkspaceOptions(string WorkingDirectory, bool DarkTheme, string[] QwenArguments)

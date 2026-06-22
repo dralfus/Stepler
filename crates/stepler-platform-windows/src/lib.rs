@@ -6,9 +6,10 @@ use stepler_core::{
     Capabilities, MethodBinding, MethodId, ReplacementPlan, TextContext, TextRange,
 };
 use stepler_platform::{
-    ApplyReplacementResult, ClipboardBackend, ClipboardFormatSnapshot, ClipboardSnapshot,
-    ForegroundControl, ForegroundProvider, ForegroundTarget, HotkeyListener, MethodProbe,
-    MethodResolver, PlatformError, TextContextProvider, TextReplacer,
+    classify_surface, surface_policy_for, web_keyboard_profile_for_surface, ApplyReplacementResult,
+    ClipboardBackend, ClipboardFormatSnapshot, ClipboardSnapshot, ForegroundControl,
+    ForegroundProvider, ForegroundTarget, HotkeyListener, MethodProbe, MethodResolver,
+    PlatformError, SurfaceKind, TextContextProvider, TextReplacer, WebKeyboardProfile,
 };
 
 mod clipboard;
@@ -24,7 +25,7 @@ mod diagnostics;
 use diagnostics::{focus_diagnostics_impl, method_diagnostics_impl, uia_focus_diagnostics};
 pub use diagnostics::{
     WindowsFocusDiagnostics, WindowsMethodDiagnostics, WindowsMethodProbeDiagnostics,
-    WindowsUiaFocusDiagnostics,
+    WindowsSurfaceDiagnostics, WindowsUiaFocusDiagnostics,
 };
 
 mod encoding;
@@ -152,12 +153,15 @@ fn is_embedded_terminal_uia_focus(focus: &WindowsUiaFocusDiagnostics) -> bool {
 }
 
 #[cfg(windows)]
-fn foreground_is_stepler_qwen_input() -> bool {
+fn foreground_is_stepler_qwen_surface() -> bool {
     let Ok(hwnd) = foreground_hwnd() else {
         return false;
     };
     let title = window_title(hwnd).unwrap_or_default();
-    if !title.eq_ignore_ascii_case("Stepler Qwen Input") {
+    if !matches!(
+        title.as_str(),
+        "Stepler Qwen Input" | "Stepler Qwen Workspace"
+    ) {
         return false;
     }
 
@@ -528,10 +532,11 @@ fn text_context() -> Result<TextContext, PlatformError> {
     };
     let probes = windows_method_probes(&target);
     let resolver = MethodResolver::default();
+    let mode = active_correction_mode();
     let mut remaining = probes;
     let mut last_unavailable = None;
     while !remaining.is_empty() {
-        let decision = match resolver.resolve(&target, &remaining) {
+        let decision = match resolver.resolve_for_mode(&target, &remaining, mode) {
             Ok(decision) => decision,
             Err(_) => {
                 if let Some(error) = last_unavailable {
@@ -670,12 +675,7 @@ fn windows_method_probes(target: &ForegroundTarget) -> Vec<MethodProbe> {
 }
 
 fn is_fast_web_keyboard_primary_target(target: &ForegroundTarget) -> bool {
-    web_keyboard_fast_profile_title_matches(&target.title)
-        && is_browser_like_class_or_process(
-            &target.app_class,
-            &target.focused_class,
-            target.process_name.as_deref(),
-        )
+    web_keyboard_profile_for_surface(classify_surface(target).kind) != WebKeyboardProfile::Standard
 }
 
 #[cfg(not(windows))]
@@ -772,6 +772,7 @@ fn is_outlook_class_or_process(
             && app_class.to_ascii_lowercase().contains("outlook")
 }
 
+#[cfg(test)]
 fn is_telegram_target(target: &ForegroundTarget) -> bool {
     target
         .process_name
@@ -780,43 +781,35 @@ fn is_telegram_target(target: &ForegroundTarget) -> bool {
         || is_telegram_qt_class(&target.app_class) && target.title.contains('@')
 }
 
+#[cfg(test)]
 fn is_telegram_qt_class(class_name: &str) -> bool {
     let class_name = class_name.to_ascii_lowercase();
     class_name.starts_with("qt") && class_name.ends_with("qwindowicon")
 }
 
+#[cfg(test)]
 fn is_browser_like_target(target: &ForegroundTarget) -> bool {
-    is_browser_like_class_or_process(
-        &target.app_class,
-        &target.focused_class,
-        target.process_name.as_deref(),
+    matches!(
+        classify_surface(target).kind,
+        SurfaceKind::BrowserEditor
+            | SurfaceKind::FastBrowserEditor
+            | SurfaceKind::RocketChatEditor
+            | SurfaceKind::YandexBrowserEditor
     )
 }
 
-fn is_notepad_like_target(target: &ForegroundTarget) -> bool {
-    let app_class = target.app_class.to_ascii_lowercase();
-    let focused_class = target.focused_class.to_ascii_lowercase();
-    let process_name = target
-        .process_name
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-
-    process_name == "notepad" || app_class.contains("notepad") || focused_class.contains("notepad")
-}
-
-fn is_sticky_notes_target(target: &ForegroundTarget) -> bool {
-    let title = target.title.to_ascii_lowercase();
-    let process_name = target
-        .process_name
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-
-    process_name == "microsoft.notes"
-        || process_name == "onenoteim"
-        || title.contains("sticky notes")
-        || title.contains("записки")
+#[cfg(windows)]
+fn foreground_surface_kind(foreground: isize, app_class: &str, focused_class: &str) -> SurfaceKind {
+    let title = window_title(foreground).unwrap_or_default();
+    classify_surface(&ForegroundTarget {
+        app_class: app_class.to_owned(),
+        focused_class: focused_class.to_owned(),
+        title,
+        process_name: None,
+        window_id: hwnd_id(foreground),
+        control_id: String::new(),
+    })
+    .kind
 }
 
 #[cfg(windows)]
@@ -875,31 +868,18 @@ fn allow_uia_document_caret_fallback(target: &ForegroundTarget) -> bool {
     false
 }
 
-fn is_browser_like_class_or_process(
-    app_class: &str,
-    focused_class: &str,
-    process_name: Option<&str>,
-) -> bool {
-    let app_class = app_class.to_ascii_lowercase();
-    let focused_class = focused_class.to_ascii_lowercase();
-    let process_name = process_name.unwrap_or_default().to_ascii_lowercase();
-
-    app_class.starts_with("chrome_widgetwin")
-        || app_class.starts_with("chrome_yandex_widgetwin")
-        || focused_class.starts_with("chrome_widgetwin")
-        || focused_class.starts_with("chrome_yandex_widgetwin")
-        || app_class == "mozillawindowclass"
-        || focused_class == "mozillawindowclass"
-        || matches!(
-            process_name.as_str(),
-            "chrome" | "browser" | "msedge" | "firefox" | "codex" | "code" | "windsurf"
-        )
-}
-
 fn active_correction_mode_is_scrolllock() -> bool {
     std::env::var("STEPLER_ACTIVE_CORRECTION_MODE")
         .map(|value| value.eq_ignore_ascii_case("scrolllock"))
         .unwrap_or(false)
+}
+
+fn active_correction_mode() -> stepler_core::CorrectionMode {
+    if active_correction_mode_is_scrolllock() {
+        stepler_core::CorrectionMode::ScrollLock
+    } else {
+        stepler_core::CorrectionMode::Pause
+    }
 }
 
 fn parse_word_com_base(control_id: &str) -> Option<usize> {
@@ -2089,7 +2069,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
         return CallNextHookEx(0, code, wparam, lparam);
     }
     if matches!(vk_code, VK_PAUSE | VK_CANCEL) {
-        if foreground_is_stepler_qwen_input() {
+        if foreground_is_stepler_qwen_surface() {
             let _ = KEYBOARD_CONTROL_STATE
                 .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
                 .lock()
@@ -2104,7 +2084,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
                     }
                 });
             append_hotkey_signal_log(&format!(
-                "hook_qwen_input_passthrough vk={vk_code} down={is_down} up={is_up}"
+                "hook_qwen_surface_passthrough vk={vk_code} down={is_down} up={is_up}"
             ));
             return CallNextHookEx(0, code, wparam, lparam);
         }

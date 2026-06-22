@@ -12,4 +12,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\Stepler.Shared\QwenInputCorrectionController.cs" Link="QwenInputCorrectionController.cs" />
+  </ItemGroup>
 </Project>

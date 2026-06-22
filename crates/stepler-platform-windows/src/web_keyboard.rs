@@ -11,11 +11,19 @@ pub(super) struct XtermKeyboardSelectionMethod;
 #[cfg(windows)]
 impl XtermKeyboardSelectionMethod {
     pub(super) fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
+        let surface = classify_surface(target).kind;
         let enabled_for_browser =
             env_flag_enabled("STEPLER_ENABLE_XTERM_KEYBOARD_SELECTION", false)
-                && is_browser_like_target(target)
+                && matches!(
+                    surface,
+                    SurfaceKind::BrowserEditor
+                        | SurfaceKind::FastBrowserEditor
+                        | SurfaceKind::RocketChatEditor
+                        | SurfaceKind::YandexBrowserEditor
+                )
                 && focused_is_xterm_textarea();
-        let enabled_for_terminal = is_xterm_terminal_target(target)
+        let enabled_for_terminal = surface == SurfaceKind::QwenTerminal
+            || is_xterm_terminal_target(target)
             || has_active_terminal_app_marker()
                 && is_supported_terminal_class(&target.app_class, &target.focused_class);
         if !enabled_for_browser && !enabled_for_terminal {
@@ -203,11 +211,16 @@ impl XtermKeyboardSelectionMethod {
 #[cfg(windows)]
 impl WebKeyboardSelectionMethod {
     pub(super) fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
-        if !is_browser_like_target(target)
-            && !is_telegram_target(target)
-            && !is_notepad_like_target(target)
-            && !is_sticky_notes_target(target)
-        {
+        if !matches!(
+            classify_surface(target).kind,
+            SurfaceKind::BrowserEditor
+                | SurfaceKind::YandexBrowserEditor
+                | SurfaceKind::FastBrowserEditor
+                | SurfaceKind::RocketChatEditor
+                | SurfaceKind::TelegramDesktop
+                | SurfaceKind::NotepadLike
+                | SurfaceKind::StickyNotes
+        ) {
             return None;
         }
 
@@ -235,8 +248,13 @@ impl WebKeyboardSelectionMethod {
                 "embedded_terminal_xterm_unsupported",
             )));
         }
-        let fast_profile = web_keyboard_fast_profile_enabled(foreground);
-        let rocket_fast = web_keyboard_rocket_fast_profile_enabled(foreground);
+        let profile = web_keyboard_profile_for_surface(foreground_surface_kind(
+            foreground,
+            app_class,
+            focused_class,
+        ));
+        let fast_profile = web_keyboard_profile_is_fast(profile);
+        let rocket_fast = web_keyboard_profile_is_rocket(profile);
         let selected_timeout = if fast_profile {
             Duration::from_millis(120)
         } else {
@@ -321,7 +339,7 @@ impl WebKeyboardSelectionMethod {
                         focused_class,
                         foreground,
                         focused,
-                        web_keyboard_control_prefix("web-keyboard-selection", foreground),
+                        web_keyboard_control_prefix("web-keyboard-selection", profile),
                         text,
                         false,
                     ));
@@ -384,7 +402,7 @@ impl WebKeyboardSelectionMethod {
                         focused_class,
                         foreground,
                         focused,
-                        web_keyboard_control_prefix("web-keyboard-line-selection", foreground),
+                        web_keyboard_control_prefix("web-keyboard-line-selection", profile),
                         text,
                         false,
                     ));
@@ -423,7 +441,7 @@ impl WebKeyboardSelectionMethod {
                     if rocket_fast {
                         "web-keyboard-rocket-active-line-selection"
                     } else {
-                        web_keyboard_control_prefix("web-keyboard-line-selection", foreground)
+                        web_keyboard_control_prefix("web-keyboard-line-selection", profile)
                     },
                     text,
                     false,
@@ -457,7 +475,7 @@ impl WebKeyboardSelectionMethod {
                         focused_class,
                         foreground,
                         focused,
-                        web_keyboard_control_prefix("web-keyboard-selection", foreground),
+                        web_keyboard_control_prefix("web-keyboard-selection", profile),
                         text,
                         false,
                     ));
@@ -774,14 +792,14 @@ fn web_keyboard_context(
 }
 
 #[cfg(windows)]
-fn web_keyboard_control_prefix<'a>(base: &'a str, foreground: isize) -> &'a str {
-    if web_keyboard_rocket_fast_profile_enabled(foreground) {
+fn web_keyboard_control_prefix(base: &str, profile: WebKeyboardProfile) -> &str {
+    if web_keyboard_profile_is_rocket(profile) {
         match base {
             "web-keyboard-selection" => "web-keyboard-rocket-fast-selection",
             "web-keyboard-line-selection" => "web-keyboard-rocket-fast-line-selection",
             _ => base,
         }
-    } else if web_keyboard_fast_profile_enabled(foreground) {
+    } else if web_keyboard_profile_is_fast(profile) {
         match base {
             "web-keyboard-selection" => "web-keyboard-fast-selection",
             "web-keyboard-line-selection" => "web-keyboard-fast-line-selection",
@@ -793,42 +811,49 @@ fn web_keyboard_control_prefix<'a>(base: &'a str, foreground: isize) -> &'a str 
 }
 
 #[cfg(windows)]
-fn web_keyboard_fast_profile_enabled(foreground: isize) -> bool {
+fn web_keyboard_profile_is_fast(profile: WebKeyboardProfile) -> bool {
     if !env_flag_enabled("STEPLER_ENABLE_WEB_FAST_PROFILE", true) {
         return false;
     }
-    let title = window_title(foreground)
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    web_keyboard_fast_profile_title_matches(&title)
+    profile != WebKeyboardProfile::Standard
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 pub(super) fn web_keyboard_fast_profile_title_matches(title: &str) -> bool {
-    let title = title.to_ascii_lowercase();
-    title.contains("jira")
-        || title.contains("confluence")
-        || title.contains("wiki")
-        || title.contains("codex")
-        || web_keyboard_rocket_fast_profile_title_matches(&title)
+    let target = ForegroundTarget {
+        app_class: String::from("Chrome_WidgetWin_1"),
+        focused_class: String::from("Chrome_WidgetWin_1"),
+        title: title.to_owned(),
+        process_name: None,
+        window_id: String::new(),
+        control_id: String::new(),
+    };
+    web_keyboard_profile_is_fast(web_keyboard_profile_for_surface(
+        classify_surface(&target).kind,
+    ))
 }
 
 #[cfg(windows)]
-fn web_keyboard_rocket_fast_profile_enabled(foreground: isize) -> bool {
+fn web_keyboard_profile_is_rocket(profile: WebKeyboardProfile) -> bool {
     if !env_flag_enabled("STEPLER_ENABLE_WEB_FAST_PROFILE", true) {
         return false;
     }
-    let title = window_title(foreground).unwrap_or_default();
-    web_keyboard_rocket_fast_profile_title_matches(&title)
+    profile == WebKeyboardProfile::RocketSearch
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 pub(super) fn web_keyboard_rocket_fast_profile_title_matches(title: &str) -> bool {
-    let title = title.to_ascii_lowercase();
-    title.contains("rocket.chat")
-        || title.contains("gs.chat")
-        || title.contains("unread messages")
-        || title.contains("непрочитанных сообщений")
+    let target = ForegroundTarget {
+        app_class: String::from("Chrome_WidgetWin_1"),
+        focused_class: String::from("Chrome_WidgetWin_1"),
+        title: title.to_owned(),
+        process_name: None,
+        window_id: String::new(),
+        control_id: String::new(),
+    };
+    web_keyboard_profile_is_rocket(web_keyboard_profile_for_surface(
+        classify_surface(&target).kind,
+    ))
 }
 
 #[cfg(windows)]

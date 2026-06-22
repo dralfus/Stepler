@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
 using Microsoft.Win32;
+using Stepler.Shared;
 
 namespace Stepler.Tray;
 
@@ -2185,14 +2186,13 @@ internal sealed class ControlWindow : Form
 internal sealed class QwenInputWindow : Form
 {
     private readonly string _cliPath;
-    private readonly Action<string, bool> _showTiming;
     private readonly TextBox _input;
     private readonly Label _status;
+    private readonly QwenInputCorrectionController _correction;
 
     public QwenInputWindow(string cliPath, bool darkTheme, Action<string, bool> showTiming)
     {
         _cliPath = cliPath;
-        _showTiming = showTiming;
 
         Text = "Stepler Qwen Input";
         ShowInTaskbar = true;
@@ -2240,6 +2240,14 @@ internal sealed class QwenInputWindow : Form
             _status,
         });
 
+        _correction = new QwenInputCorrectionController(
+            _cliPath,
+            this,
+            _input,
+            SetStatus,
+            Program.SafeLog,
+            showTiming,
+            "qwen input");
         KeyDown += OnQwenInputKeyDown;
         ApplyTheme(darkTheme);
     }
@@ -2258,7 +2266,7 @@ internal sealed class QwenInputWindow : Form
 
         e.Handled = true;
         e.SuppressKeyPress = true;
-        ApplyCorrection(e.Control ? "scrolllock" : "pause");
+        _correction.ApplyCorrection(e.Control ? "scrolllock" : "pause");
     }
 
     private void OnInputDragEnter(object? sender, DragEventArgs e)
@@ -2286,411 +2294,6 @@ internal sealed class QwenInputWindow : Form
         _input.SelectionStart = Math.Clamp(insertionPoint, 0, _input.TextLength);
         _input.SelectedText = string.Join(Environment.NewLine, paths);
         SetStatus(paths.Length == 1 ? "Путь файла вставлен" : $"Пути файлов вставлены: {paths.Length}");
-    }
-
-    private void ApplyCorrection(string mode)
-    {
-        var hotkeyStarted = Stopwatch.StartNew();
-        var hotkeyLabel = mode == "pause" ? "P" : "CP";
-        ShowTiming($"{hotkeyLabel} нажата", failed: false);
-        SetStatus($"{hotkeyLabel} нажата");
-
-        if (mode == "pause" && TryApplyFastPause(hotkeyStarted, hotkeyLabel))
-        {
-            return;
-        }
-
-        if (!File.Exists(_cliPath))
-        {
-            ShowFailure(hotkeyLabel, "stepler-cli.exe не найден");
-            return;
-        }
-
-        var line = _input.Text;
-        if (string.IsNullOrWhiteSpace(line))
-        {
-            ShowFailure(hotkeyLabel, "пустой ввод");
-            return;
-        }
-
-        var args = new List<string>
-        {
-            "psreadline-plan",
-            "--mode",
-            mode,
-            "--text-b64",
-            Convert.ToBase64String(Encoding.Unicode.GetBytes(line)),
-            "--cursor",
-            _input.SelectionStart.ToString(),
-        };
-        if (_input.SelectionLength > 0)
-        {
-            args.Add("--selection-start");
-            args.Add(_input.SelectionStart.ToString());
-            args.Add("--selection-length");
-            args.Add(_input.SelectionLength.ToString());
-        }
-
-        var result = RunCli(args);
-        if (result.ExitCode != 0)
-        {
-            ShowFailure(hotkeyLabel, $"нет замены {hotkeyStarted.ElapsedMilliseconds} ms");
-            return;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(result.Stdout);
-            var root = document.RootElement;
-            if (!root.TryGetProperty("applied", out var applied) || !applied.GetBoolean())
-            {
-                ShowFailure(hotkeyLabel, $"нет замены {hotkeyStarted.ElapsedMilliseconds} ms");
-                return;
-            }
-
-            var nextText = root.TryGetProperty("text_b64", out var textBase64)
-                ? Encoding.Unicode.GetString(Convert.FromBase64String(textBase64.GetString() ?? string.Empty))
-                : root.GetProperty("text").GetString() ?? string.Empty;
-            var cursor = root.TryGetProperty("cursor", out var cursorElement)
-                ? cursorElement.GetInt32()
-                : nextText.Length;
-
-            _input.Text = nextText;
-            RestoreEditorSelection(cursor);
-
-            var layoutStarted = Stopwatch.StartNew();
-            var layout = SwitchLayoutAfterCorrection(nextText);
-            layoutStarted.Stop();
-
-            var totalMs = hotkeyStarted.ElapsedMilliseconds;
-            if (layout.Target is null)
-            {
-                ShowSuccess(hotkeyLabel, $"{totalMs} ms");
-            }
-            else if (layout.Applied)
-            {
-                ShowSuccess(hotkeyLabel, $"{totalMs} ms, язык {layout.Target} {layoutStarted.ElapsedMilliseconds} ms");
-            }
-            else
-            {
-                ShowSuccess(hotkeyLabel, $"{totalMs} ms, язык fail {layoutStarted.ElapsedMilliseconds} ms");
-            }
-            ScheduleEditorFocusRestore(cursor);
-        }
-        catch (Exception error)
-        {
-            Program.SafeLog($"qwen input correction parse error {error}");
-            ShowFailure(hotkeyLabel, $"ошибка ответа {hotkeyStarted.ElapsedMilliseconds} ms");
-            ScheduleEditorFocusRestore(_input.SelectionStart);
-        }
-    }
-
-    private bool TryApplyFastPause(Stopwatch hotkeyStarted, string hotkeyLabel)
-    {
-        var text = _input.Text;
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            ShowFailure(hotkeyLabel, "пустой ввод");
-            return true;
-        }
-
-        var selectionStart = _input.SelectionStart;
-        var selectionLength = _input.SelectionLength;
-        var range = selectionLength > 0
-            ? new TextRange(selectionStart, selectionStart + selectionLength)
-            : WordRangeBeforeOrAroundCaret(text, selectionStart);
-        if (range.IsEmpty || string.IsNullOrWhiteSpace(text[range.Start..range.End]))
-        {
-            ShowFailure(hotkeyLabel, $"нет замены {hotkeyStarted.ElapsedMilliseconds} ms");
-            ScheduleEditorFocusRestore(selectionStart);
-            return true;
-        }
-
-        var expected = text[range.Start..range.End];
-        var replacement = selectionLength > 0
-            ? ConvertSelectedText(expected)
-            : ConvertLayoutText(expected);
-        if (replacement == expected)
-        {
-            ShowFailure(hotkeyLabel, $"нет замены {hotkeyStarted.ElapsedMilliseconds} ms");
-            ScheduleEditorFocusRestore(selectionStart);
-            return true;
-        }
-
-        _input.Text = string.Concat(text.AsSpan(0, range.Start), replacement, text.AsSpan(range.End));
-        var cursor = selectionLength > 0
-            ? range.Start + replacement.Length
-            : AdjustedCursorAfterReplacement(selectionStart, range, replacement.Length);
-        RestoreEditorSelection(cursor);
-
-        var layoutStarted = Stopwatch.StartNew();
-        var layout = SwitchLayoutAfterCorrection(_input.Text);
-        layoutStarted.Stop();
-
-        var totalMs = hotkeyStarted.ElapsedMilliseconds;
-        if (layout.Target is null)
-        {
-            ShowSuccess(hotkeyLabel, $"{totalMs} ms");
-        }
-        else if (layout.Applied)
-        {
-            ShowSuccess(hotkeyLabel, $"{totalMs} ms, язык {layout.Target} {layoutStarted.ElapsedMilliseconds} ms");
-        }
-        else
-        {
-            ShowSuccess(hotkeyLabel, $"{totalMs} ms, язык fail {layoutStarted.ElapsedMilliseconds} ms");
-        }
-        ScheduleEditorFocusRestore(cursor);
-        return true;
-    }
-
-    private void RestoreEditorSelection(int cursor)
-    {
-        _input.SelectionStart = Math.Clamp(cursor, 0, _input.TextLength);
-        _input.SelectionLength = 0;
-    }
-
-    private void RestoreEditorFocus(int cursor)
-    {
-        if (WindowState == FormWindowState.Minimized)
-        {
-            WindowState = FormWindowState.Normal;
-        }
-
-        Show();
-        BringToFront();
-        NativeMethods.SetForegroundWindow(Handle);
-        Activate();
-        _input.Focus();
-        RestoreEditorSelection(cursor);
-    }
-
-    private void ScheduleEditorFocusRestore(int cursor)
-    {
-        RestoreEditorFocus(cursor);
-        BeginInvoke((Action)(() => RestoreEditorFocus(cursor)));
-
-        var timer = new System.Windows.Forms.Timer
-        {
-            Interval = 150,
-        };
-        timer.Tick += (_, _) =>
-        {
-            timer.Stop();
-            timer.Dispose();
-            if (!IsDisposed)
-            {
-                RestoreEditorFocus(cursor);
-            }
-        };
-        timer.Start();
-    }
-
-    private (string? Target, bool Applied) SwitchLayoutAfterCorrection(string text)
-    {
-        var targetLayout = DesiredLayoutForText(text);
-        if (targetLayout is null)
-        {
-            return (null, false);
-        }
-
-        if (TrySwitchInputLanguage(targetLayout))
-        {
-            return (targetLayout, true);
-        }
-
-        Program.SafeLog($"qwen input layout switch failed target={targetLayout} reason=input_language_not_found");
-        return (targetLayout, false);
-    }
-
-    private static string? DesiredLayoutForText(string text)
-    {
-        var russian = 0;
-        var english = 0;
-        foreach (var character in text)
-        {
-            if (IsRussianLetter(character))
-            {
-                russian++;
-            }
-            else if (character is >= 'A' and <= 'Z' or >= 'a' and <= 'z')
-            {
-                english++;
-            }
-        }
-
-        if (russian > english)
-        {
-            return "russian";
-        }
-        if (english > russian)
-        {
-            return "english";
-        }
-
-        return null;
-    }
-
-    private static bool IsRussianLetter(char character)
-    {
-        return character is >= 'а' and <= 'я'
-            or >= 'А' and <= 'Я'
-            or 'ё'
-            or 'Ё';
-    }
-
-    private static bool TrySwitchInputLanguage(string targetLayout)
-    {
-        var culturePrefix = targetLayout == "russian" ? "ru" : "en";
-        foreach (InputLanguage language in InputLanguage.InstalledInputLanguages)
-        {
-            if (language.Culture.TwoLetterISOLanguageName.Equals(culturePrefix, StringComparison.OrdinalIgnoreCase))
-            {
-                InputLanguage.CurrentInputLanguage = language;
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static TextRange WordRangeBeforeOrAroundCaret(string text, int caret)
-    {
-        caret = Math.Clamp(caret, 0, text.Length);
-        var wordEnd = caret;
-        while (wordEnd > 0 && char.IsWhiteSpace(text[wordEnd - 1]))
-        {
-            wordEnd--;
-        }
-
-        var start = wordEnd;
-        while (start > 0 && !char.IsWhiteSpace(text[start - 1]))
-        {
-            start--;
-        }
-
-        var end = wordEnd;
-        if (end == caret)
-        {
-            while (end < text.Length && !char.IsWhiteSpace(text[end]))
-            {
-                end++;
-            }
-        }
-
-        return start == wordEnd ? TextRange.Caret(caret) : new TextRange(start, end);
-    }
-
-    private static int AdjustedCursorAfterReplacement(int cursor, TextRange range, int replacementLength)
-    {
-        if (cursor <= range.Start)
-        {
-            return cursor;
-        }
-        if (cursor <= range.End)
-        {
-            return range.Start + replacementLength;
-        }
-
-        return cursor + replacementLength - (range.End - range.Start);
-    }
-
-    private static string ConvertSelectedText(string input)
-    {
-        var result = new StringBuilder(input.Length);
-        var token = new StringBuilder();
-        foreach (var character in input)
-        {
-            if (char.IsWhiteSpace(character))
-            {
-                if (token.Length > 0)
-                {
-                    result.Append(ConvertTokenByScript(token.ToString()));
-                    token.Clear();
-                }
-                result.Append(character);
-            }
-            else
-            {
-                token.Append(character);
-            }
-        }
-
-        if (token.Length > 0)
-        {
-            result.Append(ConvertTokenByScript(token.ToString()));
-        }
-
-        return result.ToString();
-    }
-
-    private static string ConvertTokenByScript(string token)
-    {
-        var hasRussian = token.Any(IsRussianLetter);
-        var hasEnglish = token.Any(character => character is >= 'A' and <= 'Z' or >= 'a' and <= 'z');
-
-        return (hasRussian, hasEnglish) switch
-        {
-            (true, false) => ConvertWithDirection(token, russianToEnglish: true),
-            (false, true) => ConvertWithDirection(token, russianToEnglish: false),
-            _ => ConvertLayoutText(token),
-        };
-    }
-
-    private static string ConvertLayoutText(string input)
-    {
-        var russianCount = input.Count(character => RussianToEnglish(character) is not null);
-        var englishCount = input.Count(character => EnglishToRussian(character) is not null);
-        return ConvertWithDirection(input, russianToEnglish: russianCount > englishCount);
-    }
-
-    private static string ConvertWithDirection(string input, bool russianToEnglish)
-    {
-        var result = new StringBuilder(input.Length);
-        foreach (var character in input)
-        {
-            result.Append(russianToEnglish
-                ? RussianToEnglish(character) ?? character
-                : EnglishToRussian(character) ?? character);
-        }
-
-        return result.ToString();
-    }
-
-    private static char? RussianToEnglish(char character)
-    {
-        return character switch
-        {
-            'й' => 'q', 'ц' => 'w', 'у' => 'e', 'к' => 'r', 'е' => 't', 'н' => 'y', 'г' => 'u',
-            'ш' => 'i', 'щ' => 'o', 'з' => 'p', 'х' => '[', 'ъ' => ']', 'ф' => 'a', 'ы' => 's',
-            'в' => 'd', 'а' => 'f', 'п' => 'g', 'р' => 'h', 'о' => 'j', 'л' => 'k', 'д' => 'l',
-            'ж' => ';', 'э' => '\'', 'я' => 'z', 'ч' => 'x', 'с' => 'c', 'м' => 'v', 'и' => 'b',
-            'т' => 'n', 'ь' => 'm', 'б' => ',', 'ю' => '.', 'ё' => '`', ',' => '?', '.' => '/',
-            'Й' => 'Q', 'Ц' => 'W', 'У' => 'E', 'К' => 'R', 'Е' => 'T', 'Н' => 'Y', 'Г' => 'U',
-            'Ш' => 'I', 'Щ' => 'O', 'З' => 'P', 'Х' => '[', 'Ъ' => ']', 'Ф' => 'A', 'Ы' => 'S',
-            'В' => 'D', 'А' => 'F', 'П' => 'G', 'Р' => 'H', 'О' => 'J', 'Л' => 'K', 'Д' => 'L',
-            'Ж' => ':', 'Э' => '"', 'Я' => 'Z', 'Ч' => 'X', 'С' => 'C', 'М' => 'V', 'И' => 'B',
-            'Т' => 'N', 'Ь' => 'M', 'Б' => '<', 'Ю' => '>', 'Ё' => '~',
-            _ => null,
-        };
-    }
-
-    private static char? EnglishToRussian(char character)
-    {
-        return character switch
-        {
-            'q' => 'й', 'w' => 'ц', 'e' => 'у', 'r' => 'к', 't' => 'е', 'y' => 'н', 'u' => 'г',
-            'i' => 'ш', 'o' => 'щ', 'p' => 'з', '[' => 'х', ']' => 'ъ', 'a' => 'ф', 's' => 'ы',
-            'd' => 'в', 'f' => 'а', 'g' => 'п', 'h' => 'р', 'j' => 'о', 'k' => 'л', 'l' => 'д',
-            ';' => 'ж', '\'' => 'э', 'z' => 'я', 'x' => 'ч', 'c' => 'с', 'v' => 'м', 'b' => 'и',
-            'n' => 'т', 'm' => 'ь', ',' => 'б', '.' => 'ю', '`' => 'ё', '?' => ',', '/' => '.',
-            'Q' => 'Й', 'W' => 'Ц', 'E' => 'У', 'R' => 'К', 'T' => 'Е', 'Y' => 'Н', 'U' => 'Г',
-            'I' => 'Ш', 'O' => 'Щ', 'P' => 'З', 'A' => 'Ф', 'S' => 'Ы', 'D' => 'В', 'F' => 'А',
-            'G' => 'П', 'H' => 'Р', 'J' => 'О', 'K' => 'Л', 'L' => 'Д', 'Z' => 'Я', 'X' => 'Ч',
-            'C' => 'С', 'V' => 'М', 'B' => 'И', 'N' => 'Т', 'M' => 'Ь', '{' => 'Х', '}' => 'Ъ',
-            ':' => 'Ж', '"' => 'Э', '<' => 'Б', '>' => 'Ю', '~' => 'Ё',
-            _ => null,
-        };
     }
 
     private void Submit()
@@ -2765,27 +2368,6 @@ internal sealed class QwenInputWindow : Form
         _status.Text = text;
     }
 
-    private void ShowSuccess(string hotkeyLabel, string details)
-    {
-        var text = $"{hotkeyLabel} {details}";
-        ShowTiming(text, failed: false);
-        SetStatus(text);
-    }
-
-    private void ShowFailure(string hotkeyLabel, string details)
-    {
-        var text = $"{hotkeyLabel} failed";
-        ShowTiming(text, failed: true);
-        SetStatus($"{text}: {details}");
-    }
-
-    private void ShowTiming(string text, bool failed)
-    {
-        _showTiming(text, failed);
-        _status.Refresh();
-        Update();
-    }
-
     private static Button Button(string text, int x, int y, Action action)
     {
         var button = new Button
@@ -2796,13 +2378,6 @@ internal sealed class QwenInputWindow : Form
         };
         button.Click += (_, _) => action();
         return button;
-    }
-
-    private readonly record struct TextRange(int Start, int End)
-    {
-        public bool IsEmpty => Start == End;
-
-        public static TextRange Caret(int offset) => new(offset, offset);
     }
 
     private readonly record struct CliResult(int ExitCode, string Stdout, string Stderr);

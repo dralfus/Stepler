@@ -404,6 +404,50 @@ pub fn default_app_policies() -> Vec<AppPolicy> {
             allow_risky_methods: false,
         },
         AppPolicy {
+            app_matcher: String::from("Sticky Notes"),
+            preferred_context_methods: vec![
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationEditableText,
+                MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationText,
+            ],
+            preferred_replace_methods: vec![
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationEditableText,
+                MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationText,
+            ],
+            forbidden_methods: vec![
+                MethodId::Win32EditMessages,
+                MethodId::TerminalClipboardShortcut,
+                MethodId::ClipboardSelection,
+                MethodId::SendInput,
+            ],
+            allow_risky_methods: false,
+        },
+        AppPolicy {
+            app_matcher: String::from("Microsoft.Notes"),
+            preferred_context_methods: vec![
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationEditableText,
+                MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationText,
+            ],
+            preferred_replace_methods: vec![
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationEditableText,
+                MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationText,
+            ],
+            forbidden_methods: vec![
+                MethodId::Win32EditMessages,
+                MethodId::TerminalClipboardShortcut,
+                MethodId::ClipboardSelection,
+                MethodId::SendInput,
+            ],
+            allow_risky_methods: false,
+        },
+        AppPolicy {
             app_matcher: String::from("MozillaWindowClass"),
             preferred_context_methods: vec![
                 MethodId::WebKeyboardSelection,
@@ -849,6 +893,24 @@ mod tests {
 
         assert_eq!(decision.context_method, MethodId::WebKeyboardSelection);
         assert_eq!(decision.replacement_method, MethodId::WebKeyboardSelection);
+    }
+
+    #[test]
+    fn resolver_prefers_uia_document_text_for_sticky_notes_policy() {
+        let resolver = MethodResolver::default();
+        let mut target = target("ApplicationFrameWindow", "Windows.UI.Core.CoreWindow");
+        target.title = String::from("Sticky Notes");
+        target.process_name = Some(String::from("Microsoft.Notes"));
+        let probes = vec![
+            MethodProbe::safe(MethodId::UiAutomationEditableText, "editable text"),
+            MethodProbe::safe(MethodId::UiAutomationDocumentText, "document text"),
+            MethodProbe::safe(MethodId::WebKeyboardSelection, "keyboard selection"),
+        ];
+
+        let decision = resolver.resolve(&target, &probes).unwrap();
+
+        assert_eq!(decision.context_method, MethodId::UiAutomationDocumentText);
+        assert_eq!(decision.replacement_method, MethodId::UiAutomationDocumentText);
     }
 
     fn target(app_class: &str, focused_class: &str) -> ForegroundTarget {

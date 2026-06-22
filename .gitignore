@@ -2,6 +2,7 @@ target/
 target-*/
 dist/
 SetupOutput/
+.dotnet-cli-home/
 
 bin/
 obj/

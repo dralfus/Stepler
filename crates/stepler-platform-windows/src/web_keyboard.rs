@@ -206,6 +206,7 @@ impl WebKeyboardSelectionMethod {
         if !is_browser_like_target(target)
             && !is_telegram_target(target)
             && !is_notepad_like_target(target)
+            && !is_sticky_notes_target(target)
         {
             return None;
         }
@@ -724,9 +725,15 @@ fn copy_web_keyboard_selected_text(
     clipboard_timeout: Duration,
 ) -> Option<String> {
     if fast_profile {
-        copy_selected_text_checked_fast(snapshot, timeout, clipboard_timeout)
+        copy_selected_text_checked_with_chord_and_clipboard_timeout(
+            snapshot,
+            &[VK_CONTROL],
+            VK_INSERT,
+            timeout,
+            clipboard_timeout,
+        )
     } else {
-        copy_selected_text_checked(snapshot, timeout)
+        copy_selected_text_checked_with_chord(snapshot, &[VK_CONTROL], VK_INSERT, timeout)
     }
 }
 

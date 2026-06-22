@@ -2,8 +2,7 @@ use super::*;
 
 pub(super) fn is_supported_terminal_class(app_class: &str, focused_class: &str) -> bool {
     app_class == "CASCADIA_HOSTING_WINDOW_CLASS"
-        || app_class == "ConsoleWindowClass"
-        || focused_class == "Windows.UI.Input.InputSite.WindowClass"
+        || app_class == "ConsoleWindowClass" && focused_class == "ConsoleWindowClass"
 }
 
 pub(super) fn is_classic_console_class(app_class: &str, focused_class: &str) -> bool {
@@ -89,7 +88,7 @@ pub(super) fn is_psreadline_passthrough_terminal_class(
     focused_class: &str,
 ) -> bool {
     app_class == "CASCADIA_HOSTING_WINDOW_CLASS"
-        || focused_class == "Windows.UI.Input.InputSite.WindowClass"
+        && focused_class == "Windows.UI.Input.InputSite.WindowClass"
 }
 
 pub(super) fn is_ssh_terminal_target(target: &ForegroundTarget) -> bool {

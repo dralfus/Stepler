@@ -805,6 +805,20 @@ fn is_notepad_like_target(target: &ForegroundTarget) -> bool {
     process_name == "notepad" || app_class.contains("notepad") || focused_class.contains("notepad")
 }
 
+fn is_sticky_notes_target(target: &ForegroundTarget) -> bool {
+    let title = target.title.to_ascii_lowercase();
+    let process_name = target
+        .process_name
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    process_name == "microsoft.notes"
+        || process_name == "onenoteim"
+        || title.contains("sticky notes")
+        || title.contains("записки")
+}
+
 #[cfg(windows)]
 fn focused_is_xterm_textarea() -> bool {
     uia_focus_diagnostics()
@@ -1228,21 +1242,6 @@ fn wait_for_clipboard_selection_text(
 #[cfg(windows)]
 fn copy_selected_text_checked(snapshot: &ClipboardSnapshot, timeout: Duration) -> Option<String> {
     copy_selected_text_checked_with_chord(snapshot, &[VK_CONTROL], VK_C, timeout)
-}
-
-#[cfg(windows)]
-fn copy_selected_text_checked_fast(
-    snapshot: &ClipboardSnapshot,
-    timeout: Duration,
-    clipboard_timeout: Duration,
-) -> Option<String> {
-    copy_selected_text_checked_with_chord_and_clipboard_timeout(
-        snapshot,
-        &[VK_CONTROL],
-        VK_C,
-        timeout,
-        clipboard_timeout,
-    )
 }
 
 #[cfg(windows)]

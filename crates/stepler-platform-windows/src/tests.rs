@@ -58,6 +58,10 @@ fn supported_terminal_class_is_allowlisted() {
         "ConsoleWindowClass"
     ));
     assert!(!is_supported_terminal_class("Notepad", "Edit"));
+    assert!(!is_supported_terminal_class(
+        "ApplicationFrameWindow",
+        "Windows.UI.Input.InputSite.WindowClass"
+    ));
 }
 
 #[test]
@@ -76,6 +80,10 @@ fn classic_console_class_requires_foreground_and_focus_console() {
 fn classic_console_is_not_psreadline_passthrough_terminal() {
     assert!(is_psreadline_passthrough_terminal_class(
         "CASCADIA_HOSTING_WINDOW_CLASS",
+        "Windows.UI.Input.InputSite.WindowClass"
+    ));
+    assert!(!is_psreadline_passthrough_terminal_class(
+        "ApplicationFrameWindow",
         "Windows.UI.Input.InputSite.WindowClass"
     ));
     assert!(!is_psreadline_passthrough_terminal_class(
@@ -474,6 +482,25 @@ fn web_keyboard_selection_method_probes_browser_like_controls() {
         focused_class: String::from("MozillaWindowClass"),
         title: String::from("Confluence"),
         process_name: Some(String::from("firefox")),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("hwnd:2"),
+    };
+
+    let probe = WebKeyboardSelectionMethod.probe(&target).unwrap();
+
+    assert_eq!(probe.method_id, MethodId::WebKeyboardSelection);
+    assert_eq!(probe.safety, stepler_platform::ProbeSafety::Safe);
+    assert!(probe.requires_clipboard);
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_selection_method_probes_sticky_notes() {
+    let target = ForegroundTarget {
+        app_class: String::from("ApplicationFrameWindow"),
+        focused_class: String::from("Windows.UI.Core.CoreWindow"),
+        title: String::from("Sticky Notes"),
+        process_name: Some(String::from("Microsoft.Notes")),
         window_id: String::from("hwnd:1"),
         control_id: String::from("hwnd:2"),
     };

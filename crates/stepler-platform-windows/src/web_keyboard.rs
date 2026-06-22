@@ -176,7 +176,7 @@ impl XtermKeyboardSelectionMethod {
                 Duration::from_millis(360),
             );
             if selected.as_deref() != Some(expected_selection) {
-                send_key(VK_RIGHT);
+                restore_web_line_left_context_caret();
                 let _ = restore_clipboard_text_only(&snapshot);
                 return Err(PlatformError::ReplacementUnavailableReason(format!(
                     "xterm_keyboard_preflight expected={} actual={}",
@@ -406,7 +406,7 @@ impl WebKeyboardSelectionMethod {
                 .filter(|text| is_plausible_web_left_context_text(text))
                 .filter(|text| !looks_like_hotkeyhandler_marker(text));
             if copied.is_none() || !rocket_fast {
-                send_key(VK_RIGHT);
+                restore_web_line_left_context_caret();
             }
             let _ = restore_web_keyboard_clipboard(&snapshot, fast_profile, clipboard_timeout);
 
@@ -715,6 +715,12 @@ fn restore_web_keyboard_clipboard(
     } else {
         restore_clipboard_text_only(snapshot)
     }
+}
+
+#[cfg(windows)]
+fn restore_web_line_left_context_caret() {
+    send_key(VK_END);
+    release_modifier_keys();
 }
 
 #[cfg(windows)]

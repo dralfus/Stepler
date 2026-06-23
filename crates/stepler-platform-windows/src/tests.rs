@@ -537,7 +537,7 @@ fn sticky_notes_probe_stack_is_not_terminal() {
 
 #[cfg(windows)]
 #[test]
-fn fast_web_keyboard_primary_target_skips_slow_uia_probe_stack() {
+fn fast_web_keyboard_target_uses_probe_plan_runtime_stack() {
     let target = ForegroundTarget {
         app_class: String::from("Chrome_WidgetWin_1"),
         focused_class: String::from("Chrome_WidgetWin_1"),
@@ -552,11 +552,121 @@ fn fast_web_keyboard_primary_target_skips_slow_uia_probe_stack() {
         .iter()
         .map(|probe| probe.method_id)
         .collect::<Vec<_>>();
+    let plan_method_ids = windows_probe_plan_methods(&target);
+    let runtime_method_ids = windows_runtime_probe_methods(&target);
 
+    assert_eq!(
+        plan_method_ids,
+        vec![
+            MethodId::WebKeyboardSelection,
+            MethodId::UiAutomationEditableText
+        ]
+    );
+    assert_eq!(runtime_method_ids, plan_method_ids);
+    assert_eq!(method_ids, runtime_method_ids);
     assert_eq!(method_ids.first(), Some(&MethodId::WebKeyboardSelection));
-    assert!(!method_ids.contains(&MethodId::UiAutomationEditableText));
+    assert!(method_ids.contains(&MethodId::UiAutomationEditableText));
     assert!(!method_ids.contains(&MethodId::UiAutomationDocumentText));
     assert!(!method_ids.contains(&MethodId::UiAutomationText));
+}
+
+#[cfg(windows)]
+#[test]
+fn rocket_chat_search_runtime_stack_allows_uia_editable_fallback() {
+    let target = ForegroundTarget {
+        app_class: String::from("Chrome_WidgetWin_1"),
+        focused_class: String::from("Chrome_WidgetWin_1"),
+        title: String::from("No unread messages"),
+        process_name: Some(String::from("Rocket.Chat")),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("hwnd:2"),
+    };
+
+    let method_ids = windows_method_probes(&target)
+        .iter()
+        .map(|probe| probe.method_id)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        method_ids,
+        vec![
+            MethodId::WebKeyboardSelection,
+            MethodId::UiAutomationEditableText
+        ]
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn outlook_runtime_stacks_do_not_include_generic_fallbacks() {
+    let cases = [
+        (
+            ForegroundTarget {
+                app_class: String::from("rctrl_renwnd32"),
+                focused_class: String::from("_WwG"),
+                title: String::from("Untitled - Message"),
+                process_name: Some(String::from("OUTLOOK")),
+                window_id: String::from("hwnd:1"),
+                control_id: String::from("hwnd:2"),
+            },
+            vec![MethodId::WordCom],
+        ),
+        (
+            ForegroundTarget {
+                app_class: String::from("rctrl_renwnd32"),
+                focused_class: String::from("Edit"),
+                title: String::from("Outlook"),
+                process_name: Some(String::from("OUTLOOK")),
+                window_id: String::from("hwnd:1"),
+                control_id: String::from("hwnd:2"),
+            },
+            vec![MethodId::Win32EditMessages],
+        ),
+        (
+            ForegroundTarget {
+                app_class: String::from("rctrl_renwnd32"),
+                focused_class: String::from("SUPERGRID"),
+                title: String::from("Inbox - Zimbra - Alexey Andreev - Outlook"),
+                process_name: Some(String::from("OUTLOOK")),
+                window_id: String::from("hwnd:1"),
+                control_id: String::from("hwnd:2"),
+            },
+            vec![MethodId::Win32EditMessages, MethodId::WordCom],
+        ),
+    ];
+
+    for (target, expected) in cases {
+        let method_ids = windows_runtime_probe_methods(&target);
+
+        assert_eq!(method_ids, expected);
+        assert!(!method_ids.contains(&MethodId::UiAutomationEditableText));
+        assert!(!method_ids.contains(&MethodId::UiAutomationDocumentText));
+        assert!(!method_ids.contains(&MethodId::UiAutomationText));
+        assert!(!method_ids.contains(&MethodId::TerminalClipboardShortcut));
+        assert!(!method_ids.contains(&MethodId::ClipboardSelection));
+        assert!(!method_ids.contains(&MethodId::SendInput));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn qwen_terminal_probe_stack_is_xterm_only() {
+    let target = ForegroundTarget {
+        app_class: String::from("CASCADIA_HOSTING_WINDOW_CLASS"),
+        focused_class: String::from("Windows.UI.Input.InputSite.WindowClass"),
+        title: String::from("stepler-terminal-app qwen"),
+        process_name: Some(String::from("WindowsTerminal")),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("hwnd:2"),
+    };
+
+    let method_ids = windows_method_probes(&target)
+        .iter()
+        .map(|probe| probe.method_id)
+        .collect::<Vec<_>>();
+
+    assert_eq!(method_ids, vec![MethodId::XtermKeyboardSelection]);
+    assert!(!method_ids.contains(&MethodId::TerminalClipboardShortcut));
 }
 
 #[cfg(windows)]
@@ -637,6 +747,97 @@ fn web_keyboard_fast_profile_matches_checked_web_apps() {
 
 #[cfg(windows)]
 #[test]
+fn web_keyboard_timing_profiles_are_profile_specific() {
+    let standard = web_keyboard_timing_profile(WebKeyboardProfile::Standard);
+    let fast = web_keyboard_timing_profile(WebKeyboardProfile::Fast);
+    let rocket = web_keyboard_timing_profile(WebKeyboardProfile::RocketSearch);
+
+    assert_ne!(standard.selected_timeout, fast.selected_timeout);
+    assert_eq!(fast, rocket);
+    assert!(fast.selected_timeout < standard.selected_timeout);
+    assert!(fast.clipboard_timeout < standard.clipboard_timeout);
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_control_prefixes_follow_profile_only() {
+    assert_eq!(
+        web_keyboard_control_prefix("web-keyboard-selection", WebKeyboardProfile::Standard),
+        "web-keyboard-selection"
+    );
+    assert_eq!(
+        web_keyboard_control_prefix("web-keyboard-selection", WebKeyboardProfile::Fast),
+        "web-keyboard-fast-selection"
+    );
+    assert_eq!(
+        web_keyboard_control_prefix("web-keyboard-line-selection", WebKeyboardProfile::Fast),
+        "web-keyboard-fast-line-selection"
+    );
+    assert_eq!(
+        web_keyboard_control_prefix("web-keyboard-selection", WebKeyboardProfile::RocketSearch),
+        "web-keyboard-rocket-fast-selection"
+    );
+    assert_eq!(
+        web_keyboard_control_prefix(
+            "web-keyboard-line-selection",
+            WebKeyboardProfile::RocketSearch
+        ),
+        "web-keyboard-rocket-fast-line-selection"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_technical_target_does_not_expand_unknown_runtime_stack() {
+    let target = ForegroundTarget {
+        app_class: String::from("SomeCustomWindow"),
+        focused_class: String::from("SomeCustomControl"),
+        title: String::from("Custom"),
+        process_name: Some(String::from("custom")),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("hwnd:2"),
+    };
+
+    assert!(!is_web_keyboard_technical_target(&target));
+    let method_ids = windows_method_probes(&target)
+        .iter()
+        .map(|probe| probe.method_id)
+        .collect::<Vec<_>>();
+    assert!(method_ids.contains(&MethodId::ClipboardSelection));
+    assert!(method_ids.contains(&MethodId::SendInput));
+}
+
+#[cfg(windows)]
+#[test]
+fn hotkey_failure_trace_summary_includes_probe_and_resolver_boundaries() {
+    let target = ForegroundTarget {
+        app_class: String::from("SomeCustomWindow"),
+        focused_class: String::from("SomeCustomControl"),
+        title: String::from("Custom"),
+        process_name: Some(String::from("custom")),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("hwnd:2"),
+    };
+
+    let summary = diagnostics::hotkey_failure_trace_summary_for_target(
+        &target,
+        stepler_core::CorrectionMode::Pause,
+        "Platform(ReplacementUnavailable)",
+    );
+
+    assert!(summary.contains("surface=Unknown"));
+    assert!(summary.contains("mode=Pause"));
+    assert!(summary.contains("probe_plan=["));
+    assert!(summary.contains("runtime=["));
+    assert!(summary.contains("probes=["));
+    assert!(summary.contains("probe_none=["));
+    assert!(summary.contains("suppressed=["));
+    assert!(summary.contains("policy_skipped=["));
+    assert!(summary.contains("final=operation_failed:Platform(ReplacementUnavailable)"));
+}
+
+#[cfg(windows)]
+#[test]
 fn web_keyboard_rejects_browser_document_dump_as_field_text() {
     assert!(is_plausible_web_field_text("gjkt"));
     assert!(is_plausible_web_field_text("secure OTP"));
@@ -677,8 +878,12 @@ fn yandex_chrome_widget_is_browser_like() {
 
     assert!(is_browser_like_target(&target));
     assert!(WebKeyboardSelectionMethod.probe(&target).is_some());
-    assert!(ClipboardSelectionMethod.probe(&target).is_none());
-    assert!(SendInputMethod.probe(&target).is_none());
+    let method_ids = windows_method_probes(&target)
+        .iter()
+        .map(|probe| probe.method_id)
+        .collect::<Vec<_>>();
+    assert!(!method_ids.contains(&MethodId::ClipboardSelection));
+    assert!(!method_ids.contains(&MethodId::SendInput));
 }
 
 #[cfg(windows)]
@@ -695,8 +900,12 @@ fn telegram_qt_window_uses_keyboard_selection_probe() {
 
     assert!(is_telegram_target(&target));
     assert!(WebKeyboardSelectionMethod.probe(&target).is_some());
-    assert!(ClipboardSelectionMethod.probe(&target).is_none());
-    assert!(SendInputMethod.probe(&target).is_none());
+    let method_ids = windows_method_probes(&target)
+        .iter()
+        .map(|probe| probe.method_id)
+        .collect::<Vec<_>>();
+    assert!(!method_ids.contains(&MethodId::ClipboardSelection));
+    assert!(!method_ids.contains(&MethodId::SendInput));
 }
 
 #[cfg(windows)]
@@ -735,9 +944,14 @@ fn generic_risky_methods_do_not_probe_browser_like_controls() {
         control_id: String::from("hwnd:2"),
     };
 
-    assert!(UiAutomationTextMethod.probe(&target).is_none());
-    assert!(ClipboardSelectionMethod.probe(&target).is_none());
-    assert!(SendInputMethod.probe(&target).is_none());
+    let method_ids = windows_method_probes(&target)
+        .iter()
+        .map(|probe| probe.method_id)
+        .collect::<Vec<_>>();
+
+    assert!(!method_ids.contains(&MethodId::UiAutomationText));
+    assert!(!method_ids.contains(&MethodId::ClipboardSelection));
+    assert!(!method_ids.contains(&MethodId::SendInput));
 }
 
 #[cfg(windows)]
@@ -759,9 +973,13 @@ fn browser_like_document_text_selection_is_safe_but_caret_fallback_is_blocked() 
         Some(MethodId::UiAutomationDocumentText)
     );
     assert!(!allow_uia_document_caret_fallback(&target));
-    assert!(UiAutomationTextMethod.probe(&target).is_none());
-    assert!(ClipboardSelectionMethod.probe(&target).is_none());
-    assert!(SendInputMethod.probe(&target).is_none());
+    let method_ids = windows_method_probes(&target)
+        .iter()
+        .map(|probe| probe.method_id)
+        .collect::<Vec<_>>();
+    assert!(!method_ids.contains(&MethodId::UiAutomationText));
+    assert!(!method_ids.contains(&MethodId::ClipboardSelection));
+    assert!(!method_ids.contains(&MethodId::SendInput));
 }
 
 #[cfg(windows)]

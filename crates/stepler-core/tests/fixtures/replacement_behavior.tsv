@@ -1,0 +1,8 @@
+# name	mode	marked_text	expected_range_marked	expected_replacement	expected_cursor_after
+pause-selected-word	pause	hello [k.,jdm]	hello {k.,jdm}	любовь	hello любовь|
+pause-word-before-caret	pause	hello k.,jdm|	hello {k.,jdm}	любовь	hello любовь|
+pause-word-before-trailing-space	pause	hello k.,jdm |	hello {k.,jdm }	любовь 	hello любовь |
+scrolllock-mixed-tail	scrolllock	вальс поле long ghbdtn vbh|	вальс поле long {ghbdtn vbh}	привет мир	вальс поле long привет мир|
+scrolllock-selected-text	scrolllock	[ghbdtn vbh]	{ghbdtn vbh}	привет мир	привет мир|
+scrolllock-caret-inside-word	scrolllock	раз два три. xtnsht,\nлюбовь\nk.,j|dm	раз два три. xtnsht,\nлюбовь\n{k.,jdm}	любовь	раз два три. xtnsht,\nлюбовь\nлюбовь|
+scrolllock-keeps-english-prefix	scrolllock	created DESC d nf,kbwt exntyj|	created DESC {d nf,kbwt exntyj}	в таблице учтено	created DESC в таблице учтено|

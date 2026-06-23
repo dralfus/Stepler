@@ -322,6 +322,9 @@ mod tests {
             range: Some(TextRange::new(10, 16)),
             expected_before_text: Some(String::from("k.,jdm")),
             replacement_text: Some(String::from("любовь")),
+            resolver_trace: Some(String::from(
+                "surface=EditControl; final=operation_failed:x",
+            )),
             clipboard_used: false,
             duration_ms: 24,
             timings: vec![StageTiming {
@@ -336,6 +339,9 @@ mod tests {
         assert!(json.contains("\"timestamp_unix_ms\":1718000000123"));
         assert!(json.contains("\"trigger\":\"Pause\""));
         assert!(json.contains("\"range\":[10,16]"));
+        assert!(
+            json.contains("\"resolver_trace\":\"surface=EditControl; final=operation_failed:x\"")
+        );
         assert!(json.contains("\"timings_ms\":[{\"state\":\"ContextCaptured\",\"elapsed_ms\":2}]"));
         assert!(json.ends_with('\n'));
     }

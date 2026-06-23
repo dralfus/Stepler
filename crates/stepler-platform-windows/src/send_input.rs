@@ -7,8 +7,7 @@ pub(super) struct SendInputMethod;
 #[cfg(windows)]
 impl SendInputMethod {
     pub(super) fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
-        if classify_surface(target).kind != SurfaceKind::Unknown
-            || target.app_class.eq_ignore_ascii_case("Progman")
+        if target.app_class.eq_ignore_ascii_case("Progman")
             || target.app_class.eq_ignore_ascii_case("WorkerW")
             || target.focused_class.eq_ignore_ascii_case("SysListView32")
         {

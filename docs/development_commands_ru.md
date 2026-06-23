@@ -15,6 +15,21 @@ cargo test --workspace
 cargo test -p stepler-core
 ```
 
+## Правило изменения адаптеров
+
+Перед изменением method adapter-а сначала определить, что именно меняется:
+
+1. `AdapterContract`, если меняются технические возможности метода.
+2. `ProbePolicy`, если метод должен или не должен пробоваться на surface.
+3. `SurfacePolicy`, если метод должен или не должен выбираться resolver-ом.
+4. `probe_contracts.tsv` / `resolver_contracts.tsv`, если меняется проверенная surface.
+5. `replacement_behavior.tsv`, если меняется range/caret/selection behavior.
+
+Не добавлять проверки вида "если это Jira/Rocket/Outlook" прямо в adapter probe.
+App/surface routing должен жить в classifier, `ProbePolicy`, `SurfacePolicy` и
+contract fixtures. Если хочется менять `WebKeyboardSelectionMethod.probe`,
+сначала разделить: это technical predicate или policy-решение.
+
 ## Ручной smoke без hotkey
 
 После этапа Win32 Edit adapter можно проверить активный Notepad без global hotkey:
@@ -49,6 +64,12 @@ cargo run -p stepler-cli -- pause --delay 3
 
 ```powershell
 cargo run -p stepler-cli -- diagnose-focus --delay 3
+```
+
+Для диагностики surface classifier-а, probe policy и resolver trace:
+
+```powershell
+F:\distr\system\Stepler\dist\Stepler\stepler-cli.exe diagnose-focus --delay 3 --methods --surface
 ```
 
 После запуска команды за 3 секунды нужно кликнуть в нужное поле ввода, например Codex/Windsurf/Terminal. Если класс focused control не `Edit`/`RichEdit*` и не поддержанный terminal-host, текущий adapter безопасно откажется от обработки и запишет диагностический `UnsupportedControl`.

@@ -11,20 +11,12 @@ pub(super) struct XtermKeyboardSelectionMethod;
 #[cfg(windows)]
 impl XtermKeyboardSelectionMethod {
     pub(super) fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
-        let surface = classify_surface(target).kind;
         let enabled_for_browser =
             env_flag_enabled("STEPLER_ENABLE_XTERM_KEYBOARD_SELECTION", false)
-                && matches!(
-                    surface,
-                    SurfaceKind::BrowserEditor
-                        | SurfaceKind::FastBrowserEditor
-                        | SurfaceKind::RocketChatEditor
-                        | SurfaceKind::YandexBrowserEditor
-                )
+                && is_browser_like_target(target)
                 && focused_is_xterm_textarea();
-        let enabled_for_terminal = surface == SurfaceKind::QwenTerminal
-            || is_xterm_terminal_target(target)
-            || has_active_terminal_app_marker()
+        let enabled_for_terminal = is_xterm_terminal_target(target)
+            || has_terminal_app_marker(target)
                 && is_supported_terminal_class(&target.app_class, &target.focused_class);
         if !enabled_for_browser && !enabled_for_terminal {
             return None;
@@ -211,16 +203,7 @@ impl XtermKeyboardSelectionMethod {
 #[cfg(windows)]
 impl WebKeyboardSelectionMethod {
     pub(super) fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
-        if !matches!(
-            classify_surface(target).kind,
-            SurfaceKind::BrowserEditor
-                | SurfaceKind::YandexBrowserEditor
-                | SurfaceKind::FastBrowserEditor
-                | SurfaceKind::RocketChatEditor
-                | SurfaceKind::TelegramDesktop
-                | SurfaceKind::NotepadLike
-                | SurfaceKind::StickyNotes
-        ) {
+        if !is_web_keyboard_technical_target(target) {
             return None;
         }
 
@@ -253,48 +236,19 @@ impl WebKeyboardSelectionMethod {
             app_class,
             focused_class,
         ));
+        let timing = web_keyboard_timing_profile(profile);
         let fast_profile = web_keyboard_profile_is_fast(profile);
         let rocket_fast = web_keyboard_profile_is_rocket(profile);
-        let selected_timeout = if fast_profile {
-            Duration::from_millis(120)
-        } else {
-            Duration::from_millis(220)
-        };
-        let short_context_timeout = if fast_profile {
-            Duration::from_millis(180)
-        } else {
-            Duration::from_millis(280)
-        };
-        let line_context_timeout = if fast_profile {
-            Duration::from_millis(260)
-        } else {
-            Duration::from_millis(450)
-        };
-        let clipboard_timeout = if fast_profile {
-            Duration::from_millis(120)
-        } else {
-            Duration::from_millis(450)
-        };
-        let retry_pause = if fast_profile {
-            Duration::from_millis(30)
-        } else {
-            Duration::from_millis(80)
-        };
-        let attempt_pause = if fast_profile {
-            Duration::from_millis(60)
-        } else {
-            Duration::from_millis(180)
-        };
 
         for attempt in 0..2 {
-            let snapshot = capture_web_keyboard_clipboard(fast_profile, clipboard_timeout)?;
+            let snapshot = capture_web_keyboard_clipboard(fast_profile, timing.clipboard_timeout)?;
             let scrolllock_mode = active_correction_mode_is_scrolllock();
 
             let selected = copy_web_keyboard_selected_text(
                 &snapshot,
-                selected_timeout,
+                timing.selected_timeout,
                 fast_profile,
-                clipboard_timeout,
+                timing.clipboard_timeout,
             )
             .filter(|text| is_plausible_web_selected_text(text))
             .filter(|text| !looks_like_hotkeyhandler_marker(text));
@@ -319,15 +273,19 @@ impl WebKeyboardSelectionMethod {
                 select_web_left_context();
                 let copied_raw = copy_web_keyboard_selected_text(
                     &snapshot,
-                    short_context_timeout,
+                    timing.short_context_timeout,
                     fast_profile,
-                    clipboard_timeout,
+                    timing.clipboard_timeout,
                 );
                 let copied = copied_raw
                     .filter(|text| is_plausible_web_left_context_text(text))
                     .filter(|text| !looks_like_hotkeyhandler_marker(text));
                 send_key(VK_RIGHT);
-                let _ = restore_web_keyboard_clipboard(&snapshot, fast_profile, clipboard_timeout);
+                let _ = restore_web_keyboard_clipboard(
+                    &snapshot,
+                    fast_profile,
+                    timing.clipboard_timeout,
+                );
 
                 if let Some(text) = copied {
                     append_hotkey_signal_log(&format!(
@@ -346,20 +304,24 @@ impl WebKeyboardSelectionMethod {
                 }
 
                 if web_ctrl_a_fallback_enabled() {
-                    let snapshot = capture_web_keyboard_clipboard(fast_profile, clipboard_timeout)?;
+                    let snapshot =
+                        capture_web_keyboard_clipboard(fast_profile, timing.clipboard_timeout)?;
                     select_web_all_context();
                     let copied_raw = copy_web_keyboard_selected_text(
                         &snapshot,
-                        short_context_timeout,
+                        timing.short_context_timeout,
                         fast_profile,
-                        clipboard_timeout,
+                        timing.clipboard_timeout,
                     );
                     let copied = copied_raw
                         .filter(|text| is_plausible_web_field_text(text))
                         .filter(|text| !looks_like_hotkeyhandler_marker(text));
                     send_key(VK_RIGHT);
-                    let _ =
-                        restore_web_keyboard_clipboard(&snapshot, fast_profile, clipboard_timeout);
+                    let _ = restore_web_keyboard_clipboard(
+                        &snapshot,
+                        fast_profile,
+                        timing.clipboard_timeout,
+                    );
 
                     if let Some(text) = copied {
                         append_hotkey_signal_log(&format!(
@@ -378,19 +340,24 @@ impl WebKeyboardSelectionMethod {
                     }
                 }
 
-                let snapshot = capture_web_keyboard_clipboard(fast_profile, clipboard_timeout)?;
+                let snapshot =
+                    capture_web_keyboard_clipboard(fast_profile, timing.clipboard_timeout)?;
                 select_web_line_left_context();
                 let copied_raw = copy_web_keyboard_selected_text(
                     &snapshot,
-                    short_context_timeout,
+                    timing.short_context_timeout,
                     fast_profile,
-                    clipboard_timeout,
+                    timing.clipboard_timeout,
                 );
                 let copied = copied_raw
                     .filter(|text| is_plausible_web_left_context_text(text))
                     .filter(|text| !looks_like_hotkeyhandler_marker(text));
                 send_key(VK_RIGHT);
-                let _ = restore_web_keyboard_clipboard(&snapshot, fast_profile, clipboard_timeout);
+                let _ = restore_web_keyboard_clipboard(
+                    &snapshot,
+                    fast_profile,
+                    timing.clipboard_timeout,
+                );
 
                 if let Some(text) = copied {
                     append_hotkey_signal_log(&format!(
@@ -416,9 +383,9 @@ impl WebKeyboardSelectionMethod {
             select_web_line_left_context();
             let copied_raw = copy_web_keyboard_selected_text(
                 &snapshot,
-                line_context_timeout,
+                timing.line_context_timeout,
                 fast_profile,
-                clipboard_timeout,
+                timing.clipboard_timeout,
             );
             let copied = copied_raw
                 .filter(|text| is_plausible_web_left_context_text(text))
@@ -426,7 +393,8 @@ impl WebKeyboardSelectionMethod {
             if copied.is_none() || !rocket_fast {
                 restore_web_line_left_context_caret();
             }
-            let _ = restore_web_keyboard_clipboard(&snapshot, fast_profile, clipboard_timeout);
+            let _ =
+                restore_web_keyboard_clipboard(&snapshot, fast_profile, timing.clipboard_timeout);
 
             if let Some(text) = copied {
                 append_hotkey_signal_log(&format!(
@@ -450,20 +418,25 @@ impl WebKeyboardSelectionMethod {
 
             if attempt == 0 {
                 release_modifier_keys();
-                std::thread::sleep(retry_pause);
-                let snapshot = capture_web_keyboard_clipboard(fast_profile, clipboard_timeout)?;
+                std::thread::sleep(timing.retry_pause);
+                let snapshot =
+                    capture_web_keyboard_clipboard(fast_profile, timing.clipboard_timeout)?;
                 select_web_left_context();
                 let copied_raw = copy_web_keyboard_selected_text(
                     &snapshot,
-                    line_context_timeout,
+                    timing.line_context_timeout,
                     fast_profile,
-                    clipboard_timeout,
+                    timing.clipboard_timeout,
                 );
                 let copied = copied_raw
                     .filter(|text| is_plausible_web_left_context_text(text))
                     .filter(|text| !looks_like_hotkeyhandler_marker(text));
                 send_key(VK_RIGHT);
-                let _ = restore_web_keyboard_clipboard(&snapshot, fast_profile, clipboard_timeout);
+                let _ = restore_web_keyboard_clipboard(
+                    &snapshot,
+                    fast_profile,
+                    timing.clipboard_timeout,
+                );
 
                 if let Some(text) = copied {
                     append_hotkey_signal_log(&format!(
@@ -483,19 +456,24 @@ impl WebKeyboardSelectionMethod {
             }
 
             if web_ctrl_a_fallback_enabled() {
-                let snapshot = capture_web_keyboard_clipboard(fast_profile, clipboard_timeout)?;
+                let snapshot =
+                    capture_web_keyboard_clipboard(fast_profile, timing.clipboard_timeout)?;
                 select_web_all_context();
                 let copied_raw = copy_web_keyboard_selected_text(
                     &snapshot,
                     Duration::from_millis(320),
                     fast_profile,
-                    clipboard_timeout,
+                    timing.clipboard_timeout,
                 );
                 let copied = copied_raw
                     .filter(|text| is_plausible_web_field_text(text))
                     .filter(|text| !looks_like_hotkeyhandler_marker(text));
                 send_key(VK_RIGHT);
-                let _ = restore_web_keyboard_clipboard(&snapshot, fast_profile, clipboard_timeout);
+                let _ = restore_web_keyboard_clipboard(
+                    &snapshot,
+                    fast_profile,
+                    timing.clipboard_timeout,
+                );
 
                 if let Some(text) = copied {
                     append_hotkey_signal_log(&format!(
@@ -516,7 +494,7 @@ impl WebKeyboardSelectionMethod {
 
             if attempt == 0 {
                 release_modifier_keys();
-                std::thread::sleep(attempt_pause);
+                std::thread::sleep(timing.attempt_pause);
             }
         }
 
@@ -789,71 +767,6 @@ fn web_keyboard_context(
             )),
         },
     }
-}
-
-#[cfg(windows)]
-fn web_keyboard_control_prefix(base: &str, profile: WebKeyboardProfile) -> &str {
-    if web_keyboard_profile_is_rocket(profile) {
-        match base {
-            "web-keyboard-selection" => "web-keyboard-rocket-fast-selection",
-            "web-keyboard-line-selection" => "web-keyboard-rocket-fast-line-selection",
-            _ => base,
-        }
-    } else if web_keyboard_profile_is_fast(profile) {
-        match base {
-            "web-keyboard-selection" => "web-keyboard-fast-selection",
-            "web-keyboard-line-selection" => "web-keyboard-fast-line-selection",
-            _ => base,
-        }
-    } else {
-        base
-    }
-}
-
-#[cfg(windows)]
-fn web_keyboard_profile_is_fast(profile: WebKeyboardProfile) -> bool {
-    if !env_flag_enabled("STEPLER_ENABLE_WEB_FAST_PROFILE", true) {
-        return false;
-    }
-    profile != WebKeyboardProfile::Standard
-}
-
-#[cfg(all(windows, test))]
-pub(super) fn web_keyboard_fast_profile_title_matches(title: &str) -> bool {
-    let target = ForegroundTarget {
-        app_class: String::from("Chrome_WidgetWin_1"),
-        focused_class: String::from("Chrome_WidgetWin_1"),
-        title: title.to_owned(),
-        process_name: None,
-        window_id: String::new(),
-        control_id: String::new(),
-    };
-    web_keyboard_profile_is_fast(web_keyboard_profile_for_surface(
-        classify_surface(&target).kind,
-    ))
-}
-
-#[cfg(windows)]
-fn web_keyboard_profile_is_rocket(profile: WebKeyboardProfile) -> bool {
-    if !env_flag_enabled("STEPLER_ENABLE_WEB_FAST_PROFILE", true) {
-        return false;
-    }
-    profile == WebKeyboardProfile::RocketSearch
-}
-
-#[cfg(all(windows, test))]
-pub(super) fn web_keyboard_rocket_fast_profile_title_matches(title: &str) -> bool {
-    let target = ForegroundTarget {
-        app_class: String::from("Chrome_WidgetWin_1"),
-        focused_class: String::from("Chrome_WidgetWin_1"),
-        title: title.to_owned(),
-        process_name: None,
-        window_id: String::new(),
-        control_id: String::new(),
-    };
-    web_keyboard_profile_is_rocket(web_keyboard_profile_for_surface(
-        classify_surface(&target).kind,
-    ))
 }
 
 #[cfg(windows)]

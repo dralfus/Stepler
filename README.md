@@ -168,6 +168,12 @@ Risky/fallback методы по умолчанию не должны включ
 
 `crates` - термин Rust: каждый каталог является отдельным пакетом внутри одного workspace. `apps` содержит пользовательские приложения. Build outputs находятся в `target`, `bin`, `obj`, `dist` и не должны попадать в commit.
 
+Правила изменения adapter/policy слоев и диагностические команды для
+разработчика описаны в `docs/development_commands_ru.md`. При правке method
+adapter-а сначала проверь, меняется ли `AdapterContract`, `ProbePolicy`,
+`SurfacePolicy`, probe/resolver fixture или behavior fixture; не добавляй
+app-specific routing прямо в adapter probe.
+
 ## Команды разработки
 
 Debug-сборка tray:
@@ -221,6 +227,8 @@ Installer build:
 Дополнительные документы:
 
 - [Команды разработки](docs/development_commands_ru.md)
+- [Итоговая ревизия устойчивости адаптеров](docs/adapter_architecture_stability_review_ru.md)
+- [План hardening изоляции адаптеров](docs/adapter_isolation_hardening_plan_ru.md)
 - [Release smoke checklist](docs/release_smoke_checklist_ru.md)
 - [Установка](INSTALL_README.md)
 - [Release notes 1.0](docs/release_notes_1.0_ru.md)

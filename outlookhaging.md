@@ -131,14 +131,28 @@ F:\distr\system\outlook_diag\OUTLOOK_hang_26472_20260616_115811.dmp
 
 Текущая политика для Outlook:
 
-- Разрешает:
+- Runtime probe policy разрешает:
   - `Win32EditMessages` для Outlook search / простых edit controls.
   - `WordCom` для Outlook compose/editor, где это действительно Word editor.
-- Запрещает более рискованные fallback methods:
-  - UIA
+  - `Win32EditMessages`, затем `WordCom` для Outlook shell/explorer fallback boundary.
+- Runtime probe policy не дает Outlook generic fallback methods:
+  - UIA (`uia_editable_text`, `uia_document_text`, `uia_text`)
   - terminal clipboard
   - clipboard selection
   - SendInput fallback
+- Resolver policy для `OutlookWordEditor` тоже fail-closed: если в resolver
+  искусственно передать generic UIA/clipboard/send_input probes без `WordCom`,
+  они должны быть rejected by policy.
+
+Контракты этой границы зафиксированы здесь:
+
+- `crates/stepler-platform/src/surface.rs`:
+  - `SurfacePolicy` для `OutlookSearch`, `OutlookWordEditor`, `OutlookShell`
+  - `ProbePolicy` для этих же surfaces
+- `crates/stepler-platform/tests/fixtures/probe_contracts.tsv`
+- `crates/stepler-platform/tests/fixtures/resolver_contracts.tsv`
+- `crates/stepler-platform-windows/src/tests.rs`:
+  - `outlook_runtime_stacks_do_not_include_generic_fallbacks`
 
 ### Word COM ограничен только Outlook Word editor
 

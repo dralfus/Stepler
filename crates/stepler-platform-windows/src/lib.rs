@@ -3,13 +3,14 @@ use std::os::windows::process::CommandExt;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use stepler_core::{
-    Capabilities, MethodBinding, MethodId, ReplacementPlan, TextContext, TextRange,
+    Capabilities, CorrectionMode, MethodBinding, MethodId, ReplacementPlan, TextContext, TextRange,
 };
 use stepler_platform::{
-    classify_surface, surface_policy_for, web_keyboard_profile_for_surface, ApplyReplacementResult,
-    ClipboardBackend, ClipboardFormatSnapshot, ClipboardSnapshot, ForegroundControl,
-    ForegroundProvider, ForegroundTarget, HotkeyListener, MethodProbe, MethodResolver,
-    PlatformError, SurfaceKind, TextContextProvider, TextReplacer, WebKeyboardProfile,
+    classify_surface, probe_plan_for, surface_policy_for, web_keyboard_profile_for_surface,
+    ApplyReplacementResult, ClipboardBackend, ClipboardFormatSnapshot, ClipboardSnapshot,
+    ForegroundControl, ForegroundProvider, ForegroundTarget, HotkeyListener, MethodProbe,
+    MethodResolver, PlatformError, SurfaceKind, TextContextProvider, TextReplacer,
+    WebKeyboardProfile,
 };
 
 mod clipboard;
@@ -22,10 +23,13 @@ mod console_buffer;
 use console_buffer::*;
 
 mod diagnostics;
-use diagnostics::{focus_diagnostics_impl, method_diagnostics_impl, uia_focus_diagnostics};
+use diagnostics::{
+    focus_diagnostics_impl, hotkey_failure_trace_summary_impl, method_diagnostics_impl,
+    uia_focus_diagnostics,
+};
 pub use diagnostics::{
     WindowsFocusDiagnostics, WindowsMethodDiagnostics, WindowsMethodProbeDiagnostics,
-    WindowsSurfaceDiagnostics, WindowsUiaFocusDiagnostics,
+    WindowsResolveTraceDiagnostics, WindowsSurfaceDiagnostics, WindowsUiaFocusDiagnostics,
 };
 
 mod encoding;
@@ -57,6 +61,12 @@ use uia_text::*;
 
 mod web_keyboard;
 use web_keyboard::*;
+
+mod web_keyboard_profile;
+use web_keyboard_profile::*;
+
+mod web_keyboard_support;
+use web_keyboard_support::*;
 
 mod window_info;
 use window_info::*;
@@ -103,6 +113,13 @@ pub fn focus_diagnostics() -> Result<WindowsFocusDiagnostics, PlatformError> {
 
 pub fn method_diagnostics() -> Result<WindowsMethodDiagnostics, PlatformError> {
     method_diagnostics_impl()
+}
+
+pub fn hotkey_failure_trace_summary(
+    mode: CorrectionMode,
+    final_error: &str,
+) -> Result<String, PlatformError> {
+    hotkey_failure_trace_summary_impl(mode, final_error)
 }
 
 #[cfg(windows)]
@@ -628,54 +645,42 @@ fn capture_by_method(
 
 #[cfg(windows)]
 fn windows_method_probes(target: &ForegroundTarget) -> Vec<MethodProbe> {
-    let mut probes = Vec::new();
-    if is_fast_web_keyboard_primary_target(target) {
-        if let Some(probe) = WebKeyboardSelectionMethod.probe(target) {
-            probes.push(probe);
-        }
-        return probes;
-    }
-
-    if let Some(probe) = Win32EditMessagesMethod.probe(target) {
-        probes.push(probe);
-    }
-    if let Some(probe) = ConsoleBufferMethod.probe(target) {
-        probes.push(probe);
-    }
-    if let Some(probe) = SshTerminalMethod.probe(target) {
-        probes.push(probe);
-    }
-    if let Some(probe) = WordComMethod.probe(target) {
-        probes.push(probe);
-    } else if let Some(probe) = TerminalClipboardShortcutMethod.probe(target) {
-        probes.push(probe);
-    }
-    if let Some(probe) = UiAutomationEditableTextMethod.probe(target) {
-        probes.push(probe);
-    }
-    if let Some(probe) = UiAutomationDocumentTextMethod.probe(target) {
-        probes.push(probe);
-    }
-    if let Some(probe) = UiAutomationTextMethod.probe(target) {
-        probes.push(probe);
-    }
-    if let Some(probe) = XtermKeyboardSelectionMethod.probe(target) {
-        probes.push(probe);
-    }
-    if let Some(probe) = WebKeyboardSelectionMethod.probe(target) {
-        probes.push(probe);
-    }
-    if let Some(probe) = ClipboardSelectionMethod.probe(target) {
-        probes.push(probe);
-    }
-    if let Some(probe) = SendInputMethod.probe(target) {
-        probes.push(probe);
-    }
-    probes
+    windows_runtime_probe_methods(target)
+        .into_iter()
+        .filter_map(|method| probe_method_by_id(method, target))
+        .collect()
 }
 
-fn is_fast_web_keyboard_primary_target(target: &ForegroundTarget) -> bool {
-    web_keyboard_profile_for_surface(classify_surface(target).kind) != WebKeyboardProfile::Standard
+#[cfg(windows)]
+fn windows_probe_plan_methods(target: &ForegroundTarget) -> Vec<MethodId> {
+    probe_plan_for(target).probe_methods
+}
+
+#[cfg(windows)]
+fn windows_runtime_probe_methods(target: &ForegroundTarget) -> Vec<MethodId> {
+    windows_probe_plan_methods(target)
+}
+
+#[cfg(windows)]
+fn probe_method_by_id(method: MethodId, target: &ForegroundTarget) -> Option<MethodProbe> {
+    match method {
+        MethodId::Win32EditMessages => Win32EditMessagesMethod.probe(target),
+        MethodId::TerminalClipboardShortcut => TerminalClipboardShortcutMethod.probe(target),
+        MethodId::SshTerminal => SshTerminalMethod.probe(target),
+        MethodId::ConsoleBuffer => ConsoleBufferMethod.probe(target),
+        MethodId::PsReadLine => Some(MethodProbe::safe(
+            MethodId::PsReadLine,
+            "PowerShell PSReadLine adapter",
+        )),
+        MethodId::WordCom => WordComMethod.probe(target),
+        MethodId::UiAutomationEditableText => UiAutomationEditableTextMethod.probe(target),
+        MethodId::UiAutomationDocumentText => UiAutomationDocumentTextMethod.probe(target),
+        MethodId::UiAutomationText => UiAutomationTextMethod.probe(target),
+        MethodId::XtermKeyboardSelection => XtermKeyboardSelectionMethod.probe(target),
+        MethodId::WebKeyboardSelection => WebKeyboardSelectionMethod.probe(target),
+        MethodId::ClipboardSelection => ClipboardSelectionMethod.probe(target),
+        MethodId::SendInput => SendInputMethod.probe(target),
+    }
 }
 
 #[cfg(not(windows))]
@@ -770,32 +775,6 @@ fn is_outlook_class_or_process(
         || app_class.eq_ignore_ascii_case("rctrl_renwnd32")
         || focused_class.eq_ignore_ascii_case("_WwG")
             && app_class.to_ascii_lowercase().contains("outlook")
-}
-
-#[cfg(test)]
-fn is_telegram_target(target: &ForegroundTarget) -> bool {
-    target
-        .process_name
-        .as_deref()
-        .is_some_and(|process| process.eq_ignore_ascii_case("Telegram"))
-        || is_telegram_qt_class(&target.app_class) && target.title.contains('@')
-}
-
-#[cfg(test)]
-fn is_telegram_qt_class(class_name: &str) -> bool {
-    let class_name = class_name.to_ascii_lowercase();
-    class_name.starts_with("qt") && class_name.ends_with("qwindowicon")
-}
-
-#[cfg(test)]
-fn is_browser_like_target(target: &ForegroundTarget) -> bool {
-    matches!(
-        classify_surface(target).kind,
-        SurfaceKind::BrowserEditor
-            | SurfaceKind::FastBrowserEditor
-            | SurfaceKind::RocketChatEditor
-            | SurfaceKind::YandexBrowserEditor
-    )
 }
 
 #[cfg(windows)]

@@ -15,7 +15,13 @@ pub struct WindowsMethodDiagnostics {
     pub foreground: WindowsFocusDiagnostics,
     pub surface: WindowsSurfaceDiagnostics,
     pub uia_focus: Option<WindowsUiaFocusDiagnostics>,
+    pub probe_plan_methods: Vec<String>,
+    pub runtime_probe_methods: Vec<String>,
+    pub probe_plan_suppressed_methods: Vec<String>,
+    pub probe_plan_fast: bool,
     pub probes: Vec<WindowsMethodProbeDiagnostics>,
+    pub pause_trace: Vec<WindowsResolveTraceDiagnostics>,
+    pub scrolllock_trace: Vec<WindowsResolveTraceDiagnostics>,
     pub selected_context_method: Option<String>,
     pub selected_replacement_method: Option<String>,
     pub selected_pause_context_method: Option<String>,
@@ -25,6 +31,18 @@ pub struct WindowsMethodDiagnostics {
     pub context_method: Option<String>,
     pub context_error: Option<String>,
     pub context_skipped: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsResolveTraceDiagnostics {
+    pub method: String,
+    pub mode: String,
+    pub safety: String,
+    pub confidence: u8,
+    pub preference_rank: usize,
+    pub replacement_method: Option<String>,
+    pub outcome: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,22 +99,25 @@ pub(super) fn focus_diagnostics_impl() -> Result<WindowsFocusDiagnostics, Platfo
 pub(super) fn method_diagnostics_impl() -> Result<WindowsMethodDiagnostics, PlatformError> {
     let foreground = foreground_hwnd()?;
     let focused = focused_window(foreground).unwrap_or(foreground);
-    let app_class = window_class_name(foreground).unwrap_or_else(|| String::from("unknown"));
-    let focused_class = window_class_name(focused).unwrap_or_else(|| String::from("unknown"));
-    let mut title = window_title(foreground).unwrap_or_default();
-    if let Some(marker_title) = active_terminal_app_marker_title() {
-        if !title.contains(marker_title) {
-            title = format!("{title} {marker_title}");
-        }
-    }
-    let target = ForegroundTarget {
-        app_class: app_class.clone(),
-        focused_class: focused_class.clone(),
-        title,
-        process_name: window_process_name(foreground),
-        window_id: hwnd_id(foreground),
-        control_id: hwnd_id(focused),
-    };
+    let target = foreground_target_from_handles(foreground, focused);
+    let app_class = target.app_class.clone();
+    let focused_class = target.focused_class.clone();
+    let probe_plan = probe_plan_for(&target);
+    let probe_plan_methods = probe_plan
+        .probe_methods
+        .iter()
+        .map(|method| method.as_str().to_owned())
+        .collect::<Vec<_>>();
+    let runtime_probe_methods = windows_runtime_probe_methods(&target)
+        .into_iter()
+        .map(|method| method.as_str().to_owned())
+        .collect::<Vec<_>>();
+    let probe_plan_suppressed_methods = probe_plan
+        .suppressed_methods
+        .iter()
+        .map(|method| method.as_str().to_owned())
+        .collect::<Vec<_>>();
+    let probe_plan_fast = probe_plan.fast_probe;
     let probes = windows_method_probes(&target);
     let classification = classify_surface(&target);
     let policy = surface_policy_for(classification.kind);
@@ -107,6 +128,10 @@ pub(super) fn method_diagnostics_impl() -> Result<WindowsMethodDiagnostics, Plat
     let scrolllock_decision = resolver
         .resolve_for_mode(&target, &probes, stepler_core::CorrectionMode::ScrollLock)
         .ok();
+    let pause_trace =
+        resolver.trace_for_mode(&target, &probes, stepler_core::CorrectionMode::Pause);
+    let scrolllock_trace =
+        resolver.trace_for_mode(&target, &probes, stepler_core::CorrectionMode::ScrollLock);
     let decision = pause_decision.clone();
     let run_context = std::env::var("STEPLER_DIAGNOSE_CONTEXT")
         .map(|value| value == "1")
@@ -178,6 +203,10 @@ pub(super) fn method_diagnostics_impl() -> Result<WindowsMethodDiagnostics, Plat
                 .collect(),
         },
         uia_focus: uia_focus_diagnostics().ok(),
+        probe_plan_methods,
+        runtime_probe_methods,
+        probe_plan_suppressed_methods,
+        probe_plan_fast,
         probes: probes
             .into_iter()
             .map(|probe| WindowsMethodProbeDiagnostics {
@@ -189,6 +218,14 @@ pub(super) fn method_diagnostics_impl() -> Result<WindowsMethodDiagnostics, Plat
                 can_verify: probe.can_verify,
                 reason: probe.reason,
             })
+            .collect(),
+        pause_trace: pause_trace
+            .into_iter()
+            .map(resolve_trace_diagnostics)
+            .collect(),
+        scrolllock_trace: scrolllock_trace
+            .into_iter()
+            .map(resolve_trace_diagnostics)
             .collect(),
         selected_context_method: decision
             .as_ref()
@@ -212,6 +249,148 @@ pub(super) fn method_diagnostics_impl() -> Result<WindowsMethodDiagnostics, Plat
         context_error,
         context_skipped,
     })
+}
+
+#[cfg(windows)]
+pub(super) fn hotkey_failure_trace_summary_impl(
+    mode: stepler_core::CorrectionMode,
+    final_error: &str,
+) -> Result<String, PlatformError> {
+    let foreground = foreground_hwnd()?;
+    let focused = focused_window(foreground).unwrap_or(foreground);
+    let target = foreground_target_from_handles(foreground, focused);
+    Ok(hotkey_failure_trace_summary_for_target(
+        &target,
+        mode,
+        final_error,
+    ))
+}
+
+#[cfg(not(windows))]
+pub(super) fn hotkey_failure_trace_summary_impl(
+    _mode: stepler_core::CorrectionMode,
+    _final_error: &str,
+) -> Result<String, PlatformError> {
+    Err(PlatformError::Unsupported)
+}
+
+#[cfg(windows)]
+pub(super) fn hotkey_failure_trace_summary_for_target(
+    target: &ForegroundTarget,
+    mode: stepler_core::CorrectionMode,
+    final_error: &str,
+) -> String {
+    let classification = classify_surface(target);
+    let probe_plan = probe_plan_for(target);
+    let runtime_methods = windows_runtime_probe_methods(target);
+    let probes = windows_method_probes(target);
+    let probed_methods = probes
+        .iter()
+        .map(|probe| probe.method_id)
+        .collect::<Vec<_>>();
+    let probe_none = runtime_methods
+        .iter()
+        .copied()
+        .filter(|method| !probed_methods.contains(method))
+        .collect::<Vec<_>>();
+    let trace = MethodResolver::default().trace_for_mode(target, &probes, mode);
+    let accepted = trace
+        .iter()
+        .find(|entry| entry.outcome == stepler_platform::ResolveTraceOutcome::Accepted);
+    let policy_skipped = trace
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.outcome,
+                stepler_platform::ResolveTraceOutcome::ForbiddenByPolicy
+                    | stepler_platform::ResolveTraceOutcome::RiskyMethodBlocked
+                    | stepler_platform::ResolveTraceOutcome::ReplacementForbiddenByPolicy
+            )
+        })
+        .map(|entry| trace_method_label(entry.method, Some(entry.outcome)))
+        .collect::<Vec<_>>();
+
+    let selected = accepted
+        .map(|entry| {
+            let replacement = entry
+                .replacement_method
+                .map(|method| method.as_str())
+                .unwrap_or("none");
+            format!("{}->{replacement}", entry.method.as_str())
+        })
+        .unwrap_or_else(|| String::from("none"));
+
+    format!(
+        "surface={:?}; confidence={}; mode={:?}; selected={}; probe_plan=[{}]; runtime=[{}]; probes=[{}]; probe_none=[{}]; suppressed=[{}]; policy_skipped=[{}]; final=operation_failed:{}",
+        classification.kind,
+        classification.confidence,
+        mode,
+        selected,
+        method_list(&probe_plan.probe_methods),
+        method_list(&runtime_methods),
+        method_list(&probed_methods),
+        method_list(&probe_none),
+        method_list(&probe_plan.suppressed_methods),
+        policy_skipped.join("|"),
+        final_error
+    )
+}
+
+#[cfg(windows)]
+fn trace_method_label(
+    method: MethodId,
+    outcome: Option<stepler_platform::ResolveTraceOutcome>,
+) -> String {
+    match outcome {
+        Some(outcome) => format!("{}:{outcome:?}", method.as_str()),
+        None => method.as_str().to_owned(),
+    }
+}
+
+#[cfg(windows)]
+fn method_list(methods: &[MethodId]) -> String {
+    methods
+        .iter()
+        .map(|method| method.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+#[cfg(windows)]
+fn foreground_target_from_handles(foreground: isize, focused: isize) -> ForegroundTarget {
+    let app_class = window_class_name(foreground).unwrap_or_else(|| String::from("unknown"));
+    let focused_class = window_class_name(focused).unwrap_or_else(|| String::from("unknown"));
+    let mut title = window_title(foreground).unwrap_or_default();
+    if let Some(marker_title) = active_terminal_app_marker_title() {
+        if !title.contains(marker_title) {
+            title = format!("{title} {marker_title}");
+        }
+    }
+    ForegroundTarget {
+        app_class,
+        focused_class,
+        title,
+        process_name: window_process_name(foreground),
+        window_id: hwnd_id(foreground),
+        control_id: hwnd_id(focused),
+    }
+}
+
+fn resolve_trace_diagnostics(
+    entry: stepler_platform::ResolveTraceEntry,
+) -> WindowsResolveTraceDiagnostics {
+    WindowsResolveTraceDiagnostics {
+        method: entry.method.as_str().to_owned(),
+        mode: format!("{:?}", entry.mode),
+        safety: format!("{:?}", entry.safety),
+        confidence: entry.confidence,
+        preference_rank: entry.preference_rank,
+        replacement_method: entry
+            .replacement_method
+            .map(|method| method.as_str().to_owned()),
+        outcome: format!("{:?}", entry.outcome),
+        reason: entry.reason,
+    }
 }
 
 #[cfg(not(windows))]

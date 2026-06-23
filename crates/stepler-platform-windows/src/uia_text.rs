@@ -7,7 +7,9 @@ pub(super) struct UiAutomationTextMethod;
 #[cfg(windows)]
 impl UiAutomationTextMethod {
     pub(super) fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {
-        if classify_surface(target).kind != SurfaceKind::Unknown
+        if is_supported_edit_class(&target.focused_class)
+            || is_supported_terminal_class(&target.app_class, &target.focused_class)
+            || is_word_target(target)
             || target.app_class.eq_ignore_ascii_case("Progman")
             || target.app_class.eq_ignore_ascii_case("WorkerW")
             || target.focused_class.eq_ignore_ascii_case("SysListView32")

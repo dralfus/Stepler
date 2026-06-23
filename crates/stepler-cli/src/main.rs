@@ -449,14 +449,47 @@ fn diagnose_focus(args: &[String]) {
                         info.surface.forbidden_methods.join(",")
                     );
                     println!(
+                        "probe_plan: methods=[{}] runtime=[{}] suppressed=[{}] fast={}",
+                        info.probe_plan_methods.join(","),
+                        info.runtime_probe_methods.join(","),
+                        info.probe_plan_suppressed_methods.join(","),
+                        info.probe_plan_fast
+                    );
+                    println!(
                         "resolver_pause: context={:?} replacement={:?}",
                         info.selected_pause_context_method, info.selected_pause_replacement_method
                     );
+                    println!("resolver_trace_pause:");
+                    for entry in &info.pause_trace {
+                        println!(
+                            "  - method={} outcome={} safety={} confidence={} rank={} replacement={:?} reason={}",
+                            entry.method,
+                            entry.outcome,
+                            entry.safety,
+                            entry.confidence,
+                            entry.preference_rank,
+                            entry.replacement_method,
+                            entry.reason
+                        );
+                    }
                     println!(
                         "resolver_scrolllock: context={:?} replacement={:?}",
                         info.selected_scrolllock_context_method,
                         info.selected_scrolllock_replacement_method
                     );
+                    println!("resolver_trace_scrolllock:");
+                    for entry in &info.scrolllock_trace {
+                        println!(
+                            "  - method={} outcome={} safety={} confidence={} rank={} replacement={:?} reason={}",
+                            entry.method,
+                            entry.outcome,
+                            entry.safety,
+                            entry.confidence,
+                            entry.preference_rank,
+                            entry.replacement_method,
+                            entry.reason
+                        );
+                    }
                 }
                 if show_methods {
                     println!("method probes:");
@@ -651,6 +684,7 @@ fn handle_hotkey_event<F, C, R, B>(
         range: None,
         expected_before_text: Some(String::from("hotkey_received")),
         replacement_text: None,
+        resolver_trace: None,
         clipboard_used: false,
         duration_ms: 0,
         timings: Vec::new(),
@@ -699,6 +733,7 @@ fn handle_hotkey_event<F, C, R, B>(
                 range: Some(outcome.plan.range),
                 expected_before_text: Some(log_preview(&outcome.plan.expected_before_text, 80)),
                 replacement_text: Some(log_preview(&outcome.plan.replacement_text, 80)),
+                resolver_trace: None,
                 clipboard_used: false,
                 duration_ms: outcome.metrics.duration_ms,
                 timings: outcome.metrics.timings.clone(),
@@ -722,6 +757,7 @@ fn handle_hotkey_event<F, C, R, B>(
                         "forwarded_to_embedded_terminal_psreadline",
                     )),
                     replacement_text: None,
+                    resolver_trace: None,
                     clipboard_used: false,
                     duration_ms: started.elapsed().as_millis(),
                     timings: Vec::new(),
@@ -730,6 +766,9 @@ fn handle_hotkey_event<F, C, R, B>(
                 release_modifier_keys();
                 return;
             }
+            let error_text = format_operation_error(error);
+            let resolver_trace =
+                stepler_platform_windows::hotkey_failure_trace_summary(mode, &error_text).ok();
             let event = OperationLogEvent {
                 operation_id: String::from("unknown"),
                 timestamp_unix_ms: timestamp_unix_ms(),
@@ -739,8 +778,9 @@ fn handle_hotkey_event<F, C, R, B>(
                 provider: Some(String::from("WindowsTextContextProvider")),
                 replacer: Some(String::from("WindowsTextReplacer")),
                 range: None,
-                expected_before_text: Some(format_operation_error(error)),
+                expected_before_text: Some(error_text),
                 replacement_text: None,
+                resolver_trace,
                 clipboard_used: false,
                 duration_ms: started.elapsed().as_millis(),
                 timings: Vec::new(),

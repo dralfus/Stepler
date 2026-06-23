@@ -28,6 +28,7 @@ pub struct OperationLogEvent {
     pub range: Option<TextRange>,
     pub expected_before_text: Option<String>,
     pub replacement_text: Option<String>,
+    pub resolver_trace: Option<String>,
     pub clipboard_used: bool,
     pub duration_ms: u128,
     pub timings: Vec<StageTiming>,
@@ -60,6 +61,9 @@ impl OperationLogEvent {
         }
         if let Some(replacement_text) = &self.replacement_text {
             fields.push(json_string_field("replacement_text", replacement_text));
+        }
+        if let Some(resolver_trace) = &self.resolver_trace {
+            fields.push(json_string_field("resolver_trace", resolver_trace));
         }
         fields.push(format!("\"clipboard_used\":{}", self.clipboard_used));
         fields.push(format!("\"duration_ms\":{}", self.duration_ms));

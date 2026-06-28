@@ -1,5 +1,6 @@
 mod resolver;
 mod surface;
+mod target_facts;
 
 pub use resolver::{
     MethodResolver, ResolveDecision, ResolveError, ResolveTraceEntry, ResolveTraceOutcome,
@@ -12,6 +13,7 @@ pub use surface::{
     web_keyboard_profile_for_surface, MethodPreferences, ProbePlan, ProbePolicy,
     SurfaceClassification, SurfaceKind, SurfacePolicy, WebKeyboardProfile,
 };
+pub use target_facts::{target_facts, TargetFacts};
 
 use stepler_core::{CorrectionMode, MethodId, ReplacementPlan, TextContext};
 
@@ -171,6 +173,17 @@ pub const ALL_METHOD_IDS: &[MethodId] = &[
     MethodId::ClipboardSelection,
     MethodId::SendInput,
 ];
+
+pub const BRIDGE_METHOD_IDS: &[MethodId] = &[
+    MethodId::TerminalClipboardShortcut,
+    MethodId::SshTerminal,
+    MethodId::PsReadLine,
+    MethodId::XtermKeyboardSelection,
+];
+
+pub fn method_is_bridge_method(method: MethodId) -> bool {
+    BRIDGE_METHOD_IDS.contains(&method)
+}
 
 pub fn adapter_contract(method: MethodId) -> AdapterContract {
     match method {
@@ -691,6 +704,7 @@ mod tests {
             .unwrap();
         assert_eq!(decision.surface.kind, SurfaceKind::StickyNotes);
         assert_eq!(decision.context_method, MethodId::WebKeyboardSelection);
+        assert_eq!(decision.replacement_method, MethodId::WebKeyboardSelection);
 
         let mut outlook_shell = target("rctrl_renwnd32", "SUPERGRID");
         outlook_shell.process_name = Some(String::from("OUTLOOK"));

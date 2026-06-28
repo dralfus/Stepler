@@ -7,9 +7,12 @@ use stepler_app::{
     guard_clipboard_from_snapshot, ClipboardGuardReport, OperationError, OperationRunner,
 };
 use stepler_core::{
-    build_replacement_plan, CorrectionMode, LogTrigger, MethodId, OperationLogEvent, OperationState,
+    build_replacement_plan, CorrectionError, CorrectionMode, LogTrigger, MethodId,
+    OperationLogEvent, OperationState,
 };
-use stepler_platform::{ClipboardBackend, ClipboardSnapshot, TextContextProvider, TextReplacer};
+use stepler_platform::{
+    ClipboardBackend, ClipboardSnapshot, PlatformError, TextContextProvider, TextReplacer,
+};
 use stepler_platform_windows::{
     focus_diagnostics, install_console_modifier_release_handler,
     message_loop_with_keyboard_controls, method_diagnostics, release_modifier_keys,
@@ -573,6 +576,12 @@ fn run_hotkeys() {
                 eprintln!("{mode:?}: disabled");
             }
         },
+        |mode| {
+            log_hotkey_received(log_path.as_path(), mode);
+        },
+        |mode| {
+            log_hotkey_unsupported(log_path.as_path(), mode, "unsupported_surface");
+        },
         |action| {
             if !settings.layout_action_enabled(action) {
                 eprintln!("{action:?}: disabled");
@@ -673,23 +682,6 @@ fn handle_hotkey_event<F, C, R, B>(
 {
     let started = Instant::now();
     set_active_correction_mode(mode);
-    let received_event = OperationLogEvent {
-        operation_id: String::from("hotkey"),
-        timestamp_unix_ms: timestamp_unix_ms(),
-        trigger: LogTrigger::from(mode),
-        state: OperationState::HotkeyReceived,
-        app: None,
-        provider: Some(String::from("WindowsTextContextProvider")),
-        replacer: None,
-        range: None,
-        expected_before_text: Some(String::from("hotkey_received")),
-        replacement_text: None,
-        resolver_trace: None,
-        clipboard_used: false,
-        duration_ms: 0,
-        timings: Vec::new(),
-    };
-    append_log(log_path, &received_event.to_json_line());
     release_modifier_keys();
     let result = runner.handle_hotkey(mode);
     release_modifier_keys();
@@ -767,13 +759,21 @@ fn handle_hotkey_event<F, C, R, B>(
                 return;
             }
             let error_text = format_operation_error(error);
+            let no_change = is_no_text_to_replace_error(error);
+            let unsupported = is_unsupported_error(error);
             let resolver_trace =
                 stepler_platform_windows::hotkey_failure_trace_summary(mode, &error_text).ok();
             let event = OperationLogEvent {
                 operation_id: String::from("unknown"),
                 timestamp_unix_ms: timestamp_unix_ms(),
                 trigger: LogTrigger::from(mode),
-                state: OperationState::RolledBackOrFailed,
+                state: if no_change {
+                    OperationState::NoChange
+                } else if unsupported {
+                    OperationState::Unsupported
+                } else {
+                    OperationState::RolledBackOrFailed
+                },
                 app: None,
                 provider: Some(String::from("WindowsTextContextProvider")),
                 replacer: Some(String::from("WindowsTextReplacer")),
@@ -790,6 +790,62 @@ fn handle_hotkey_event<F, C, R, B>(
         }
     }
     release_modifier_keys();
+}
+
+fn log_hotkey_received(log_path: &std::path::Path, mode: CorrectionMode) {
+    let event = OperationLogEvent {
+        operation_id: String::from("hotkey"),
+        timestamp_unix_ms: timestamp_unix_ms(),
+        trigger: LogTrigger::from(mode),
+        state: OperationState::HotkeyReceived,
+        app: None,
+        provider: Some(String::from("WindowsTextContextProvider")),
+        replacer: None,
+        range: None,
+        expected_before_text: Some(String::from("hotkey_received")),
+        replacement_text: None,
+        resolver_trace: None,
+        clipboard_used: false,
+        duration_ms: 0,
+        timings: Vec::new(),
+    };
+    append_log(log_path, &event.to_json_line());
+}
+
+fn log_hotkey_unsupported(log_path: &std::path::Path, mode: CorrectionMode, reason: &str) {
+    let event = OperationLogEvent {
+        operation_id: String::from("unsupported"),
+        timestamp_unix_ms: timestamp_unix_ms(),
+        trigger: LogTrigger::from(mode),
+        state: OperationState::Unsupported,
+        app: None,
+        provider: Some(String::from("WindowsTextContextProvider")),
+        replacer: None,
+        range: None,
+        expected_before_text: Some(String::from(reason)),
+        replacement_text: None,
+        resolver_trace: None,
+        clipboard_used: false,
+        duration_ms: 0,
+        timings: Vec::new(),
+    };
+    append_log(log_path, &event.to_json_line());
+}
+
+fn is_no_text_to_replace_error(error: &OperationError) -> bool {
+    matches!(
+        error,
+        OperationError::Correction(CorrectionError::NoTextToReplace)
+            | OperationError::CorrectionWithContext(CorrectionError::NoTextToReplace, _)
+    )
+}
+
+fn is_unsupported_error(error: &OperationError) -> bool {
+    matches!(
+        error,
+        OperationError::Platform(PlatformError::Unsupported)
+            | OperationError::Platform(PlatformError::UnsupportedControl { .. })
+    )
 }
 
 fn set_active_correction_mode(mode: CorrectionMode) {
@@ -868,6 +924,8 @@ fn should_skip_layout_after_replacement(context: &stepler_core::TextContext) -> 
     context
         .app_id
         .eq_ignore_ascii_case("rctrl_renwnd32/RICHEDIT60W")
+        || context.app_id.eq_ignore_ascii_case("rctrl_renwnd32/_WwG")
+        || context.control_id.starts_with("outlook-word-com:")
 }
 
 fn desired_layout_after_replacement(

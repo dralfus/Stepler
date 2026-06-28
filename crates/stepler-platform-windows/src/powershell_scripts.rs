@@ -812,6 +812,16 @@ function Normalize-Text([string] $Text) {
 function Get-Pattern($Element, $Pattern) {
     try { return $Element.GetCurrentPattern($Pattern) } catch { return $null }
 }
+function Get-CaretRange($Element) {
+    $textPattern2 = Get-Pattern $Element ([System.Windows.Automation.TextPattern2]::Pattern)
+    if ($null -eq $textPattern2) { return $null }
+    try {
+        $isActive = $false
+        return $textPattern2.GetCaretRange([ref]$isActive)
+    } catch {
+        return $null
+    }
+}
 function Runtime-Id($Element) {
     if ($null -eq $Element) { return '' }
     try { return ($Element.GetRuntimeId() -join '.') } catch { return '' }

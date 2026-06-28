@@ -233,12 +233,16 @@ impl RegisteredHotkey {
 }
 
 #[cfg(windows)]
-pub fn message_loop_with_keyboard_controls<F, G>(
+pub fn message_loop_with_keyboard_controls<F, H, U, G>(
     mut on_hotkey: F,
+    mut on_hotkey_received: H,
+    mut on_hotkey_unsupported: U,
     mut on_control: G,
 ) -> Result<(), PlatformError>
 where
     F: FnMut(stepler_core::CorrectionMode),
+    H: FnMut(stepler_core::CorrectionMode),
+    U: FnMut(stepler_core::CorrectionMode),
     G: FnMut(KeyboardControlAction),
 {
     install_keyboard_control_hook()?;
@@ -258,14 +262,18 @@ where
             WM_HOTKEY => match message.wparam as i32 {
                 HOTKEY_ID_PAUSE => {
                     append_hotkey_signal_log("wm_hotkey pause");
-                    on_hotkey(stepler_core::CorrectionMode::Pause);
+                    let mode = stepler_core::CorrectionMode::Pause;
+                    on_hotkey_received(mode);
+                    on_hotkey(mode);
                     drain_pending_hotkey_messages();
                 }
                 HOTKEY_ID_SCROLL_LOCK => {
                     append_hotkey_signal_log("wm_hotkey ctrl_pause");
+                    let mode = stepler_core::CorrectionMode::ScrollLock;
+                    on_hotkey_received(mode);
                     std::thread::sleep(Duration::from_millis(180));
                     release_modifier_keys();
-                    on_hotkey(stepler_core::CorrectionMode::ScrollLock);
+                    on_hotkey(mode);
                     drain_pending_hotkey_messages();
                 }
                 _ => {}
@@ -273,12 +281,25 @@ where
             WM_STEPLER_HOTKEY => {
                 if let Some(mode) = correction_mode_from_message_id(message.wparam) {
                     append_hotkey_signal_log(&format!("hook_message {mode:?}"));
+                    on_hotkey_received(mode);
                     if mode == stepler_core::CorrectionMode::ScrollLock {
                         std::thread::sleep(Duration::from_millis(180));
                         release_modifier_keys();
                     }
                     on_hotkey(mode);
                     drain_pending_hotkey_messages();
+                }
+            }
+            WM_STEPLER_HOTKEY_RECEIVED => {
+                if let Some(mode) = correction_mode_from_message_id(message.wparam) {
+                    append_hotkey_signal_log(&format!("hook_message_received {mode:?}"));
+                    on_hotkey_received(mode);
+                }
+            }
+            WM_STEPLER_HOTKEY_UNSUPPORTED => {
+                if let Some(mode) = correction_mode_from_message_id(message.wparam) {
+                    append_hotkey_signal_log(&format!("hook_message_unsupported {mode:?}"));
+                    on_hotkey_unsupported(mode);
                 }
             }
             WM_STEPLER_KEYBOARD_CONTROL => {
@@ -292,12 +313,16 @@ where
 }
 
 #[cfg(not(windows))]
-pub fn message_loop_with_keyboard_controls<F, G>(
+pub fn message_loop_with_keyboard_controls<F, H, U, G>(
     _on_hotkey: F,
+    _on_hotkey_received: H,
+    _on_hotkey_unsupported: U,
     _on_control: G,
 ) -> Result<(), PlatformError>
 where
     F: FnMut(stepler_core::CorrectionMode),
+    H: FnMut(stepler_core::CorrectionMode),
+    U: FnMut(stepler_core::CorrectionMode),
     G: FnMut(KeyboardControlAction),
 {
     Err(PlatformError::Unsupported)
@@ -712,13 +737,9 @@ fn apply_replacement(
         Some(MethodId::ClipboardSelection) => ClipboardSelectionMethod.apply(context, plan),
         Some(MethodId::SendInput) => SendInputMethod.apply(context, plan),
         Some(_) => Err(PlatformError::ReplacementUnavailable),
-        None if context.control_id.starts_with("terminal-console:") => {
-            ConsoleBufferMethod.apply(context, plan)
-        }
-        None if context.control_id.starts_with("terminal:") => {
-            TerminalClipboardShortcutMethod.apply(context, plan)
-        }
-        None => Win32EditMessagesMethod.apply(context, plan),
+        None => Err(PlatformError::ReplacementUnavailableReason(String::from(
+            "missing_method_binding",
+        ))),
     }
 }
 
@@ -843,8 +864,7 @@ fn foreground_is_codex_embedded_terminal_cached(foreground: isize, allow_cached:
 }
 
 fn allow_uia_document_caret_fallback(target: &ForegroundTarget) -> bool {
-    let _ = target;
-    false
+    classify_surface(target).kind == SurfaceKind::StickyNotes
 }
 
 fn active_correction_mode_is_scrolllock() -> bool {
@@ -2108,6 +2128,17 @@ unsafe extern "system" fn low_level_keyboard_proc(
         if terminal_passthrough == TerminalPassthrough::None
             && terminal_needs_conservative_suppression()
         {
+            let mode = KEYBOARD_CONTROL_STATE
+                .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
+                .lock()
+                .ok()
+                .and_then(|mut state| {
+                    state.handle_classic_console_pause_key(vk_code, is_down, is_up)
+                });
+            if let Some(mode) = mode {
+                post_hotkey_received_from_hook(mode, vk_code, is_down, is_up);
+                post_hotkey_unsupported_from_hook(mode, vk_code, is_down, is_up);
+            }
             append_hotkey_signal_log(&format!(
                 "hook_terminal_conservative_suppressed vk={vk_code} down={is_down} up={is_up}"
             ));
@@ -2133,6 +2164,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
             append_hotkey_signal_log(&format!(
                 "hook_ssh_remote_forwarded mode={mode:?} vk={vk_code} down={is_down} up={is_up}"
             ));
+            post_hotkey_received_from_hook(mode, vk_code, is_down, is_up);
             send_ssh_terminal_sequence(mode);
             return 1;
         }
@@ -2150,22 +2182,20 @@ unsafe extern "system" fn low_level_keyboard_proc(
             terminal_passthrough,
             TerminalPassthrough::Ssh | TerminalPassthrough::UnknownTerminal
         ) {
+            let mode = KEYBOARD_CONTROL_STATE
+                .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
+                .lock()
+                .ok()
+                .and_then(|mut state| {
+                    state.handle_classic_console_pause_key(vk_code, is_down, is_up)
+                });
+            if let Some(mode) = mode {
+                post_hotkey_received_from_hook(mode, vk_code, is_down, is_up);
+                post_hotkey_unsupported_from_hook(mode, vk_code, is_down, is_up);
+            }
             append_hotkey_signal_log(&format!(
                 "hook_terminal_suppressed kind={terminal_passthrough:?} vk={vk_code} down={is_down} up={is_up}"
             ));
-            let _ = KEYBOARD_CONTROL_STATE
-                .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
-                .lock()
-                .map(|mut state| {
-                    if is_down {
-                        state.mark_pause_down();
-                        state.left_ctrl_used |= state.left_ctrl_down;
-                        state.right_ctrl_used |= state.right_ctrl_down;
-                    }
-                    if is_up {
-                        state.mark_pause_up();
-                    }
-                });
             return 1;
         }
         if terminal_passthrough == TerminalPassthrough::TerminalApp {
@@ -2202,11 +2232,23 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 }
                 TerminalPauseHandling::Suppress => return 1,
                 TerminalPauseHandling::TranslateToF13 => {
+                    post_hotkey_received_from_hook(
+                        stepler_core::CorrectionMode::Pause,
+                        vk_code,
+                        is_down,
+                        is_up,
+                    );
                     release_modifier_keys();
                     send_key_virtual(VK_F13);
                     return 1;
                 }
                 TerminalPauseHandling::TranslateToF14 => {
+                    post_hotkey_received_from_hook(
+                        stepler_core::CorrectionMode::ScrollLock,
+                        vk_code,
+                        is_down,
+                        is_up,
+                    );
                     release_modifier_keys();
                     send_key_virtual(VK_F14);
                     return 1;
@@ -2380,6 +2422,60 @@ fn post_correction_hotkey_from_hook(
         ));
     } else {
         append_hotkey_signal_log(&format!("hook_no_thread mode={mode:?} vk={vk_code}"));
+    }
+}
+
+#[cfg(windows)]
+fn post_hotkey_received_from_hook(
+    mode: stepler_core::CorrectionMode,
+    vk_code: u32,
+    is_down: bool,
+    is_up: bool,
+) {
+    post_hotkey_signal_from_hook(
+        WM_STEPLER_HOTKEY_RECEIVED,
+        "hook_post_received",
+        mode,
+        vk_code,
+        is_down,
+        is_up,
+    );
+}
+
+#[cfg(windows)]
+fn post_hotkey_unsupported_from_hook(
+    mode: stepler_core::CorrectionMode,
+    vk_code: u32,
+    is_down: bool,
+    is_up: bool,
+) {
+    post_hotkey_signal_from_hook(
+        WM_STEPLER_HOTKEY_UNSUPPORTED,
+        "hook_post_unsupported",
+        mode,
+        vk_code,
+        is_down,
+        is_up,
+    );
+}
+
+#[cfg(windows)]
+fn post_hotkey_signal_from_hook(
+    message: u32,
+    label: &str,
+    mode: stepler_core::CorrectionMode,
+    vk_code: u32,
+    is_down: bool,
+    is_up: bool,
+) {
+    if let Some(thread_id) = KEYBOARD_CONTROL_THREAD_ID.get().copied() {
+        let posted =
+            unsafe { PostThreadMessageW(thread_id, message, correction_mode_message_id(mode), 0) };
+        append_hotkey_signal_log(&format!(
+            "{label} mode={mode:?} vk={vk_code} down={is_down} up={is_up} posted={posted}"
+        ));
+    } else {
+        append_hotkey_signal_log(&format!("{label}_no_thread mode={mode:?} vk={vk_code}"));
     }
 }
 
@@ -2584,6 +2680,10 @@ const STEPLER_INJECTED_CONTROL_MAGIC: usize = 0x5354_4550_4C45_5201;
 const WM_STEPLER_KEYBOARD_CONTROL: u32 = 0x8001;
 #[cfg(windows)]
 const WM_STEPLER_HOTKEY: u32 = 0x8002;
+#[cfg(windows)]
+const WM_STEPLER_HOTKEY_RECEIVED: u32 = 0x8003;
+#[cfg(windows)]
+const WM_STEPLER_HOTKEY_UNSUPPORTED: u32 = 0x8004;
 #[cfg(windows)]
 const WM_QUIT: u32 = 0x0012;
 #[cfg(windows)]

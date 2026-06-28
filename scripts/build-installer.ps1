@@ -2,7 +2,9 @@ param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
     [string]$BuildVersion = "",
-    [string]$FileVersion = ""
+    [string]$FileVersion = "",
+    [string]$DistDir = "",
+    [string]$SetupOutputDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,8 +13,16 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptDir "..")
 $setupScript = Join-Path $repoRoot "setup.iss"
 $releaseScript = Join-Path $scriptDir "build-release.ps1"
-$distDir = Join-Path $repoRoot "dist\Stepler"
-$setupOutputDir = Join-Path $repoRoot "SetupOutput"
+if ([string]::IsNullOrWhiteSpace($DistDir)) {
+    $distDir = Join-Path $repoRoot "dist\Stepler"
+} else {
+    $distDir = [System.IO.Path]::GetFullPath($DistDir)
+}
+if ([string]::IsNullOrWhiteSpace($SetupOutputDir)) {
+    $setupOutputDir = Join-Path $repoRoot "SetupOutput"
+} else {
+    $setupOutputDir = [System.IO.Path]::GetFullPath($SetupOutputDir)
+}
 
 Set-Location $repoRoot
 
@@ -53,10 +63,12 @@ if ([string]::IsNullOrWhiteSpace($productVersion)) {
 
 New-Item -ItemType Directory -Force -Path $setupOutputDir | Out-Null
 Get-ChildItem -Path $setupOutputDir -Filter "SteplerSetup-*.exe" -File -ErrorAction SilentlyContinue |
-    Remove-Item -Force
+    Remove-Item -Force -ErrorAction SilentlyContinue
 
 Write-Host "Building installer for version $productVersion..." -ForegroundColor Cyan
-& $isccPath "/DMyAppVersion=$productVersion" $setupScript
+$relativeDistDir = [System.IO.Path]::GetRelativePath($repoRoot, $distDir)
+$relativeSetupOutputDir = [System.IO.Path]::GetRelativePath($repoRoot, $setupOutputDir)
+& $isccPath "/DMyAppVersion=$productVersion" "/DMyAppDistDir=$relativeDistDir" "/DMyAppOutputDir=$relativeSetupOutputDir" $setupScript
 
 $installerPath = Join-Path $setupOutputDir ("SteplerSetup-{0}.exe" -f $productVersion)
 if (-not (Test-Path $installerPath)) {

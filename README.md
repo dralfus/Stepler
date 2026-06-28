@@ -227,8 +227,7 @@ Installer build:
 Дополнительные документы:
 
 - [Команды разработки](docs/development_commands_ru.md)
-- [Итоговая ревизия устойчивости адаптеров](docs/adapter_architecture_stability_review_ru.md)
-- [План hardening изоляции адаптеров](docs/adapter_isolation_hardening_plan_ru.md)
+- [План стабилизации архитектуры](docs/stabilization_plan_ru.md)
 - [Release smoke checklist](docs/release_smoke_checklist_ru.md)
 - [Установка](INSTALL_README.md)
 - [Release notes 1.0](docs/release_notes_1.0_ru.md)

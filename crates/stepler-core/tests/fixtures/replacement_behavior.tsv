@@ -2,6 +2,8 @@
 pause-selected-word	pause	hello [k.,jdm]	hello {k.,jdm}	любовь	hello любовь|
 pause-word-before-caret	pause	hello k.,jdm|	hello {k.,jdm}	любовь	hello любовь|
 pause-word-before-trailing-space	pause	hello k.,jdm |	hello {k.,jdm }	любовь 	hello любовь |
+pause-sparse-mistyped-word-before-valid-filename	pause	bcgjkpeq outlookhaging.md|	{bcgjkpeq} outlookhaging.md	исползуй	исползуй outlookhaging.md|
+pause-sticky-notes-sparse-word-before-valid-filename	pause	. \r\nbcgjkpeq outlookhaging.md|\r\n	. \r\n{bcgjkpeq} outlookhaging.md\r\n	исползуй	. \r\nисползуй outlookhaging.md|\r\n
 scrolllock-mixed-tail	scrolllock	вальс поле long ghbdtn vbh|	вальс поле long {ghbdtn vbh}	привет мир	вальс поле long привет мир|
 scrolllock-selected-text	scrolllock	[ghbdtn vbh]	{ghbdtn vbh}	привет мир	привет мир|
 scrolllock-caret-inside-word	scrolllock	раз два три. xtnsht,\nлюбовь\nk.,j|dm	раз два три. xtnsht,\nлюбовь\n{k.,jdm}	любовь	раз два три. xtnsht,\nлюбовь\nлюбовь|

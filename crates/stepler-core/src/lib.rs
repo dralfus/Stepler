@@ -78,6 +78,16 @@ mod tests {
     }
 
     #[test]
+    fn pause_does_not_convert_filename_when_no_sparse_source_exists() {
+        let context = TextContext::new("используй outlookhaging.md")
+            .with_caret(TextRange::caret("используй outlookhaging.md".len()));
+
+        let err = build_replacement_plan(&context, CorrectionMode::Pause).unwrap_err();
+
+        assert_eq!(err, CorrectionError::NoTextToReplace);
+    }
+
+    #[test]
     fn pause_returns_none_when_no_word_is_available() {
         let context = TextContext::new("   ").with_caret(TextRange::caret(3));
 
@@ -222,6 +232,16 @@ mod tests {
     }
 
     #[test]
+    fn scrolllock_ignores_trailing_line_break_after_mistyped_line() {
+        let context = TextContext::new(". \r\nbcgjkpeq outlookhaging.md\r\n");
+
+        let plan = build_replacement_plan(&context, CorrectionMode::ScrollLock).unwrap();
+
+        assert_eq!(plan.expected_before_text, "bcgjkpeq");
+        assert_eq!(plan.replacement_text, "исползуй");
+    }
+
+    #[test]
     fn transaction_follows_successful_lifecycle() {
         let mut transaction = Transaction::new("op-1", CorrectionMode::Pause);
 
@@ -297,6 +317,46 @@ mod tests {
     }
 
     #[test]
+    fn transaction_metrics_include_no_change_operations() {
+        let mut transaction = Transaction::new("op-1", CorrectionMode::ScrollLock);
+
+        transaction
+            .transition_to(OperationState::HotkeyReceived)
+            .unwrap();
+        transaction.transition_to(OperationState::NoChange).unwrap();
+
+        let metrics = transaction.metrics();
+
+        assert_eq!(transaction.state(), OperationState::NoChange);
+        assert!(transaction.is_terminal());
+        assert_eq!(
+            metrics.timings.last().map(|timing| timing.state),
+            Some(OperationState::NoChange)
+        );
+    }
+
+    #[test]
+    fn transaction_metrics_include_unsupported_operations() {
+        let mut transaction = Transaction::new("op-1", CorrectionMode::Pause);
+
+        transaction
+            .transition_to(OperationState::HotkeyReceived)
+            .unwrap();
+        transaction
+            .transition_to(OperationState::Unsupported)
+            .unwrap();
+
+        let metrics = transaction.metrics();
+
+        assert_eq!(transaction.state(), OperationState::Unsupported);
+        assert!(transaction.is_terminal());
+        assert_eq!(
+            metrics.timings.last().map(|timing| timing.state),
+            Some(OperationState::Unsupported)
+        );
+    }
+
+    #[test]
     fn operation_gate_blocks_duplicate_control_until_release() {
         let mut gate = OperationGate::new();
 
@@ -344,5 +404,57 @@ mod tests {
         );
         assert!(json.contains("\"timings_ms\":[{\"state\":\"ContextCaptured\",\"elapsed_ms\":2}]"));
         assert!(json.ends_with('\n'));
+    }
+
+    #[test]
+    fn operation_log_event_formats_no_change_state() {
+        let event = OperationLogEvent {
+            operation_id: String::from("unknown"),
+            timestamp_unix_ms: 1_718_000_000_123,
+            trigger: LogTrigger::ScrollLock,
+            state: OperationState::NoChange,
+            app: None,
+            provider: Some(String::from("WindowsTextContextProvider")),
+            replacer: Some(String::from("WindowsTextReplacer")),
+            range: None,
+            expected_before_text: Some(String::from("Correction(NoTextToReplace)")),
+            replacement_text: None,
+            resolver_trace: None,
+            clipboard_used: false,
+            duration_ms: 42,
+            timings: Vec::new(),
+        };
+
+        let json = event.to_json_line();
+
+        assert!(json.contains("\"trigger\":\"ScrollLock\""));
+        assert!(json.contains("\"state\":\"NoChange\""));
+        assert!(json.contains("\"expected_before_text\":\"Correction(NoTextToReplace)\""));
+    }
+
+    #[test]
+    fn operation_log_event_formats_unsupported_state() {
+        let event = OperationLogEvent {
+            operation_id: String::from("unsupported"),
+            timestamp_unix_ms: 1_718_000_000_123,
+            trigger: LogTrigger::Pause,
+            state: OperationState::Unsupported,
+            app: None,
+            provider: Some(String::from("WindowsTextContextProvider")),
+            replacer: None,
+            range: None,
+            expected_before_text: Some(String::from("unsupported_surface")),
+            replacement_text: None,
+            resolver_trace: None,
+            clipboard_used: false,
+            duration_ms: 0,
+            timings: Vec::new(),
+        };
+
+        let json = event.to_json_line();
+
+        assert!(json.contains("\"trigger\":\"Pause\""));
+        assert!(json.contains("\"state\":\"Unsupported\""));
+        assert!(json.contains("\"expected_before_text\":\"unsupported_surface\""));
     }
 }

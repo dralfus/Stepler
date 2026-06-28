@@ -11,6 +11,8 @@ pub enum OperationState {
     PreflightChecked,
     ReplacementApplied,
     Verified,
+    NoChange,
+    Unsupported,
     RolledBackOrFailed,
     Completed,
 }
@@ -74,7 +76,10 @@ impl Transaction {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self.state,
-            OperationState::Completed | OperationState::RolledBackOrFailed
+            OperationState::Completed
+                | OperationState::NoChange
+                | OperationState::Unsupported
+                | OperationState::RolledBackOrFailed
         )
     }
 
@@ -159,6 +164,18 @@ fn is_valid_transition(current: OperationState, next: OperationState) -> bool {
             | (PreflightChecked, ReplacementApplied)
             | (ReplacementApplied, Verified)
             | (Verified, Completed)
+            | (HotkeyReceived, NoChange)
+            | (ContextCaptured, NoChange)
+            | (PlanBuilt, NoChange)
+            | (PreflightChecked, NoChange)
+            | (ReplacementApplied, NoChange)
+            | (Verified, NoChange)
+            | (HotkeyReceived, Unsupported)
+            | (ContextCaptured, Unsupported)
+            | (PlanBuilt, Unsupported)
+            | (PreflightChecked, Unsupported)
+            | (ReplacementApplied, Unsupported)
+            | (Verified, Unsupported)
             | (HotkeyReceived, RolledBackOrFailed)
             | (ContextCaptured, RolledBackOrFailed)
             | (PlanBuilt, RolledBackOrFailed)

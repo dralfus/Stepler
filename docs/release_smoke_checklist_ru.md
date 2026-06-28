@@ -2,6 +2,27 @@
 
 Чек-лист для первого Windows-релиза Stepler 1.0. Цель - быстро поймать регрессии, которые реально портят пользовательский сценарий: неправильная замена, сломанный clipboard, зависшие modifier-клавиши, неработающий tray или неверный method resolver.
 
+## 0. Карта проверок
+
+Adapter contracts и продуктовый smoke проверяют разные риски, поэтому их не
+нужно смешивать:
+
+- adapter policy/classifier/resolver: `cargo test -p stepler-platform`, contract
+  fixtures `probe_contracts.tsv` и `resolver_contracts.tsv`, policy invariants;
+- replacement behavior: `cargo test -p stepler-core`;
+- Windows runtime boundaries и adapter-specific protection:
+  `cargo test -p stepler-platform-windows`;
+- hotkey/layout/tray lifecycle: ручной smoke через tray из `dist` или debug
+  build, плюс проверка логов;
+- Qwen input/workspace: ручной smoke окна ввода, workspace attach/focus и
+  отправки текста;
+- installer/release package: ручной install smoke из `SetupOutput`.
+
+Если меняется adapter policy или classifier, сначала должны пройти contract
+tests. Если меняется tray, installer, Qwen input/workspace или запуск процесса,
+нужен ручной smoke соответствующего продукта. Не добавлять большую матрицу
+ручных проверок без повторяющейся регрессии.
+
 ## 1. Подготовка
 
 Закрыть старые экземпляры Stepler:
@@ -17,10 +38,17 @@ cargo build -p stepler-cli
 dotnet build .\apps\Stepler.Tray\Stepler.Tray.csproj -nologo -c Debug
 ```
 
-Запустить tray:
+Запустить tray из debug-сборки:
 
 ```powershell
 Start-Process .\apps\Stepler.Tray\bin\Debug\net9.0-windows\Stepler.exe
+```
+
+Для release/runtime изменений дополнительно проверить запуск из релизной папки
+вне sandbox:
+
+```powershell
+Start-Process .\dist\Stepler\Stepler.exe
 ```
 
 В tray menu должны быть доступны:
@@ -43,6 +71,15 @@ dotnet build .\apps\Stepler.Tray\Stepler.Tray.csproj -nologo -c Debug
 ```
 
 Критерий: все команды проходят без ошибок.
+
+Минимальный набор для adapter-only правок:
+
+```powershell
+cargo test -p stepler-core -p stepler-platform -p stepler-platform-windows
+```
+
+Для tray/installer/Qwen workspace этот набор не заменяет ручной smoke: он только
+подтверждает, что adapter contracts и runtime boundaries не сломаны.
 
 Если `dotnet build` ругается на занятый `Stepler.exe`/`Stepler.Tray.exe`, закрыть tray через меню или выполнить команду из раздела подготовки.
 
@@ -163,7 +200,7 @@ cargo run -p stepler-cli -- diagnose-focus --delay 3 --methods
 
 Если включить `Risky fallback adapters` в tray, проверять только вручную и считать режим экспериментальным. Для релиза 1.0 это не основной поддерживаемый путь.
 
-## 9. Tray settings persistence
+## 9. Tray/Qwen lifecycle smoke
 
 Проверки:
 
@@ -171,7 +208,12 @@ cargo run -p stepler-cli -- diagnose-focus --delay 3 --methods
 - включить `Pause` обратно, убедиться, что он снова работает;
 - выключить `Left/Right Ctrl`, проверить что одиночные Ctrl больше не переключают раскладку Stepler;
 - перезапустить tray, убедиться, что настройки сохранились;
-- файл настроек существует в `%APPDATA%\Stepler\settings.json`.
+- файл настроек существует в `%APPDATA%\Stepler\settings.json`;
+- открыть `Qwen input...`, проверить ввод текста, `Pause`/`Ctrl+Pause`,
+  отображение результата P/CP и отправку в Qwen;
+- открыть `Qwen workspace`, проверить, что окно терминала прикрепилось,
+  фокус остается в Stepler Qwen input, а перезапуск Stepler не закрывает
+  существующую Qwen-сессию.
 
 ## 10. Логи
 

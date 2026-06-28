@@ -11,6 +11,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**;bin\**</DefaultItemExcludes>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\Stepler.Shared\QwenInputCorrectionController.cs" Link="QwenInputCorrectionController.cs" />

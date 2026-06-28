@@ -30,6 +30,51 @@ App/surface routing должен жить в classifier, `ProbePolicy`, `Surface
 contract fixtures. Если хочется менять `WebKeyboardSelectionMethod.probe`,
 сначала разделить: это technical predicate или policy-решение.
 
+Если новое приложение определяется как `SurfaceKind::Unknown`, не расширять
+обычный `Unknown` fallback ради быстрого исправления. Правильный путь - добавить
+или уточнить surface contract в `probe_contracts.tsv` / `resolver_contracts.tsv`
+и затем менять classifier/policy. Широкий probing для неизвестных окон разрешен
+только как явная диагностика через `STEPLER_DIAGNOSTIC_UNKNOWN_PROBES`.
+
+### Чеклист добавления нового приложения или surface
+
+1. Снять диагностику в нужном поле ввода:
+
+   ```powershell
+   F:\distr\system\Stepler\dist\Stepler\stepler-cli.exe diagnose-focus --delay 3 --methods --surface
+   ```
+
+2. По выводу диагностики определить, что меняется:
+   - только признаки окна -> `TargetFacts` / `classify_surface`;
+   - разрешенные методы -> `ProbePolicy` / `SurfacePolicy`;
+   - техническая возможность метода -> adapter implementation и
+     `AdapterContract`.
+3. Если нужна новая surface, добавить или уточнить `SurfaceKind` и classifier
+   evidence. Не расширять `Unknown`.
+4. Добавить или обновить строку в
+   `crates/stepler-platform/tests/fixtures/probe_contracts.tsv`.
+5. Добавить или обновить строку в
+   `crates/stepler-platform/tests/fixtures/resolver_contracts.tsv`.
+6. Проверить forbidden/risky/bridge methods:
+   - risky method требует явного policy allowance;
+   - bridge/control-plane method требует явного surface allowance;
+   - generic clipboard/send_input fallback не должен попадать в обычную
+     surface без отдельного contract.
+7. Только после этого менять technical adapter, если contracts показывают, что
+   проблема действительно в техническом capture/apply.
+8. Для UI/runtime cases добавить manual smoke note в подходящий checklist или
+   рядом с диагностикой задачи.
+9. Минимальная проверка перед завершением:
+
+   ```powershell
+   cargo fmt
+   cargo test -p stepler-platform
+   ```
+
+Актуальный план стабилизации архитектуры находится в
+`docs/stabilization_plan_ru.md`. Старые phase-by-phase hardening/review
+документы больше не являются источником правды.
+
 ## Ручной smoke без hotkey
 
 После этапа Win32 Edit adapter можно проверить активный Notepad без global hotkey:

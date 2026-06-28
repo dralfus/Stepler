@@ -94,6 +94,8 @@ impl OperationState {
             Self::PreflightChecked => "PreflightChecked",
             Self::ReplacementApplied => "ReplacementApplied",
             Self::Verified => "Verified",
+            Self::NoChange => "NoChange",
+            Self::Unsupported => "Unsupported",
             Self::RolledBackOrFailed => "RolledBackOrFailed",
             Self::Completed => "Completed",
         }

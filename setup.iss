@@ -1,5 +1,11 @@
 #define MyAppName "Stepler"
-#define MyAppExe "dist\Stepler\Stepler.exe"
+#ifndef MyAppDistDir
+#define MyAppDistDir "dist\Stepler"
+#endif
+#ifndef MyAppOutputDir
+#define MyAppOutputDir "SetupOutput"
+#endif
+#define MyAppExe MyAppDistDir + "\Stepler.exe"
 #ifndef MyAppVersion
 #define MyAppVersion GetStringFileInfo(AddBackslash(SourcePath) + MyAppExe, "ProductVersion")
 #endif
@@ -15,7 +21,7 @@ AppPublisher={#MyAppName}
 UninstallDisplayIcon={app}\Stepler.exe
 DefaultDirName={commonpf}\Stepler
 DefaultGroupName=Stepler
-OutputDir=SetupOutput
+OutputDir={#MyAppOutputDir}
 OutputBaseFilename=SteplerSetup-{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
@@ -24,7 +30,7 @@ CloseApplications=yes
 RestartApplications=no
 
 [Files]
-Source: "dist\Stepler\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "{#MyAppDistDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
 Name: "{group}\Stepler"; Filename: "{app}\Stepler.exe"

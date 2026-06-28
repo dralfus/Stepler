@@ -1114,6 +1114,18 @@ internal sealed class SteplerTrayForm : Form
                 text = $"{label} нажата";
                 return true;
             }
+            if (string.Equals(state, "NoChange", StringComparison.Ordinal))
+            {
+                failed = false;
+                text = $"{label} нечего менять";
+                return true;
+            }
+            if (string.Equals(state, "Unsupported", StringComparison.Ordinal))
+            {
+                failed = false;
+                text = $"{label} не поддерживается";
+                return true;
+            }
 
             failed = !string.Equals(state, "Completed", StringComparison.Ordinal);
             if (failed)

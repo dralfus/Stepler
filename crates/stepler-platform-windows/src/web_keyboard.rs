@@ -292,15 +292,26 @@ impl WebKeyboardSelectionMethod {
                         "web_keyboard_capture branch=scrolllock_left len={}",
                         text.len()
                     ));
-                    return Ok(web_keyboard_context(
+                    let context = web_keyboard_context(
                         app_class,
                         focused_class,
                         foreground,
                         focused,
-                        web_keyboard_control_prefix("web-keyboard-selection", profile),
+                        "web-keyboard-captured-left-selection",
                         text,
                         false,
-                    ));
+                    );
+                    if stepler_core::build_replacement_plan(
+                        &context,
+                        stepler_core::CorrectionMode::ScrollLock,
+                    )
+                    .is_ok()
+                    {
+                        return Ok(context);
+                    }
+                    append_hotkey_signal_log(
+                        "web_keyboard_capture branch=scrolllock_left skipped=no_plan",
+                    );
                 }
 
                 if web_ctrl_a_fallback_enabled() {
@@ -448,7 +459,7 @@ impl WebKeyboardSelectionMethod {
                         focused_class,
                         foreground,
                         focused,
-                        web_keyboard_control_prefix("web-keyboard-selection", profile),
+                        "web-keyboard-captured-left-selection",
                         text,
                         false,
                     ));
@@ -565,6 +576,87 @@ impl WebKeyboardSelectionMethod {
             });
         }
 
+        if web_keyboard_captured_left_context(&context.control_id) {
+            let snapshot = capture_clipboard_text_only()?;
+            select_web_left_context();
+            std::thread::sleep(Duration::from_millis(50));
+            let selected = copy_selected_text_checked(&snapshot, Duration::from_millis(650));
+            let Some(selected_text) = selected else {
+                send_key(VK_RIGHT);
+                let _ = restore_clipboard_text_only(&snapshot);
+                return Err(PlatformError::ReplacementUnavailableReason(format!(
+                    "web_keyboard_captured_left_preflight expected={} actual=<none>",
+                    preview_for_error(&context.text_snapshot, 40)
+                )));
+            };
+
+            let (replacement_text, actual_before_text) =
+                match web_keyboard_captured_left_replacement_text(context, plan, &selected_text) {
+                    Ok(replacement) => replacement,
+                    Err(error) => {
+                        send_key(VK_RIGHT);
+                        let _ = restore_clipboard_text_only(&snapshot);
+                        return Err(error);
+                    }
+                };
+
+            restore_clipboard(clipboard_snapshot_from_text(&replacement_text))?;
+            send_key_chord_virtual(&[VK_CONTROL], VK_V);
+            std::thread::sleep(Duration::from_millis(30));
+            let _ = restore_clipboard_text_only(&snapshot);
+            append_hotkey_signal_log(&format!(
+                "web_keyboard_captured_left_paste expected_len={} replacement_len={}",
+                context.text_snapshot.len(),
+                replacement_text.len()
+            ));
+            return Ok(ApplyReplacementResult {
+                applied: true,
+                actual_before_text: Some(actual_before_text),
+                actual_after_text: Some(replacement_text),
+                method: MethodId::WebKeyboardSelection.as_str().to_owned(),
+            });
+        }
+
+        if is_web_keyboard_line_context(&context.control_id) && is_sticky_notes_context(context) {
+            let snapshot = capture_clipboard_text_only()?;
+            select_web_line_left_context();
+            std::thread::sleep(Duration::from_millis(50));
+            let selected = copy_selected_text_checked(&snapshot, Duration::from_millis(650));
+            let Some(selected_text) = selected else {
+                send_key(VK_RIGHT);
+                let _ = restore_clipboard_text_only(&snapshot);
+                return Err(PlatformError::ReplacementUnavailableReason(format!(
+                    "web_keyboard_sticky_line_preflight expected={} actual=<none>",
+                    preview_for_error(&context.text_snapshot, 40)
+                )));
+            };
+
+            let (replacement_text, actual_before_text) =
+                match web_keyboard_sticky_line_replacement_text(context, plan, &selected_text) {
+                    Ok(replacement) => replacement,
+                    Err(error) => {
+                        send_key(VK_RIGHT);
+                        let _ = restore_clipboard_text_only(&snapshot);
+                        return Err(error);
+                    }
+                };
+
+            let _ = restore_clipboard_text_only(&snapshot);
+            std::thread::sleep(Duration::from_millis(20));
+            send_unicode_text(&replacement_text)?;
+            append_hotkey_signal_log(&format!(
+                "web_keyboard_sticky_line_sendinput selected_len={} replacement_len={}",
+                selected_text.len(),
+                replacement_text.len()
+            ));
+            return Ok(ApplyReplacementResult {
+                applied: true,
+                actual_before_text: Some(actual_before_text),
+                actual_after_text: Some(replacement_text),
+                method: MethodId::WebKeyboardSelection.as_str().to_owned(),
+            });
+        }
+
         let replace_entire_context = plan.range.end != context.text_snapshot.len();
         let replacement_text = if replace_entire_context {
             let mut rebuilt = String::with_capacity(
@@ -599,6 +691,7 @@ impl WebKeyboardSelectionMethod {
                     text_to_send.len()
                 ));
             } else {
+                preflight_fast_web_selection(expected_selection)?;
                 send_unicode_text(&text_to_send)?;
             }
             append_hotkey_signal_log(&format!(
@@ -715,8 +808,52 @@ fn restore_web_keyboard_clipboard(
 
 #[cfg(windows)]
 fn restore_web_line_left_context_caret() {
-    send_key(VK_END);
+    send_key(VK_RIGHT);
     release_modifier_keys();
+}
+
+#[cfg(windows)]
+fn preflight_fast_web_selection(expected_selection: &str) -> Result<(), PlatformError> {
+    let clipboard_timeout = Duration::from_millis(180);
+    let snapshot = capture_clipboard_text_only_with_timeout(clipboard_timeout)?;
+    let mut selected = copy_selected_text_checked_with_chord_and_clipboard_timeout(
+        &snapshot,
+        &[VK_CONTROL],
+        VK_INSERT,
+        Duration::from_millis(220),
+        clipboard_timeout,
+    );
+
+    if selected.as_deref() != Some(expected_selection) {
+        append_hotkey_signal_log(&format!(
+            "web_keyboard_fast_preflight_retry expected={} actual={}",
+            preview_for_error(expected_selection, 40),
+            preview_for_error(selected.as_deref().unwrap_or("<none>"), 40)
+        ));
+        send_key(VK_RIGHT);
+        std::thread::sleep(Duration::from_millis(35));
+        select_left_utf16_units(expected_selection.encode_utf16().count())?;
+        std::thread::sleep(Duration::from_millis(25));
+        selected = copy_selected_text_checked_with_chord_and_clipboard_timeout(
+            &snapshot,
+            &[VK_CONTROL],
+            VK_INSERT,
+            Duration::from_millis(260),
+            clipboard_timeout,
+        );
+    }
+
+    let _ = restore_clipboard_text_only_with_timeout(&snapshot, clipboard_timeout);
+    if selected.as_deref() == Some(expected_selection) {
+        return Ok(());
+    }
+
+    send_key(VK_RIGHT);
+    Err(PlatformError::ReplacementUnavailableReason(format!(
+        "web_keyboard_fast_preflight expected={} actual={}",
+        preview_for_error(expected_selection, 40),
+        preview_for_error(selected.as_deref().unwrap_or("<none>"), 40)
+    )))
 }
 
 #[cfg(windows)]
@@ -740,7 +877,7 @@ fn copy_web_keyboard_selected_text(
 }
 
 #[cfg(windows)]
-fn web_keyboard_context(
+pub(super) fn web_keyboard_context(
     app_class: &str,
     focused_class: &str,
     foreground: isize,
@@ -749,6 +886,7 @@ fn web_keyboard_context(
     text: String,
     has_selection: bool,
 ) -> TextContext {
+    let text = normalize_web_keyboard_context_text(control_prefix, text);
     let text_len = text.len();
     TextContext {
         app_id: format!("{app_class}/{focused_class}"),
@@ -770,6 +908,16 @@ fn web_keyboard_context(
 }
 
 #[cfg(windows)]
+fn normalize_web_keyboard_context_text(control_prefix: &str, text: String) -> String {
+    if control_prefix != "web-keyboard-captured-left-selection" {
+        return text;
+    }
+
+    let (core, _) = split_trailing_line_breaks(&text);
+    core.to_owned()
+}
+
+#[cfg(windows)]
 pub(super) fn web_keyboard_fast_context(control_id: &str) -> bool {
     control_id.starts_with("web-keyboard-fast-selection:")
         || control_id.starts_with("web-keyboard-fast-line-selection:")
@@ -785,6 +933,169 @@ pub(super) fn web_keyboard_rocket_fast_context(control_id: &str) -> bool {
 #[cfg(windows)]
 pub(super) fn web_keyboard_rocket_active_line_context(control_id: &str) -> bool {
     control_id.starts_with("web-keyboard-rocket-active-line-selection:")
+}
+
+#[cfg(windows)]
+pub(super) fn web_keyboard_captured_left_context(control_id: &str) -> bool {
+    control_id.starts_with("web-keyboard-captured-left-selection:")
+}
+
+#[cfg(windows)]
+pub(super) fn web_keyboard_captured_left_replacement_text(
+    context: &TextContext,
+    plan: &ReplacementPlan,
+    selected_text: &str,
+) -> Result<(String, String), PlatformError> {
+    let (selected_core, selected_suffix) = split_trailing_line_breaks(selected_text);
+    let (context_core, _) = split_trailing_line_breaks(&context.text_snapshot);
+
+    if selected_core == context_core {
+        let core_plan = if context_core == context.text_snapshot {
+            plan.clone()
+        } else {
+            let core_context = TextContext {
+                app_id: context.app_id.clone(),
+                window_id: context.window_id.clone(),
+                control_id: context.control_id.clone(),
+                text_snapshot: context_core.to_owned(),
+                caret_range: TextRange::caret(context_core.len()),
+                selection_range: None,
+                capabilities: context.capabilities.clone(),
+            };
+            stepler_core::build_replacement_plan(&core_context, correction_mode_from_plan(plan))
+                .map_err(|error| {
+                    PlatformError::ReplacementUnavailableReason(format!(
+                        "web_keyboard_captured_left_replan_failed error={error:?} selected={}",
+                        preview_for_error(context_core, 40)
+                    ))
+                })?
+        };
+        let mut replacement_text =
+            replace_range_text(context_core, core_plan.range, &core_plan.replacement_text)
+                .ok_or(PlatformError::PreflightFailed)?;
+        replacement_text.push_str(selected_suffix);
+        return Ok((replacement_text, core_plan.expected_before_text));
+    }
+
+    if context_core.is_empty() || !selected_core.ends_with(context_core) {
+        return Err(PlatformError::ReplacementUnavailableReason(format!(
+            "web_keyboard_captured_left_preflight expected={} actual={}",
+            preview_for_error(context_core, 40),
+            preview_for_error(selected_text, 40)
+        )));
+    }
+
+    if correction_mode_from_plan(plan) == CorrectionMode::Pause {
+        let prefix_len = selected_core.len() - context_core.len();
+        let selected_prefix = &selected_core[..prefix_len];
+        if !selected_prefix.chars().all(char::is_whitespace) {
+            return Err(PlatformError::ReplacementUnavailableReason(format!(
+                "web_keyboard_captured_left_preflight non_whitespace_prefix expected={} actual={}",
+                preview_for_error(context_core, 40),
+                preview_for_error(selected_text, 40)
+            )));
+        }
+        let replacement_suffix =
+            replace_range_text(context_core, plan.range, &plan.replacement_text)
+                .ok_or(PlatformError::PreflightFailed)?;
+        let replacement_text = format!("{selected_prefix}{replacement_suffix}{selected_suffix}");
+
+        return Ok((replacement_text, plan.expected_before_text.clone()));
+    }
+
+    let selected_context = TextContext {
+        app_id: context.app_id.clone(),
+        window_id: context.window_id.clone(),
+        control_id: context.control_id.clone(),
+        text_snapshot: selected_core.to_owned(),
+        caret_range: TextRange::caret(selected_core.len()),
+        selection_range: None,
+        capabilities: context.capabilities.clone(),
+    };
+    let selected_plan =
+        stepler_core::build_replacement_plan(&selected_context, CorrectionMode::ScrollLock)
+            .map_err(|error| {
+                PlatformError::ReplacementUnavailableReason(format!(
+                    "web_keyboard_captured_left_replan_failed error={error:?} selected={}",
+                    preview_for_error(selected_core, 40)
+                ))
+            })?;
+    let replacement_text = replace_range_text(
+        selected_core,
+        selected_plan.range,
+        &selected_plan.replacement_text,
+    )
+    .ok_or(PlatformError::PreflightFailed)?;
+    let replacement_text = format!("{replacement_text}{selected_suffix}");
+
+    Ok((replacement_text, selected_plan.expected_before_text))
+}
+
+#[cfg(windows)]
+fn is_sticky_notes_context(context: &TextContext) -> bool {
+    context
+        .app_id
+        .starts_with("ApplicationFrameWindow/Windows.UI.Input.InputSite.WindowClass")
+}
+
+#[cfg(windows)]
+pub(super) fn web_keyboard_sticky_line_replacement_text(
+    context: &TextContext,
+    plan: &ReplacementPlan,
+    selected_text: &str,
+) -> Result<(String, String), PlatformError> {
+    let (selected_core, selected_suffix) = split_trailing_line_breaks(selected_text);
+    let (context_core, _) = split_trailing_line_breaks(&context.text_snapshot);
+
+    if context_core.is_empty() || !selected_core.ends_with(context_core) {
+        return Err(PlatformError::ReplacementUnavailableReason(format!(
+            "web_keyboard_sticky_line_preflight expected={} actual={}",
+            preview_for_error(context_core, 40),
+            preview_for_error(selected_text, 40)
+        )));
+    }
+
+    let selected_context = TextContext {
+        app_id: context.app_id.clone(),
+        window_id: context.window_id.clone(),
+        control_id: context.control_id.clone(),
+        text_snapshot: selected_core.to_owned(),
+        caret_range: TextRange::caret(selected_core.len()),
+        selection_range: None,
+        capabilities: context.capabilities.clone(),
+    };
+    let selected_plan =
+        stepler_core::build_replacement_plan(&selected_context, correction_mode_from_plan(plan))
+            .map_err(|error| {
+                PlatformError::ReplacementUnavailableReason(format!(
+                    "web_keyboard_sticky_line_replan_failed error={error:?} selected={}",
+                    preview_for_error(selected_core, 40)
+                ))
+            })?;
+    let replacement_text = replace_range_text(
+        selected_core,
+        selected_plan.range,
+        &selected_plan.replacement_text,
+    )
+    .ok_or(PlatformError::PreflightFailed)?;
+    let replacement_text = format!("{replacement_text}{selected_suffix}");
+
+    Ok((replacement_text, selected_plan.expected_before_text))
+}
+
+#[cfg(windows)]
+fn split_trailing_line_breaks(text: &str) -> (&str, &str) {
+    let trimmed_len = text.trim_end_matches(['\r', '\n']).len();
+    text.split_at(trimmed_len)
+}
+
+#[cfg(windows)]
+fn correction_mode_from_plan(plan: &ReplacementPlan) -> CorrectionMode {
+    if plan.reason.starts_with("scrolllock_") {
+        CorrectionMode::ScrollLock
+    } else {
+        CorrectionMode::Pause
+    }
 }
 
 #[cfg(windows)]

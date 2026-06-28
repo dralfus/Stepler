@@ -1,4 +1,4 @@
-use crate::{ForegroundTarget, ALL_METHOD_IDS};
+use crate::{target_facts::target_facts, ForegroundTarget, ALL_METHOD_IDS};
 use stepler_core::{CorrectionMode, MethodId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -277,14 +277,14 @@ pub fn default_surface_policies() -> Vec<SurfacePolicy> {
             surface: SurfaceKind::StickyNotes,
             pause_methods: same_preferences(vec![
                 MethodId::UiAutomationDocumentText,
-                MethodId::UiAutomationEditableText,
                 MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationEditableText,
                 MethodId::UiAutomationText,
             ]),
             scrolllock_methods: same_preferences(vec![
                 MethodId::UiAutomationDocumentText,
-                MethodId::UiAutomationEditableText,
                 MethodId::WebKeyboardSelection,
+                MethodId::UiAutomationEditableText,
                 MethodId::UiAutomationText,
             ]),
             forbidden_methods: vec![
@@ -463,6 +463,7 @@ pub fn default_probe_policies() -> Vec<ProbePolicy> {
                 MethodId::UiAutomationDocumentText,
                 MethodId::WebKeyboardSelection,
                 MethodId::UiAutomationEditableText,
+                MethodId::UiAutomationText,
             ],
             false,
         ),
@@ -482,7 +483,7 @@ pub fn default_probe_policies() -> Vec<ProbePolicy> {
             false,
         ),
         probe_policy(SurfaceKind::WordEditor, vec![MethodId::WordCom], false),
-        probe_policy(SurfaceKind::Unknown, ALL_METHOD_IDS.to_vec(), false),
+        probe_policy(SurfaceKind::Unknown, unknown_probe_methods(), false),
     ]
 }
 
@@ -501,37 +502,42 @@ pub fn probe_policy_for(kind: SurfaceKind) -> ProbePolicy {
     default_probe_policies()
         .into_iter()
         .find(|policy| policy.surface == kind)
-        .unwrap_or_else(|| probe_policy(SurfaceKind::Unknown, ALL_METHOD_IDS.to_vec(), false))
+        .unwrap_or_else(|| probe_policy(SurfaceKind::Unknown, unknown_probe_methods(), false))
 }
 
 pub fn default_surface_policy() -> SurfacePolicy {
+    let methods = conservative_unknown_methods();
     SurfacePolicy {
         surface: SurfaceKind::Unknown,
-        pause_methods: same_preferences(vec![
-            MethodId::Win32EditMessages,
-            MethodId::UiAutomationEditableText,
-            MethodId::UiAutomationDocumentText,
-            MethodId::UiAutomationText,
-            MethodId::WebKeyboardSelection,
-            MethodId::ConsoleBuffer,
-            MethodId::PsReadLine,
-            MethodId::ClipboardSelection,
-            MethodId::SendInput,
-        ]),
-        scrolllock_methods: same_preferences(vec![
-            MethodId::Win32EditMessages,
-            MethodId::UiAutomationEditableText,
-            MethodId::UiAutomationDocumentText,
-            MethodId::UiAutomationText,
-            MethodId::WebKeyboardSelection,
-            MethodId::ConsoleBuffer,
-            MethodId::PsReadLine,
-            MethodId::ClipboardSelection,
-            MethodId::SendInput,
-        ]),
-        forbidden_methods: vec![],
-        allow_risky_methods: risky_fallbacks_enabled(),
+        pause_methods: same_preferences(methods.clone()),
+        scrolllock_methods: same_preferences(methods.clone()),
+        forbidden_methods: ALL_METHOD_IDS
+            .iter()
+            .copied()
+            .filter(|method| !methods.contains(method))
+            .collect(),
+        allow_risky_methods: false,
     }
+}
+
+fn conservative_unknown_methods() -> Vec<MethodId> {
+    vec![
+        MethodId::UiAutomationEditableText,
+        MethodId::UiAutomationDocumentText,
+        MethodId::UiAutomationText,
+    ]
+}
+
+fn unknown_probe_methods() -> Vec<MethodId> {
+    if unknown_allows_diagnostic_probe() {
+        ALL_METHOD_IDS.to_vec()
+    } else {
+        conservative_unknown_methods()
+    }
+}
+
+fn unknown_allows_diagnostic_probe() -> bool {
+    std::env::var_os("STEPLER_DIAGNOSTIC_UNKNOWN_PROBES").is_some()
 }
 
 fn probe_policy(
@@ -553,12 +559,9 @@ fn probe_policy(
 }
 
 pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
-    let app = target.app_class.as_str();
-    let focused = target.focused_class.as_str();
-    let title = target.title.as_str();
-    let process = target.process_name.as_deref().unwrap_or_default();
+    let facts = target_facts(target);
 
-    if class_eq(app, "ConsoleWindowClass") && class_eq(focused, "ConsoleWindowClass") {
+    if facts.is_classic_console {
         return surface(
             SurfaceKind::ClassicConsole,
             100,
@@ -569,7 +572,7 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
         );
     }
 
-    if process_eq(process, "OUTLOOK") && class_eq(focused, "Edit") {
+    if facts.is_outlook_search_edit {
         return surface(
             SurfaceKind::OutlookSearch,
             100,
@@ -577,7 +580,7 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
         );
     }
 
-    if process_eq(process, "OUTLOOK") && class_eq(focused, "_WwG") {
+    if facts.is_outlook_word_editor {
         return surface(
             SurfaceKind::OutlookWordEditor,
             100,
@@ -585,7 +588,7 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
         );
     }
 
-    if process_eq(process, "OUTLOOK") || class_eq(app, "rctrl_renwnd32") {
+    if facts.is_outlook_process || facts.is_outlook_app_class {
         return surface(
             SurfaceKind::OutlookShell,
             90,
@@ -593,7 +596,7 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
         );
     }
 
-    if process_eq(process, "WINWORD") || class_eq(app, "OpusApp") {
+    if facts.is_word_process || facts.is_word_app_class {
         return surface(
             SurfaceKind::WordEditor,
             95,
@@ -601,11 +604,11 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
         );
     }
 
-    if class_eq(focused, "Edit") {
+    if facts.is_win32_edit {
         return surface(SurfaceKind::Win32Edit, 95, vec!["focused_class=Edit"]);
     }
 
-    if target_is_notepad_like(target) {
+    if facts.is_notepad_like {
         return surface(
             SurfaceKind::NotepadLike,
             90,
@@ -613,7 +616,7 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
         );
     }
 
-    if target_is_sticky_notes(target) {
+    if facts.is_sticky_notes {
         return surface(
             SurfaceKind::StickyNotes,
             95,
@@ -621,15 +624,15 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
         );
     }
 
-    if target_is_windows_terminal(target) {
-        if title_contains(title, "cmd.exe") {
+    if facts.is_windows_terminal {
+        if facts.is_windows_terminal_cmd_title {
             return surface(
                 SurfaceKind::WindowsTerminalCmd,
                 100,
                 vec!["windows terminal", "title contains cmd.exe"],
             );
         }
-        if title_contains(title, "qwen") || title_contains(title, "stepler-terminal-app") {
+        if facts.is_qwen_terminal_title_or_marker {
             return surface(
                 SurfaceKind::QwenTerminal,
                 100,
@@ -643,7 +646,7 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
         );
     }
 
-    if target_is_telegram(target) {
+    if facts.is_telegram_process || facts.is_telegram_classifier_class {
         return surface(
             SurfaceKind::TelegramDesktop,
             95,
@@ -651,7 +654,7 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
         );
     }
 
-    if target_is_browser_editor(target) && target_is_rocket_chat(target) {
+    if facts.is_browser_editor_class && facts.is_rocket_chat {
         return surface(
             SurfaceKind::RocketChatEditor,
             98,
@@ -659,7 +662,7 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
         );
     }
 
-    if target_is_browser_editor(target) && target_is_fast_browser_editor(target) {
+    if facts.is_browser_editor_class && facts.is_fast_browser_title {
         return surface(
             SurfaceKind::FastBrowserEditor,
             96,
@@ -670,7 +673,7 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
         );
     }
 
-    if class_starts(app, "Chrome_Yandex_WidgetWin") {
+    if facts.is_yandex_browser_widget_class {
         return surface(
             SurfaceKind::YandexBrowserEditor,
             95,
@@ -678,7 +681,7 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
         );
     }
 
-    if target_is_browser_editor(target) {
+    if facts.is_browser_editor_class {
         return surface(
             SurfaceKind::BrowserEditor,
             90,
@@ -721,83 +724,4 @@ fn surface(kind: SurfaceKind, confidence: u8, evidence: Vec<&str>) -> SurfaceCla
         confidence,
         evidence.into_iter().map(str::to_owned).collect(),
     )
-}
-
-fn class_eq(value: &str, expected: &str) -> bool {
-    value.eq_ignore_ascii_case(expected)
-}
-
-fn class_starts(value: &str, expected_prefix: &str) -> bool {
-    value
-        .get(..expected_prefix.len())
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(expected_prefix))
-}
-
-fn process_eq(value: &str, expected: &str) -> bool {
-    value.eq_ignore_ascii_case(expected)
-}
-
-fn title_contains(title: &str, needle: &str) -> bool {
-    title.to_lowercase().contains(&needle.to_lowercase())
-}
-
-fn target_is_windows_terminal(target: &ForegroundTarget) -> bool {
-    class_eq(&target.app_class, "CASCADIA_HOSTING_WINDOW_CLASS")
-        && class_eq(
-            &target.focused_class,
-            "Windows.UI.Input.InputSite.WindowClass",
-        )
-}
-
-fn target_is_browser_editor(target: &ForegroundTarget) -> bool {
-    class_starts(&target.app_class, "Chrome_WidgetWin")
-        || class_eq(&target.app_class, "MozillaWindowClass")
-        || class_eq(&target.focused_class, "Chrome_RenderWidgetHostHWND")
-}
-
-fn target_is_fast_browser_editor(target: &ForegroundTarget) -> bool {
-    let title = target.title.as_str();
-    title_contains(title, "jira")
-        || title_contains(title, "confluence")
-        || title_contains(title, "gs-labs wiki")
-        || title_contains(title, "chips")
-        || title_contains(title, "codex")
-}
-
-fn target_is_rocket_chat(target: &ForegroundTarget) -> bool {
-    process_eq(
-        target.process_name.as_deref().unwrap_or_default(),
-        "Rocket.Chat",
-    ) || title_contains(&target.title, "rocket.chat")
-        || title_contains(&target.title, "gs.chat")
-        || title_contains(&target.title, "нет непрочитанных")
-        || title_contains(&target.title, "unread messages")
-}
-
-fn target_is_telegram(target: &ForegroundTarget) -> bool {
-    process_eq(
-        target.process_name.as_deref().unwrap_or_default(),
-        "Telegram",
-    ) || class_eq(&target.app_class, "Qt51518QWindowIcon")
-}
-
-fn target_is_sticky_notes(target: &ForegroundTarget) -> bool {
-    title_contains(&target.title, "Sticky Notes")
-        || process_eq(
-            target.process_name.as_deref().unwrap_or_default(),
-            "Microsoft.Notes",
-        )
-}
-
-fn target_is_notepad_like(target: &ForegroundTarget) -> bool {
-    title_contains(&target.title, "Notepad")
-        || process_eq(
-            target.process_name.as_deref().unwrap_or_default(),
-            "Notepad",
-        )
-        || class_eq(&target.app_class, "Notepad")
-}
-
-fn risky_fallbacks_enabled() -> bool {
-    std::env::var_os("STEPLER_ALLOW_RISKY_FALLBACKS").is_some()
 }

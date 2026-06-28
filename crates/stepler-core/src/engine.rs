@@ -20,12 +20,22 @@ pub fn build_replacement_plan(
 }
 
 fn build_pause_plan(context: &TextContext) -> Result<ReplacementPlan, CorrectionError> {
-    let range = context
+    let initial_range = context
         .selection_range
         .filter(|range| !range.is_empty())
         .unwrap_or_else(|| {
             word_range_before_or_around_caret(&context.text_snapshot, context.caret_range.start)
         });
+
+    let range = if context.selection_range.is_none() {
+        pause_range_with_sparse_fallback(
+            &context.text_snapshot,
+            context.caret_range.start,
+            initial_range,
+        )?
+    } else {
+        initial_range
+    };
 
     let expected = slice_by_range(&context.text_snapshot, range)?;
     if expected.trim().is_empty() {
@@ -47,6 +57,58 @@ fn build_pause_plan(context: &TextContext) -> Result<ReplacementPlan, Correction
     })
 }
 
+fn pause_range_with_sparse_fallback(
+    text: &str,
+    caret: usize,
+    range: TextRange,
+) -> Result<TextRange, CorrectionError> {
+    let expected = slice_by_range(text, range)?;
+    if expected.trim().is_empty()
+        || (!looks_like_filename_or_path_token(expected)
+            && convert_layout_text(expected) != expected)
+    {
+        return Ok(range);
+    }
+
+    let scan_end = scrolllock_scan_end(text, caret);
+    if !text.is_char_boundary(scan_end) {
+        return Err(CorrectionError::InvalidRange);
+    }
+
+    if let Some(candidate) = best_sparse_line_candidate(&text[..scan_end]) {
+        return Ok(TextRange::new(candidate.start, candidate.end));
+    }
+
+    if looks_like_filename_or_path_token(expected) {
+        return Err(CorrectionError::NoTextToReplace);
+    }
+
+    Ok(range)
+}
+
+fn looks_like_filename_or_path_token(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.len() < 3 || trimmed.chars().any(char::is_whitespace) {
+        return false;
+    }
+
+    let has_ascii_letter = trimmed.chars().any(|ch| ch.is_ascii_alphabetic());
+    if !has_ascii_letter {
+        return false;
+    }
+
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains(':') {
+        return true;
+    }
+
+    let Some((stem, extension)) = trimmed.rsplit_once('.') else {
+        return false;
+    };
+    !stem.is_empty()
+        && (1..=10).contains(&extension.len())
+        && extension.chars().all(|ch| ch.is_ascii_alphanumeric())
+}
+
 fn build_scroll_lock_plan(context: &TextContext) -> Result<ReplacementPlan, CorrectionError> {
     if let Some(range) = context.selection_range.filter(|range| !range.is_empty()) {
         let expected = slice_by_range(&context.text_snapshot, range)?;
@@ -62,7 +124,7 @@ fn build_scroll_lock_plan(context: &TextContext) -> Result<ReplacementPlan, Corr
         });
     }
 
-    let scan_end = token_end_at_or_after_caret(&context.text_snapshot, context.caret_range.start);
+    let scan_end = scrolllock_scan_end(&context.text_snapshot, context.caret_range.start);
     if !context.text_snapshot.is_char_boundary(scan_end) {
         return Err(CorrectionError::InvalidRange);
     }
@@ -184,6 +246,20 @@ fn token_end_at_or_after_caret(text: &str, caret: usize) -> usize {
     }
 
     end
+}
+
+fn scrolllock_scan_end(text: &str, caret: usize) -> usize {
+    let mut scan_end = token_end_at_or_after_caret(text, caret);
+    while scan_end > 0 {
+        let Some((prev_index, prev_ch)) = text[..scan_end].char_indices().next_back() else {
+            break;
+        };
+        if !prev_ch.is_whitespace() {
+            break;
+        }
+        scan_end = prev_index;
+    }
+    scan_end
 }
 
 struct ScrollLockCandidate {

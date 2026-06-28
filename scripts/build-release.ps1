@@ -38,6 +38,9 @@ if ([string]::IsNullOrWhiteSpace($FileVersion)) {
 $distPath = [System.IO.Path]::GetFullPath($DistDir)
 $distScriptsPath = Join-Path $distPath "scripts"
 $distResourcesPath = Join-Path $distPath "resources"
+$dotnetPublishRoot = Join-Path $repoRoot ("target-codex-dotnet-publish\" + $BuildVersion)
+$trayPublishPath = Join-Path $dotnetPublishRoot "tray"
+$qwenPublishPath = Join-Path $dotnetPublishRoot "qwen"
 $cargoTargetDir = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
     Join-Path $repoRoot "target"
 } else {
@@ -68,17 +71,26 @@ if (Test-Path $distPath) {
     }
 }
 
+$dotnetBuildPathArgs = @()
+if (-not [string]::IsNullOrWhiteSpace($env:STEPLER_MSBUILD_BASE_INTERMEDIATE_OUTPUT_PATH)) {
+    $dotnetBuildPathArgs += "-p:BaseIntermediateOutputPath=$env:STEPLER_MSBUILD_BASE_INTERMEDIATE_OUTPUT_PATH"
+}
+if (-not [string]::IsNullOrWhiteSpace($env:STEPLER_MSBUILD_BASE_OUTPUT_PATH)) {
+    $dotnetBuildPathArgs += "-p:BaseOutputPath=$env:STEPLER_MSBUILD_BASE_OUTPUT_PATH"
+}
+
 dotnet publish ".\apps\Stepler.Tray\Stepler.Tray.csproj" `
     -nologo `
     -c $Configuration `
     -r $Runtime `
     --self-contained false `
-    -o $distPath `
+    -o $trayPublishPath `
     -p:Version=1.0.0 `
     -p:InformationalVersion=$BuildVersion `
     -p:FileVersion=$FileVersion `
     -p:AssemblyVersion=1.0.0.0 `
-    -p:IncludeSourceRevisionInInformationalVersion=false
+    -p:IncludeSourceRevisionInInformationalVersion=false `
+    @dotnetBuildPathArgs
 if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE"
 }
@@ -89,12 +101,13 @@ dotnet publish ".\apps\Stepler.QwenWorkspace\Stepler.QwenWorkspace.csproj" `
     -c $Configuration `
     -r $Runtime `
     --self-contained false `
-    -o $distPath `
+    -o $qwenPublishPath `
     -p:Version=1.0.0 `
     -p:InformationalVersion=$BuildVersion `
     -p:FileVersion=$FileVersion `
     -p:AssemblyVersion=1.0.0.0 `
-    -p:IncludeSourceRevisionInInformationalVersion=false
+    -p:IncludeSourceRevisionInInformationalVersion=false `
+    @dotnetBuildPathArgs
 if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish Qwen workspace failed with exit code $LASTEXITCODE"
 }
@@ -104,6 +117,8 @@ New-Item -ItemType Directory -Force -Path $distPath | Out-Null
 New-Item -ItemType Directory -Force -Path $distScriptsPath | Out-Null
 New-Item -ItemType Directory -Force -Path $distResourcesPath | Out-Null
 
+Copy-Item (Join-Path $trayPublishPath "*") $distPath -Recurse -Force
+Copy-Item (Join-Path $qwenPublishPath "*") $distPath -Recurse -Force
 Copy-Item (Join-Path $cargoTargetDir "release\stepler-cli.exe") (Join-Path $distPath "stepler-cli.exe") -Force
 Copy-Item ".\scripts\Stepler.PSReadLine.ps1" (Join-Path $distScriptsPath "Stepler.PSReadLine.ps1") -Force
 Copy-Item ".\scripts\Stepler.SSHReadline.bash" (Join-Path $distScriptsPath "Stepler.SSHReadline.bash") -Force

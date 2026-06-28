@@ -249,6 +249,137 @@ fn context_replacement_method_uses_first_bound_replace_method() {
 
 #[cfg(windows)]
 #[test]
+fn apply_replacement_requires_method_binding() {
+    let context = TextContext {
+        app_id: String::from("Notepad"),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("hwnd:2"),
+        text_snapshot: String::from("k.,jdm"),
+        caret_range: TextRange::caret("k.,jdm".len()),
+        selection_range: None,
+        capabilities: Capabilities {
+            can_replace_directly: true,
+            can_read_selection: true,
+            can_read_caret: true,
+            method_binding: None,
+        },
+    };
+    let plan = ReplacementPlan {
+        range: TextRange::new(0, "k.,jdm".len()),
+        replacement_text: String::from("любовь"),
+        reason: String::from("test"),
+        confidence: 1.0,
+        expected_before_text: String::from("k.,jdm"),
+    };
+
+    let error = apply_replacement(&context, &plan).unwrap_err();
+
+    assert_eq!(
+        error,
+        PlatformError::ReplacementUnavailableReason(String::from("missing_method_binding"))
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn apply_replacement_does_not_guess_terminal_adapter_without_binding() {
+    let context = TextContext {
+        app_id: String::from("ConsoleWindowClass"),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("terminal-console:hwnd:1"),
+        text_snapshot: String::from("пше"),
+        caret_range: TextRange::caret("пше".len()),
+        selection_range: None,
+        capabilities: Capabilities {
+            can_replace_directly: false,
+            can_read_selection: false,
+            can_read_caret: false,
+            method_binding: None,
+        },
+    };
+    let plan = ReplacementPlan {
+        range: TextRange::new(0, "пше".len()),
+        replacement_text: String::from("git"),
+        reason: String::from("test"),
+        confidence: 1.0,
+        expected_before_text: String::from("пше"),
+    };
+
+    let error = apply_replacement(&context, &plan).unwrap_err();
+
+    assert_eq!(
+        error,
+        PlatformError::ReplacementUnavailableReason(String::from("missing_method_binding"))
+    );
+}
+
+#[test]
+fn production_like_test_contexts_have_method_binding() {
+    let contexts = [
+        TextContext {
+            app_id: String::from("Notepad"),
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("hwnd:2"),
+            text_snapshot: String::from("k.,jdm"),
+            caret_range: TextRange::caret("k.,jdm".len()),
+            selection_range: None,
+            capabilities: Capabilities {
+                can_replace_directly: true,
+                can_read_selection: true,
+                can_read_caret: true,
+                method_binding: Some(MethodBinding::new(
+                    MethodId::Win32EditMessages,
+                    vec![MethodId::Win32EditMessages],
+                )),
+            },
+        },
+        TextContext {
+            app_id: String::from("ConsoleWindowClass"),
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("terminal-console:hwnd:1"),
+            text_snapshot: String::from("пше"),
+            caret_range: TextRange::caret("пше".len()),
+            selection_range: None,
+            capabilities: Capabilities {
+                can_replace_directly: false,
+                can_read_selection: false,
+                can_read_caret: false,
+                method_binding: Some(MethodBinding::new(
+                    MethodId::ConsoleBuffer,
+                    vec![MethodId::ConsoleBuffer],
+                )),
+            },
+        },
+        TextContext {
+            app_id: String::from("Chrome_WidgetWin_1/Chrome_RenderWidgetHostHWND"),
+            window_id: String::from("hwnd:1"),
+            control_id: String::from("web-keyboard-selection:hwnd:2"),
+            text_snapshot: String::from("ghbdtn"),
+            caret_range: TextRange::caret("ghbdtn".len()),
+            selection_range: None,
+            capabilities: Capabilities {
+                can_replace_directly: false,
+                can_read_selection: true,
+                can_read_caret: true,
+                method_binding: Some(MethodBinding::new(
+                    MethodId::WebKeyboardSelection,
+                    vec![MethodId::WebKeyboardSelection],
+                )),
+            },
+        },
+    ];
+
+    for context in contexts {
+        assert!(
+            context.capabilities.method_binding.is_some(),
+            "{} should carry method binding",
+            context.control_id
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
 fn win32_edit_method_probes_supported_edit_controls() {
     let target = ForegroundTarget {
         app_class: String::from("Notepad"),
@@ -495,21 +626,23 @@ fn web_keyboard_selection_method_probes_browser_like_controls() {
 
 #[cfg(windows)]
 #[test]
-fn web_keyboard_selection_method_probes_sticky_notes() {
+fn sticky_notes_runtime_stack_keeps_web_keyboard_as_late_fallback() {
     let target = ForegroundTarget {
         app_class: String::from("ApplicationFrameWindow"),
-        focused_class: String::from("Windows.UI.Core.CoreWindow"),
+        focused_class: String::from("Windows.UI.Input.InputSite.WindowClass"),
         title: String::from("Sticky Notes"),
         process_name: Some(String::from("Microsoft.Notes")),
         window_id: String::from("hwnd:1"),
         control_id: String::from("hwnd:2"),
     };
 
-    let probe = WebKeyboardSelectionMethod.probe(&target).unwrap();
+    let method_ids = windows_runtime_probe_methods(&target);
 
-    assert_eq!(probe.method_id, MethodId::WebKeyboardSelection);
-    assert_eq!(probe.safety, stepler_platform::ProbeSafety::Safe);
-    assert!(probe.requires_clipboard);
+    assert!(method_ids.contains(&MethodId::UiAutomationDocumentText));
+    assert!(method_ids.contains(&MethodId::WebKeyboardSelection));
+    assert!(method_ids.contains(&MethodId::UiAutomationEditableText));
+    assert_eq!(method_ids[0], MethodId::UiAutomationDocumentText);
+    assert_eq!(method_ids[1], MethodId::WebKeyboardSelection);
 }
 
 #[cfg(windows)]
@@ -700,6 +833,181 @@ fn web_keyboard_fast_context_is_line_compatible() {
 
 #[cfg(windows)]
 #[test]
+fn web_keyboard_captured_left_context_uses_dedicated_apply_path() {
+    let control_id = "web-keyboard-captured-left-selection:hwnd:1";
+
+    assert!(web_keyboard_captured_left_context(control_id));
+    assert!(!web_keyboard_fast_context(control_id));
+    assert!(!is_web_keyboard_line_context(control_id));
+    assert!(!web_keyboard_rocket_fast_context(control_id));
+    assert!(!web_keyboard_rocket_active_line_context(control_id));
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_captured_left_context_trims_trailing_line_breaks_before_planning() {
+    let context = web_keyboard_context(
+        "ApplicationFrameWindow",
+        "Windows.UI.Input.InputSite.WindowClass",
+        0x1,
+        0x2,
+        "web-keyboard-captured-left-selection",
+        String::from("\r\nbcgjkmpeq outlookhaging.md\r\n"),
+        false,
+    );
+
+    assert_eq!(context.text_snapshot, "\r\nbcgjkmpeq outlookhaging.md");
+    assert_eq!(
+        context.caret_range,
+        TextRange::caret(context.text_snapshot.len())
+    );
+
+    let plan = stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::Pause)
+        .unwrap();
+    assert_eq!(plan.expected_before_text, "bcgjkmpeq");
+    assert_eq!(plan.replacement_text, "используй");
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_captured_left_replans_expanded_preflight_selection() {
+    let context = TextContext {
+        app_id: String::from("Chrome_WidgetWin_1/Chrome_WidgetWin_1"),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("web-keyboard-captured-left-selection:hwnd:2"),
+        text_snapshot: String::from("jnftn"),
+        caret_range: TextRange::caret("jnftn".len()),
+        selection_range: None,
+        capabilities: Capabilities::default(),
+    };
+    let original_plan =
+        stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::ScrollLock)
+            .unwrap();
+
+    assert_eq!(original_plan.expected_before_text, "jnftn");
+    assert_eq!(original_plan.replacement_text, "отает");
+
+    let (replacement_text, actual_before_text) = web_keyboard_captured_left_replacement_text(
+        &context,
+        &original_plan,
+        "ну теперь то hf,jnftn",
+    )
+    .unwrap();
+
+    assert_eq!(actual_before_text, "hf,jnftn");
+    assert_eq!(replacement_text, "ну теперь то работает");
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_captured_left_pause_rejects_non_whitespace_preflight_prefix() {
+    let context = TextContext {
+        app_id: String::from("ApplicationFrameWindow/Windows.UI.Input.InputSite.WindowClass"),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("web-keyboard-captured-left-selection:hwnd:2"),
+        text_snapshot: String::from("\r\nbcgjkmpeq outlookhaging.md"),
+        caret_range: TextRange::caret("\r\nbcgjkmpeq outlookhaging.md".len()),
+        selection_range: None,
+        capabilities: Capabilities::default(),
+    };
+    let plan = stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::Pause)
+        .unwrap();
+
+    let error = web_keyboard_captured_left_replacement_text(
+        &context,
+        &plan,
+        "Напиши мне, и лучше сразу пришли вывод:\r\nbcgjkmpeq outlookhaging.md",
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        PlatformError::ReplacementUnavailableReason(reason)
+            if reason.starts_with("web_keyboard_captured_left_preflight non_whitespace_prefix")
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_captured_left_trims_trailing_line_breaks_for_sticky_notes() {
+    let context = TextContext {
+        app_id: String::from("ApplicationFrameWindow/Windows.UI.Input.InputSite.WindowClass"),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("web-keyboard-captured-left-selection:hwnd:2"),
+        text_snapshot: String::from(". \r\nbcgjkpeq outlookhaging.md\r\n"),
+        caret_range: TextRange::caret(". \r\nbcgjkpeq outlookhaging.md\r\n".len()),
+        selection_range: None,
+        capabilities: Capabilities::default(),
+    };
+    let original_plan =
+        stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::Pause)
+            .unwrap_err();
+    assert_eq!(
+        original_plan,
+        stepler_core::CorrectionError::NoTextToReplace
+    );
+
+    let context_without_suffix = TextContext {
+        text_snapshot: String::from(". \r\nbcgjkpeq outlookhaging.md"),
+        caret_range: TextRange::caret(". \r\nbcgjkpeq outlookhaging.md".len()),
+        ..context.clone()
+    };
+    let plan = stepler_core::build_replacement_plan(
+        &context_without_suffix,
+        stepler_core::CorrectionMode::Pause,
+    )
+    .unwrap();
+
+    let (replacement_text, actual_before_text) = web_keyboard_captured_left_replacement_text(
+        &context,
+        &plan,
+        ". \r\nbcgjkpeq outlookhaging.md\r\n",
+    )
+    .unwrap();
+
+    assert_eq!(actual_before_text, "bcgjkpeq");
+    assert_eq!(replacement_text, ". \r\nисползуй outlookhaging.md\r\n");
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_sticky_line_replans_expanded_selection() {
+    let context = TextContext {
+        app_id: String::from("ApplicationFrameWindow/Windows.UI.Input.InputSite.WindowClass"),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("web-keyboard-line-selection:hwnd:2"),
+        text_snapshot: String::from(
+            "Когда pfdbcytn cyjdf, главное не перезапускать Outlook сразу.  ",
+        ),
+        caret_range: TextRange::caret(
+            "Когда pfdbcytn cyjdf, главное не перезапускать Outlook сразу.  ".len(),
+        ),
+        selection_range: None,
+        capabilities: Capabilities::default(),
+    };
+    let plan =
+        stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::ScrollLock)
+            .unwrap();
+
+    let selected_text = concat!(
+        "Предыдущая строка\r\n",
+        "Когда pfdbcytn cyjdf, главное не перезапускать Outlook сразу.  "
+    );
+    let (replacement_text, actual_before_text) =
+        web_keyboard_sticky_line_replacement_text(&context, &plan, selected_text).unwrap();
+
+    assert_eq!(actual_before_text, "pfdbcytn cyjdf,");
+    assert_eq!(
+        replacement_text,
+        concat!(
+            "Предыдущая строка\r\n",
+            "Когда зависнет сноваб главное не перезапускать Outlook сразу.  "
+        )
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn rocket_active_line_context_does_not_mark_technical_selection_as_user_selection() {
     let context = TextContext {
         app_id: String::from("Chrome_WidgetWin_1/Chrome_RenderWidgetHostHWND"),
@@ -803,8 +1111,22 @@ fn web_keyboard_technical_target_does_not_expand_unknown_runtime_stack() {
         .iter()
         .map(|probe| probe.method_id)
         .collect::<Vec<_>>();
-    assert!(method_ids.contains(&MethodId::ClipboardSelection));
-    assert!(method_ids.contains(&MethodId::SendInput));
+    assert_eq!(
+        method_ids,
+        vec![
+            MethodId::UiAutomationEditableText,
+            MethodId::UiAutomationDocumentText,
+            MethodId::UiAutomationText,
+        ]
+    );
+    let plan = probe_plan_for(&target);
+    assert!(plan
+        .suppressed_methods
+        .contains(&MethodId::ClipboardSelection));
+    assert!(plan.suppressed_methods.contains(&MethodId::SendInput));
+    assert!(plan
+        .suppressed_methods
+        .contains(&MethodId::WebKeyboardSelection));
 }
 
 #[cfg(windows)]
@@ -980,6 +1302,27 @@ fn browser_like_document_text_selection_is_safe_but_caret_fallback_is_blocked() 
     assert!(!method_ids.contains(&MethodId::UiAutomationText));
     assert!(!method_ids.contains(&MethodId::ClipboardSelection));
     assert!(!method_ids.contains(&MethodId::SendInput));
+}
+
+#[cfg(windows)]
+#[test]
+fn sticky_notes_document_text_allows_caret_fallback() {
+    let target = ForegroundTarget {
+        app_class: String::from("ApplicationFrameWindow"),
+        focused_class: String::from("Windows.UI.Input.InputSite.WindowClass"),
+        title: String::from("Sticky Notes"),
+        process_name: Some(String::from("Microsoft.Notes")),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("hwnd:2"),
+    };
+
+    assert_eq!(
+        UiAutomationDocumentTextMethod
+            .probe(&target)
+            .map(|probe| probe.method_id),
+        Some(MethodId::UiAutomationDocumentText)
+    );
+    assert!(allow_uia_document_caret_fallback(&target));
 }
 
 #[cfg(windows)]

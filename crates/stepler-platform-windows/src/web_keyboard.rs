@@ -843,6 +843,24 @@ fn preflight_fast_web_selection(expected_selection: &str) -> Result<(), Platform
         );
     }
 
+    if selected.as_deref() != Some(expected_selection)
+        && selected
+            .as_deref()
+            .is_some_and(|text| !text.is_empty() && expected_selection.ends_with(text))
+    {
+        append_hotkey_signal_log(&format!(
+            "web_keyboard_fast_preflight_extend expected={} actual={}",
+            preview_for_error(expected_selection, 40),
+            preview_for_error(selected.as_deref().unwrap_or("<none>"), 40)
+        ));
+        selected = extend_web_selection_to_expected_prefix(
+            selected,
+            expected_selection,
+            &snapshot,
+            Duration::from_millis(260),
+        );
+    }
+
     let _ = restore_clipboard_text_only_with_timeout(&snapshot, clipboard_timeout);
     if selected.as_deref() == Some(expected_selection) {
         return Ok(());

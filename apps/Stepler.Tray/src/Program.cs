@@ -2271,14 +2271,14 @@ internal sealed class QwenInputWindow : Form
 
     private void OnQwenInputKeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.KeyCode != Keys.Pause)
+        if (!QwenInputCorrectionController.TryGetCorrectionMode(e.KeyCode, e.Control, out var mode))
         {
             return;
         }
 
         e.Handled = true;
         e.SuppressKeyPress = true;
-        _correction.ApplyCorrection(e.Control ? "scrolllock" : "pause");
+        _correction.ApplyCorrection(mode);
     }
 
     private void OnInputDragEnter(object? sender, DragEventArgs e)

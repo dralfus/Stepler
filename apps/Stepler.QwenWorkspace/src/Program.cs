@@ -361,14 +361,14 @@ internal sealed class WorkspaceForm : Form
 
     private void OnWorkspaceKeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.KeyCode != Keys.Pause)
+        if (!QwenInputCorrectionController.TryGetCorrectionMode(e.KeyCode, e.Control, out var mode))
         {
             return;
         }
 
         e.Handled = true;
         e.SuppressKeyPress = true;
-        _correction.ApplyCorrection(e.Control ? "scrolllock" : "pause");
+        _correction.ApplyCorrection(mode);
     }
 
     private void SetStatus(string text)

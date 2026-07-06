@@ -114,6 +114,24 @@ internal sealed class QwenInputCorrectionController
         }
     }
 
+    public static bool TryGetCorrectionMode(Keys keyCode, bool controlDown, out string mode)
+    {
+        if (keyCode == Keys.Cancel)
+        {
+            mode = "scrolllock";
+            return true;
+        }
+
+        if (keyCode == Keys.Pause)
+        {
+            mode = controlDown ? "scrolllock" : "pause";
+            return true;
+        }
+
+        mode = string.Empty;
+        return false;
+    }
+
     private bool TryApplyFastPause(Stopwatch started, string label)
     {
         var text = _input.Text;

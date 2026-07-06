@@ -600,12 +600,11 @@ impl WebKeyboardSelectionMethod {
                     }
                 };
 
-            restore_clipboard(clipboard_snapshot_from_text(&replacement_text))?;
-            send_key_chord_virtual(&[VK_CONTROL], VK_V);
-            std::thread::sleep(Duration::from_millis(30));
             let _ = restore_clipboard_text_only(&snapshot);
+            std::thread::sleep(Duration::from_millis(20));
+            send_unicode_text(&replacement_text)?;
             append_hotkey_signal_log(&format!(
-                "web_keyboard_captured_left_paste expected_len={} replacement_len={}",
+                "web_keyboard_captured_left_sendinput expected_len={} replacement_len={}",
                 context.text_snapshot.len(),
                 replacement_text.len()
             ));

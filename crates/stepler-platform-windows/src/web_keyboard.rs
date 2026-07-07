@@ -231,6 +231,7 @@ impl WebKeyboardSelectionMethod {
                 "embedded_terminal_xterm_unsupported",
             )));
         }
+        let foreground_title = window_title(foreground).unwrap_or_default();
         let profile = web_keyboard_profile_for_surface(foreground_surface_kind(
             foreground,
             app_class,
@@ -239,6 +240,7 @@ impl WebKeyboardSelectionMethod {
         let timing = web_keyboard_timing_profile(profile);
         let fast_profile = web_keyboard_profile_is_fast(profile);
         let rocket_fast = web_keyboard_profile_is_rocket(profile);
+        let allow_captured_left = web_keyboard_allows_captured_left_for_title(&foreground_title);
 
         for attempt in 0..2 {
             let snapshot = capture_web_keyboard_clipboard(fast_profile, timing.clipboard_timeout)?;
@@ -270,47 +272,53 @@ impl WebKeyboardSelectionMethod {
             }
 
             if scrolllock_mode {
-                select_web_left_context();
-                let copied_raw = copy_web_keyboard_selected_text(
-                    &snapshot,
-                    timing.short_context_timeout,
-                    fast_profile,
-                    timing.clipboard_timeout,
-                );
-                let copied = copied_raw
-                    .filter(|text| is_plausible_web_left_context_text(text))
-                    .filter(|text| !looks_like_hotkeyhandler_marker(text));
-                send_key(VK_RIGHT);
-                let _ = restore_web_keyboard_clipboard(
-                    &snapshot,
-                    fast_profile,
-                    timing.clipboard_timeout,
-                );
-
-                if let Some(text) = copied {
-                    append_hotkey_signal_log(&format!(
-                        "web_keyboard_capture branch=scrolllock_left len={}",
-                        text.len()
-                    ));
-                    let context = web_keyboard_context(
-                        app_class,
-                        focused_class,
-                        foreground,
-                        focused,
-                        "web-keyboard-captured-left-selection",
-                        text,
-                        false,
+                if allow_captured_left {
+                    select_web_left_context();
+                    let copied_raw = copy_web_keyboard_selected_text(
+                        &snapshot,
+                        timing.short_context_timeout,
+                        fast_profile,
+                        timing.clipboard_timeout,
                     );
-                    if stepler_core::build_replacement_plan(
-                        &context,
-                        stepler_core::CorrectionMode::ScrollLock,
-                    )
-                    .is_ok()
-                    {
-                        return Ok(context);
+                    let copied = copied_raw
+                        .filter(|text| is_plausible_web_left_context_text(text))
+                        .filter(|text| !looks_like_hotkeyhandler_marker(text));
+                    send_key(VK_RIGHT);
+                    let _ = restore_web_keyboard_clipboard(
+                        &snapshot,
+                        fast_profile,
+                        timing.clipboard_timeout,
+                    );
+
+                    if let Some(text) = copied {
+                        append_hotkey_signal_log(&format!(
+                            "web_keyboard_capture branch=scrolllock_left len={}",
+                            text.len()
+                        ));
+                        let context = web_keyboard_context(
+                            app_class,
+                            focused_class,
+                            foreground,
+                            focused,
+                            "web-keyboard-captured-left-selection",
+                            text,
+                            false,
+                        );
+                        if stepler_core::build_replacement_plan(
+                            &context,
+                            stepler_core::CorrectionMode::ScrollLock,
+                        )
+                        .is_ok()
+                        {
+                            return Ok(context);
+                        }
+                        append_hotkey_signal_log(
+                            "web_keyboard_capture branch=scrolllock_left skipped=no_plan",
+                        );
                     }
+                } else {
                     append_hotkey_signal_log(
-                        "web_keyboard_capture branch=scrolllock_left skipped=no_plan",
+                        "web_keyboard_capture branch=scrolllock_left skipped=title_policy",
                     );
                 }
 
@@ -430,6 +438,12 @@ impl WebKeyboardSelectionMethod {
             if attempt == 0 {
                 release_modifier_keys();
                 std::thread::sleep(timing.retry_pause);
+                if !allow_captured_left {
+                    append_hotkey_signal_log(
+                        "web_keyboard_capture branch=left_retry skipped=title_policy",
+                    );
+                    continue;
+                }
                 let snapshot =
                     capture_web_keyboard_clipboard(fast_profile, timing.clipboard_timeout)?;
                 select_web_left_context();
@@ -674,7 +688,22 @@ impl WebKeyboardSelectionMethod {
             actual_before.as_str()
         };
 
-        if web_keyboard_fast_context(&context.control_id) {
+        let foreground_title = window_title(expected_foreground).unwrap_or_default();
+        let allow_fast_line_apply =
+            web_keyboard_allows_fast_line_apply_for_title(&foreground_title)
+                || !is_web_keyboard_line_context(&context.control_id);
+        let allow_relaxed_line_preflight =
+            web_keyboard_allows_relaxed_line_preflight_for_title(&foreground_title);
+
+        if web_keyboard_uses_precise_range_apply(
+            &foreground_title,
+            &context.control_id,
+            replace_entire_context,
+        ) {
+            return apply_web_keyboard_precise_range(context, plan, &actual_before);
+        }
+
+        if web_keyboard_fast_context(&context.control_id) && allow_fast_line_apply {
             select_left_utf16_units(expected_selection.encode_utf16().count())?;
             std::thread::sleep(Duration::from_millis(10));
             let text_to_send = replacement_text.clone();
@@ -705,6 +734,9 @@ impl WebKeyboardSelectionMethod {
                 method: MethodId::WebKeyboardSelection.as_str().to_owned(),
             });
         }
+        if web_keyboard_fast_context(&context.control_id) {
+            append_hotkey_signal_log("web_keyboard_fast_apply skipped=line_title_policy");
+        }
 
         let snapshot = capture_clipboard_text_only()?;
         let use_precise_left_selection = is_web_keyboard_line_context(&context.control_id)
@@ -725,12 +757,17 @@ impl WebKeyboardSelectionMethod {
             std::thread::sleep(Duration::from_millis(50));
             selected = copy_selected_text_checked(&snapshot, Duration::from_millis(650));
         }
-        if selected.is_none() && use_precise_left_selection {
+        if selected.is_none() && use_precise_left_selection && allow_relaxed_line_preflight {
             append_hotkey_signal_log(&format!(
                 "web_keyboard_preflight_relaxed expected={} reason=copy_empty_after_precise_selection",
                 preview_for_error(expected_selection, 40)
             ));
             selected = Some(expected_selection.to_owned());
+        } else if selected.is_none() && use_precise_left_selection {
+            append_hotkey_signal_log(&format!(
+                "web_keyboard_preflight_relaxed skipped=title_policy expected={}",
+                preview_for_error(expected_selection, 40)
+            ));
         }
         if !replace_entire_context && selected.as_deref() != Some(expected_selection) {
             selected = extend_web_selection_to_expected_prefix(
@@ -778,6 +815,136 @@ impl WebKeyboardSelectionMethod {
             method: MethodId::WebKeyboardSelection.as_str().to_owned(),
         })
     }
+}
+
+#[cfg(windows)]
+fn apply_web_keyboard_precise_range(
+    context: &TextContext,
+    plan: &ReplacementPlan,
+    actual_before: &str,
+) -> Result<ApplyReplacementResult, PlatformError> {
+    let suffix = slice_by_range(
+        &context.text_snapshot,
+        TextRange::new(plan.range.end, context.text_snapshot.len()),
+    )
+    .ok_or(PlatformError::PreflightFailed)?;
+    move_left_utf16_units(suffix.encode_utf16().count())?;
+    select_left_utf16_units(actual_before.encode_utf16().count())?;
+    std::thread::sleep(Duration::from_millis(50));
+
+    let snapshot = capture_clipboard_text_only()?;
+    let selected = copy_selected_text_checked(&snapshot, Duration::from_millis(650));
+    if selected
+        .as_deref()
+        .is_some_and(|selected| selected != actual_before)
+    {
+        restore_precise_range_caret(&suffix);
+        let _ = restore_clipboard_text_only(&snapshot);
+        return Err(PlatformError::ReplacementUnavailableReason(format!(
+            "web_keyboard_precise_range_preflight expected={} actual={}",
+            preview_for_error(actual_before, 40),
+            preview_for_error(selected.as_deref().unwrap_or("<none>"), 40)
+        )));
+    }
+    if selected.is_none() {
+        append_hotkey_signal_log(&format!(
+            "web_keyboard_precise_range_preflight_unverified expected={}",
+            preview_for_error(actual_before, 40)
+        ));
+    }
+
+    let _ = restore_clipboard_text_only(&snapshot);
+    std::thread::sleep(Duration::from_millis(20));
+    send_unicode_text(&plan.replacement_text)?;
+    std::thread::sleep(Duration::from_millis(30));
+    move_right_utf16_units(suffix.encode_utf16().count())?;
+    append_hotkey_signal_log(&format!(
+        "web_keyboard_precise_range_sendinput suffix_len={} expected_len={} replacement_len={} verified={}",
+        suffix.len(),
+        actual_before.len(),
+        plan.replacement_text.len(),
+        selected.is_some()
+    ));
+
+    Ok(ApplyReplacementResult {
+        applied: true,
+        actual_before_text: Some(actual_before.to_owned()),
+        actual_after_text: Some(plan.replacement_text.clone()),
+        method: MethodId::WebKeyboardSelection.as_str().to_owned(),
+    })
+}
+
+#[cfg(windows)]
+fn restore_precise_range_caret(suffix: &str) {
+    send_key(VK_RIGHT);
+    release_modifier_keys();
+    let _ = move_right_utf16_units(suffix.encode_utf16().count());
+}
+
+#[cfg(windows)]
+fn move_left_utf16_units(count: usize) -> Result<(), PlatformError> {
+    if count == 0 {
+        return Ok(());
+    }
+    if count > 512 {
+        return Err(PlatformError::ReplacementUnavailableReason(format!(
+            "web_keyboard_move_left_too_long count={count}"
+        )));
+    }
+
+    let mut events = Vec::with_capacity(count * 2);
+    for _ in 0..count {
+        events.push(KeyboardInputEvent::new(
+            VK_LEFT,
+            false,
+            KeyboardInputMode::ScanCode,
+        ));
+        events.push(KeyboardInputEvent::new(
+            VK_LEFT,
+            true,
+            KeyboardInputMode::ScanCode,
+        ));
+    }
+    if !send_keyboard_input(&events) {
+        return Err(PlatformError::ReplacementUnavailableReason(String::from(
+            "web_keyboard_move_left_send_input_failed",
+        )));
+    }
+    std::thread::sleep(Duration::from_millis(20));
+    Ok(())
+}
+
+#[cfg(windows)]
+fn move_right_utf16_units(count: usize) -> Result<(), PlatformError> {
+    if count == 0 {
+        return Ok(());
+    }
+    if count > 512 {
+        return Err(PlatformError::ReplacementUnavailableReason(format!(
+            "web_keyboard_move_right_too_long count={count}"
+        )));
+    }
+
+    let mut events = Vec::with_capacity(count * 2);
+    for _ in 0..count {
+        events.push(KeyboardInputEvent::new(
+            VK_RIGHT,
+            false,
+            KeyboardInputMode::ScanCode,
+        ));
+        events.push(KeyboardInputEvent::new(
+            VK_RIGHT,
+            true,
+            KeyboardInputMode::ScanCode,
+        ));
+    }
+    if !send_keyboard_input(&events) {
+        return Err(PlatformError::ReplacementUnavailableReason(String::from(
+            "web_keyboard_move_right_send_input_failed",
+        )));
+    }
+    std::thread::sleep(Duration::from_millis(20));
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -958,6 +1125,38 @@ pub(super) fn web_keyboard_captured_left_context(control_id: &str) -> bool {
 }
 
 #[cfg(windows)]
+pub(super) fn web_keyboard_allows_captured_left_for_title(title: &str) -> bool {
+    !web_keyboard_is_confluence_like_title(title)
+}
+
+#[cfg(windows)]
+pub(super) fn web_keyboard_allows_fast_line_apply_for_title(title: &str) -> bool {
+    !web_keyboard_is_confluence_like_title(title)
+}
+
+#[cfg(windows)]
+pub(super) fn web_keyboard_allows_relaxed_line_preflight_for_title(title: &str) -> bool {
+    !web_keyboard_is_confluence_like_title(title)
+}
+
+#[cfg(windows)]
+pub(super) fn web_keyboard_uses_precise_range_apply(
+    title: &str,
+    control_id: &str,
+    replace_entire_context: bool,
+) -> bool {
+    replace_entire_context
+        && is_web_keyboard_line_context(control_id)
+        && web_keyboard_is_confluence_like_title(title)
+}
+
+#[cfg(windows)]
+fn web_keyboard_is_confluence_like_title(title: &str) -> bool {
+    let normalized = title.to_ascii_lowercase();
+    normalized.contains("confluence") || normalized.contains("gs-labs wiki")
+}
+
+#[cfg(windows)]
 pub(super) fn web_keyboard_captured_left_replacement_text(
     context: &TextContext,
     plan: &ReplacementPlan,
@@ -1002,9 +1201,10 @@ pub(super) fn web_keyboard_captured_left_replacement_text(
         )));
     }
 
+    let prefix_len = selected_core.len() - context_core.len();
+    let selected_prefix = &selected_core[..prefix_len];
+
     if correction_mode_from_plan(plan) == CorrectionMode::Pause {
-        let prefix_len = selected_core.len() - context_core.len();
-        let selected_prefix = &selected_core[..prefix_len];
         if !selected_prefix.chars().all(char::is_whitespace) {
             return Err(PlatformError::ReplacementUnavailableReason(format!(
                 "web_keyboard_captured_left_preflight non_whitespace_prefix expected={} actual={}",
@@ -1018,6 +1218,14 @@ pub(super) fn web_keyboard_captured_left_replacement_text(
         let replacement_text = format!("{selected_prefix}{replacement_suffix}{selected_suffix}");
 
         return Ok((replacement_text, plan.expected_before_text.clone()));
+    }
+
+    if selected_prefix.contains('\r') || selected_prefix.contains('\n') {
+        return Err(PlatformError::ReplacementUnavailableReason(format!(
+            "web_keyboard_captured_left_preflight multiline_prefix expected={} actual={}",
+            preview_for_error(context_core, 40),
+            preview_for_error(selected_text, 40)
+        )));
     }
 
     let selected_context = TextContext {

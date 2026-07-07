@@ -845,6 +845,68 @@ fn web_keyboard_captured_left_context_uses_dedicated_apply_path() {
 
 #[cfg(windows)]
 #[test]
+fn web_keyboard_captured_left_title_policy_blocks_confluence_wiki() {
+    assert!(!web_keyboard_allows_captured_left_for_title(
+        "Security features - Chips - GS-Labs Wiki — Mozilla Firefox"
+    ));
+    assert!(!web_keyboard_allows_fast_line_apply_for_title(
+        "Security features - Chips - GS-Labs Wiki — Mozilla Firefox"
+    ));
+    assert!(!web_keyboard_allows_relaxed_line_preflight_for_title(
+        "Security features - Chips - GS-Labs Wiki — Mozilla Firefox"
+    ));
+    assert!(!web_keyboard_allows_captured_left_for_title(
+        "Edit page - Confluence - Mozilla Firefox"
+    ));
+    assert!(!web_keyboard_allows_fast_line_apply_for_title(
+        "Edit page - Confluence - Mozilla Firefox"
+    ));
+    assert!(!web_keyboard_allows_relaxed_line_preflight_for_title(
+        "Edit page - Confluence - Mozilla Firefox"
+    ));
+    assert!(web_keyboard_allows_captured_left_for_title("Codex"));
+    assert!(web_keyboard_allows_fast_line_apply_for_title("Codex"));
+    assert!(web_keyboard_allows_relaxed_line_preflight_for_title(
+        "Codex"
+    ));
+    assert!(web_keyboard_allows_captured_left_for_title(
+        "ABC-123 - Jira - Google Chrome"
+    ));
+    assert!(web_keyboard_allows_fast_line_apply_for_title(
+        "ABC-123 - Jira - Google Chrome"
+    ));
+    assert!(web_keyboard_allows_relaxed_line_preflight_for_title(
+        "ABC-123 - Jira - Google Chrome"
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_precise_range_apply_is_confluence_line_only() {
+    assert!(web_keyboard_uses_precise_range_apply(
+        "Security features - Chips - GS-Labs Wiki — Mozilla Firefox",
+        "web-keyboard-fast-line-selection:hwnd:1",
+        true
+    ));
+    assert!(!web_keyboard_uses_precise_range_apply(
+        "Security features - Chips - GS-Labs Wiki — Mozilla Firefox",
+        "web-keyboard-fast-line-selection:hwnd:1",
+        false
+    ));
+    assert!(!web_keyboard_uses_precise_range_apply(
+        "Security features - Chips - GS-Labs Wiki — Mozilla Firefox",
+        "web-keyboard-selection-selected:hwnd:1",
+        true
+    ));
+    assert!(!web_keyboard_uses_precise_range_apply(
+        "ABC-123 - Jira - Google Chrome",
+        "web-keyboard-fast-line-selection:hwnd:1",
+        true
+    ));
+}
+
+#[cfg(windows)]
+#[test]
 fn web_keyboard_captured_left_context_trims_trailing_line_breaks_before_planning() {
     let context = web_keyboard_context(
         "ApplicationFrameWindow",
@@ -896,6 +958,36 @@ fn web_keyboard_captured_left_replans_expanded_preflight_selection() {
 
     assert_eq!(actual_before_text, "hf,jnftn");
     assert_eq!(replacement_text, "ну теперь то работает");
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_captured_left_scrolllock_rejects_multiline_preflight_prefix() {
+    let context = TextContext {
+        app_id: String::from("MozillaWindowClass/MozillaWindowClass"),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("web-keyboard-captured-left-selection:hwnd:2"),
+        text_snapshot: String::from("jnftn"),
+        caret_range: TextRange::caret("jnftn".len()),
+        selection_range: None,
+        capabilities: Capabilities::default(),
+    };
+    let plan =
+        stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::ScrollLock)
+            .unwrap();
+
+    let error = web_keyboard_captured_left_replacement_text(
+        &context,
+        &plan,
+        "Confluence table above\r\nhf,jnftn",
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        PlatformError::ReplacementUnavailableReason(reason)
+            if reason.starts_with("web_keyboard_captured_left_preflight multiline_prefix")
+    ));
 }
 
 #[cfg(windows)]

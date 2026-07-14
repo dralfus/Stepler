@@ -924,8 +924,32 @@ fn should_skip_layout_after_replacement(context: &stepler_core::TextContext) -> 
     context
         .app_id
         .eq_ignore_ascii_case("rctrl_renwnd32/RICHEDIT60W")
-        || context.app_id.eq_ignore_ascii_case("rctrl_renwnd32/_WwG")
-        || context.control_id.starts_with("outlook-word-com:")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn context(app_id: &str, control_id: &str) -> stepler_core::TextContext {
+        let mut context = stepler_core::TextContext::new("text");
+        context.app_id = app_id.to_owned();
+        context.control_id = control_id.to_owned();
+        context
+    }
+
+    #[test]
+    fn outlook_word_com_does_not_skip_layout_after_replacement() {
+        let context = context("rctrl_renwnd32/_WwG", "outlook-word-com:0:hwnd:1234");
+
+        assert!(!should_skip_layout_after_replacement(&context));
+    }
+
+    #[test]
+    fn outlook_richedit_keeps_legacy_layout_skip() {
+        let context = context("rctrl_renwnd32/RICHEDIT60W", "richedit:hwnd:1234");
+
+        assert!(should_skip_layout_after_replacement(&context));
+    }
 }
 
 fn desired_layout_after_replacement(

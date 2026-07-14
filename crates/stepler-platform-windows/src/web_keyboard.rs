@@ -282,7 +282,14 @@ impl WebKeyboardSelectionMethod {
                     );
                     let copied = copied_raw
                         .filter(|text| is_plausible_web_left_context_text(text))
-                        .filter(|text| !looks_like_hotkeyhandler_marker(text));
+                        .filter(|text| !looks_like_hotkeyhandler_marker(text))
+                        .filter(|text| {
+                            web_keyboard_allows_captured_left_text_for_surface(
+                                app_class,
+                                focused_class,
+                                text,
+                            )
+                        });
                     send_key(VK_RIGHT);
                     let _ = restore_web_keyboard_clipboard(
                         &snapshot,
@@ -455,7 +462,14 @@ impl WebKeyboardSelectionMethod {
                 );
                 let copied = copied_raw
                     .filter(|text| is_plausible_web_left_context_text(text))
-                    .filter(|text| !looks_like_hotkeyhandler_marker(text));
+                    .filter(|text| !looks_like_hotkeyhandler_marker(text))
+                    .filter(|text| {
+                        web_keyboard_allows_captured_left_text_for_surface(
+                            app_class,
+                            focused_class,
+                            text,
+                        )
+                    });
                 send_key(VK_RIGHT);
                 let _ = restore_web_keyboard_clipboard(
                     &snapshot,
@@ -592,27 +606,76 @@ impl WebKeyboardSelectionMethod {
 
         if web_keyboard_captured_left_context(&context.control_id) {
             let snapshot = capture_clipboard_text_only()?;
-            select_web_left_context();
-            std::thread::sleep(Duration::from_millis(50));
-            let selected = copy_selected_text_checked(&snapshot, Duration::from_millis(650));
-            let Some(selected_text) = selected else {
-                send_key(VK_RIGHT);
-                let _ = restore_clipboard_text_only(&snapshot);
-                return Err(PlatformError::ReplacementUnavailableReason(format!(
-                    "web_keyboard_captured_left_preflight expected={} actual=<none>",
-                    preview_for_error(&context.text_snapshot, 40)
-                )));
-            };
+            let mut replacement = None;
+            for attempt in 0..2 {
+                select_web_left_context();
+                std::thread::sleep(if attempt == 0 {
+                    Duration::from_millis(50)
+                } else {
+                    Duration::from_millis(80)
+                });
+                let selected = copy_selected_text_checked(&snapshot, Duration::from_millis(650));
+                let Some(selected_text) = selected else {
+                    if attempt == 0 {
+                        append_hotkey_signal_log(
+                            "web_keyboard_captured_left_preflight_retry reason=copy_empty",
+                        );
+                        send_key(VK_RIGHT);
+                        release_modifier_keys();
+                        std::thread::sleep(Duration::from_millis(80));
+                        continue;
+                    }
+                    send_key(VK_RIGHT);
+                    let _ = restore_clipboard_text_only(&snapshot);
+                    return Err(PlatformError::ReplacementUnavailableReason(format!(
+                        "web_keyboard_captured_left_preflight expected={} actual=<none>",
+                        preview_for_error(&context.text_snapshot, 40)
+                    )));
+                };
+                if !web_keyboard_allows_captured_left_apply_selection(context, &selected_text) {
+                    send_key(VK_RIGHT);
+                    let _ = restore_clipboard_text_only(&snapshot);
+                    return Err(PlatformError::ReplacementUnavailableReason(format!(
+                        "web_keyboard_captured_left_preflight multiline_selection expected={} actual={}",
+                        preview_for_error(&context.text_snapshot, 40),
+                        preview_for_error(&selected_text, 40)
+                    )));
+                }
 
-            let (replacement_text, actual_before_text) =
                 match web_keyboard_captured_left_replacement_text(context, plan, &selected_text) {
-                    Ok(replacement) => replacement,
+                    Ok(result) => {
+                        replacement = Some(result);
+                        break;
+                    }
+                    Err(_)
+                        if attempt == 0
+                            && web_keyboard_captured_left_should_retry_selection(
+                                context,
+                                &selected_text,
+                            ) =>
+                    {
+                        append_hotkey_signal_log(&format!(
+                            "web_keyboard_captured_left_preflight_retry reason=short_suffix expected={} actual={}",
+                            preview_for_error(&context.text_snapshot, 40),
+                            preview_for_error(&selected_text, 40)
+                        ));
+                        send_key(VK_RIGHT);
+                        release_modifier_keys();
+                        std::thread::sleep(Duration::from_millis(80));
+                    }
                     Err(error) => {
                         send_key(VK_RIGHT);
                         let _ = restore_clipboard_text_only(&snapshot);
                         return Err(error);
                     }
-                };
+                }
+            }
+
+            let Some((replacement_text, actual_before_text)) = replacement else {
+                send_key(VK_RIGHT);
+                let _ = restore_clipboard_text_only(&snapshot);
+                return Err(PlatformError::ReplacementUnavailable);
+            };
 
             let _ = restore_clipboard_text_only(&snapshot);
             std::thread::sleep(Duration::from_millis(20));
@@ -706,8 +769,8 @@ impl WebKeyboardSelectionMethod {
         if web_keyboard_fast_context(&context.control_id) && allow_fast_line_apply {
             select_left_utf16_units(expected_selection.encode_utf16().count())?;
             std::thread::sleep(Duration::from_millis(10));
-            let text_to_send = replacement_text.clone();
             if web_keyboard_rocket_fast_context(&context.control_id) {
+                let text_to_send = replacement_text.clone();
                 let snapshot = capture_clipboard_text_only()?;
                 restore_clipboard(clipboard_snapshot_from_text(&text_to_send))?;
                 send_key_chord_virtual(&[VK_CONTROL], VK_V);
@@ -719,18 +782,34 @@ impl WebKeyboardSelectionMethod {
                     text_to_send.len()
                 ));
             } else {
-                preflight_fast_web_selection(expected_selection)?;
+                let selected_prefix_to_preserve = preflight_fast_web_selection(expected_selection)?;
+                let text_to_send = if selected_prefix_to_preserve.is_empty() {
+                    replacement_text.clone()
+                } else {
+                    format!("{selected_prefix_to_preserve}{replacement_text}")
+                };
                 send_unicode_text(&text_to_send)?;
+                append_hotkey_signal_log(&format!(
+                    "web_keyboard_fast_apply expected_len={} replacement_len={}",
+                    expected_selection.len(),
+                    text_to_send.len()
+                ));
+                return Ok(ApplyReplacementResult {
+                    applied: true,
+                    actual_before_text: Some(actual_before),
+                    actual_after_text: Some(text_to_send),
+                    method: MethodId::WebKeyboardSelection.as_str().to_owned(),
+                });
             }
             append_hotkey_signal_log(&format!(
                 "web_keyboard_fast_apply expected_len={} replacement_len={}",
                 expected_selection.len(),
-                text_to_send.len()
+                replacement_text.len()
             ));
             return Ok(ApplyReplacementResult {
                 applied: true,
                 actual_before_text: Some(actual_before),
-                actual_after_text: Some(text_to_send),
+                actual_after_text: Some(replacement_text),
                 method: MethodId::WebKeyboardSelection.as_str().to_owned(),
             });
         }
@@ -979,7 +1058,7 @@ fn restore_web_line_left_context_caret() {
 }
 
 #[cfg(windows)]
-fn preflight_fast_web_selection(expected_selection: &str) -> Result<(), PlatformError> {
+fn preflight_fast_web_selection(expected_selection: &str) -> Result<String, PlatformError> {
     let clipboard_timeout = Duration::from_millis(180);
     let snapshot = capture_clipboard_text_only_with_timeout(clipboard_timeout)?;
     let mut selected = copy_selected_text_checked_with_chord_and_clipboard_timeout(
@@ -989,6 +1068,13 @@ fn preflight_fast_web_selection(expected_selection: &str) -> Result<(), Platform
         Duration::from_millis(220),
         clipboard_timeout,
     );
+
+    if let Some(prefix) =
+        accepted_fast_web_selection_prefix(selected.as_deref(), expected_selection)
+    {
+        let _ = restore_clipboard_text_only_with_timeout(&snapshot, clipboard_timeout);
+        return Ok(prefix);
+    }
 
     if selected.as_deref() != Some(expected_selection) {
         append_hotkey_signal_log(&format!(
@@ -1009,7 +1095,7 @@ fn preflight_fast_web_selection(expected_selection: &str) -> Result<(), Platform
         );
     }
 
-    if selected.as_deref() != Some(expected_selection)
+    if accepted_fast_web_selection_prefix(selected.as_deref(), expected_selection).is_none()
         && selected
             .as_deref()
             .is_some_and(|text| !text.is_empty() && expected_selection.ends_with(text))
@@ -1028,8 +1114,10 @@ fn preflight_fast_web_selection(expected_selection: &str) -> Result<(), Platform
     }
 
     let _ = restore_clipboard_text_only_with_timeout(&snapshot, clipboard_timeout);
-    if selected.as_deref() == Some(expected_selection) {
-        return Ok(());
+    if let Some(prefix) =
+        accepted_fast_web_selection_prefix(selected.as_deref(), expected_selection)
+    {
+        return Ok(prefix);
     }
 
     send_key(VK_RIGHT);
@@ -1038,6 +1126,19 @@ fn preflight_fast_web_selection(expected_selection: &str) -> Result<(), Platform
         preview_for_error(expected_selection, 40),
         preview_for_error(selected.as_deref().unwrap_or("<none>"), 40)
     )))
+}
+
+#[cfg(windows)]
+pub(super) fn accepted_fast_web_selection_prefix(
+    selected: Option<&str>,
+    expected_selection: &str,
+) -> Option<String> {
+    let selected = selected?;
+    if selected == expected_selection {
+        return Some(String::new());
+    }
+
+    shifted_web_selection_prefix(selected, expected_selection).map(str::to_owned)
 }
 
 #[cfg(windows)]
@@ -1130,6 +1231,25 @@ pub(super) fn web_keyboard_allows_captured_left_for_title(title: &str) -> bool {
 }
 
 #[cfg(windows)]
+pub(super) fn web_keyboard_allows_captured_left_text_for_surface(
+    app_class: &str,
+    focused_class: &str,
+    text: &str,
+) -> bool {
+    !web_keyboard_text_has_line_break(text)
+        || (app_class == "ApplicationFrameWindow"
+            && focused_class == "Windows.UI.Input.InputSite.WindowClass")
+}
+
+#[cfg(windows)]
+pub(super) fn web_keyboard_allows_captured_left_apply_selection(
+    context: &TextContext,
+    selected_text: &str,
+) -> bool {
+    !web_keyboard_text_has_line_break(selected_text) || is_sticky_notes_context(context)
+}
+
+#[cfg(windows)]
 pub(super) fn web_keyboard_allows_fast_line_apply_for_title(title: &str) -> bool {
     !web_keyboard_is_confluence_like_title(title)
 }
@@ -1154,6 +1274,11 @@ pub(super) fn web_keyboard_uses_precise_range_apply(
 fn web_keyboard_is_confluence_like_title(title: &str) -> bool {
     let normalized = title.to_ascii_lowercase();
     normalized.contains("confluence") || normalized.contains("gs-labs wiki")
+}
+
+#[cfg(windows)]
+fn web_keyboard_text_has_line_break(text: &str) -> bool {
+    text.contains('\r') || text.contains('\n')
 }
 
 #[cfg(windows)]
@@ -1257,6 +1382,19 @@ pub(super) fn web_keyboard_captured_left_replacement_text(
 }
 
 #[cfg(windows)]
+pub(super) fn web_keyboard_captured_left_should_retry_selection(
+    context: &TextContext,
+    selected_text: &str,
+) -> bool {
+    let (selected_core, _) = split_trailing_line_breaks(selected_text);
+    let (context_core, _) = split_trailing_line_breaks(&context.text_snapshot);
+
+    !selected_core.is_empty()
+        && selected_core != context_core
+        && context_core.ends_with(selected_core)
+}
+
+#[cfg(windows)]
 fn is_sticky_notes_context(context: &TextContext) -> bool {
     context
         .app_id
@@ -1329,11 +1467,44 @@ pub(super) fn shifted_web_selection_prefix<'a>(
     expected: &str,
 ) -> Option<&'a str> {
     let prefix = selected.strip_suffix(expected)?;
-    if prefix.is_empty() || prefix.chars().count() > 4 || !prefix.chars().all(char::is_whitespace) {
+    if !is_safe_shifted_web_selection_prefix(prefix) {
         return None;
     }
 
     Some(prefix)
+}
+
+#[cfg(windows)]
+fn is_safe_shifted_web_selection_prefix(prefix: &str) -> bool {
+    if prefix.is_empty() {
+        return false;
+    }
+    if prefix.contains('\r') || prefix.contains('\n') {
+        return false;
+    }
+    if prefix.chars().all(char::is_whitespace) {
+        return prefix.chars().count() <= 4;
+    }
+
+    let trimmed = prefix.trim_start_matches([' ', '\t']);
+    let indent_len = prefix.len() - trimmed.len();
+    if prefix[..indent_len].chars().count() > 4 {
+        return false;
+    }
+
+    if let Some((digits, rest)) = trimmed.split_once('.') {
+        if !digits.is_empty()
+            && digits.len() <= 3
+            && digits.chars().all(|ch| ch.is_ascii_digit())
+            && !rest.is_empty()
+            && rest.chars().all(char::is_whitespace)
+            && rest.chars().count() <= 2
+        {
+            return true;
+        }
+    }
+
+    prefix.chars().count() <= 128
 }
 
 #[cfg(windows)]

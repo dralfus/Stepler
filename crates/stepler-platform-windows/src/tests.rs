@@ -882,6 +882,54 @@ fn web_keyboard_captured_left_title_policy_blocks_confluence_wiki() {
 
 #[cfg(windows)]
 #[test]
+fn web_keyboard_captured_left_text_policy_blocks_multiline_browser_selection() {
+    assert!(web_keyboard_allows_captured_left_text_for_surface(
+        "Chrome_WidgetWin_1",
+        "Chrome_WidgetWin_1",
+        "3 ,thb dct"
+    ));
+    assert!(!web_keyboard_allows_captured_left_text_for_surface(
+        "Chrome_WidgetWin_1",
+        "Chrome_WidgetWin_1",
+        "v2\n3 ,thb dct"
+    ));
+    assert!(web_keyboard_allows_captured_left_text_for_surface(
+        "ApplicationFrameWindow",
+        "Windows.UI.Input.InputSite.WindowClass",
+        "Когда pfdbcytn cyjdf\r\nbcgjkmpeq outlookhaging.md"
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_captured_left_apply_rejects_multiline_browser_selection() {
+    let context = TextContext {
+        app_id: String::from("Chrome_WidgetWin_1/Chrome_WidgetWin_1"),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("web-keyboard-captured-left-selection:hwnd:2"),
+        text_snapshot: String::from("3 ,thb dct"),
+        caret_range: TextRange::caret("3 ,thb dct".len()),
+        selection_range: None,
+        capabilities: Capabilities::default(),
+    };
+
+    assert!(!web_keyboard_allows_captured_left_apply_selection(
+        &context,
+        "v2\n3 ,thb dct"
+    ));
+
+    let sticky_context = TextContext {
+        app_id: String::from("ApplicationFrameWindow/Windows.UI.Input.InputSite.WindowClass"),
+        ..context
+    };
+    assert!(web_keyboard_allows_captured_left_apply_selection(
+        &sticky_context,
+        "Когда pfdbcytn cyjdf\r\nbcgjkmpeq outlookhaging.md"
+    ));
+}
+
+#[cfg(windows)]
+#[test]
 fn web_keyboard_precise_range_apply_is_confluence_line_only() {
     assert!(web_keyboard_uses_precise_range_apply(
         "Security features - Chips - GS-Labs Wiki — Mozilla Firefox",
@@ -987,6 +1035,30 @@ fn web_keyboard_captured_left_scrolllock_rejects_multiline_preflight_prefix() {
         error,
         PlatformError::ReplacementUnavailableReason(reason)
             if reason.starts_with("web_keyboard_captured_left_preflight multiline_prefix")
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_captured_left_retries_short_suffix_selection() {
+    let context = TextContext {
+        app_id: String::from("MozillaWindowClass/MozillaWindowClass"),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("web-keyboard-captured-left-selection:hwnd:2"),
+        text_snapshot: String::from("z cjplfk"),
+        caret_range: TextRange::caret("z cjplfk".len()),
+        selection_range: None,
+        capabilities: Capabilities::default(),
+    };
+
+    assert!(web_keyboard_captured_left_should_retry_selection(
+        &context, "cjplfk"
+    ));
+    assert!(!web_keyboard_captured_left_should_retry_selection(
+        &context, "z cjplfk"
+    ));
+    assert!(!web_keyboard_captured_left_should_retry_selection(
+        &context, "abc"
     ));
 }
 
@@ -1263,18 +1335,63 @@ fn web_keyboard_rejects_browser_document_dump_as_field_text() {
 
 #[cfg(windows)]
 #[test]
-fn shifted_web_selection_prefix_accepts_leading_space_only() {
+fn shifted_web_selection_prefix_accepts_safe_editor_prefixes() {
     assert_eq!(
         shifted_web_selection_prefix(" ghbqltncz ", "ghbqltncz "),
         Some(" ")
     );
     assert_eq!(
+        shifted_web_selection_prefix("1. ыуьпкфз", "ыуьпкфз"),
+        Some("1. ")
+    );
+    assert_eq!(
+        shifted_web_selection_prefix("  12. ыуьпкфз", "ыуьпкфз"),
+        Some("  12. ")
+    );
+    assert_eq!(
         shifted_web_selection_prefix("xghbqltncz ", "ghbqltncz "),
-        None
+        Some("x")
     );
     assert_eq!(
         shifted_web_selection_prefix(" ghbqltncz !", "ghbqltncz "),
         None
+    );
+    assert_eq!(
+        shifted_web_selection_prefix("openVAS - ыуьпкфз", "ыуьпкфз"),
+        Some("openVAS - ")
+    );
+    assert_eq!(
+        shifted_web_selection_prefix("jo, Api rk.x ", "rk.x "),
+        Some("jo, Api ")
+    );
+    assert_eq!(
+        shifted_web_selection_prefix("строка выше\nыуьпкфз", "ыуьпкфз"),
+        None
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn fast_web_selection_prefix_preserves_safe_editor_prefixes() {
+    assert_eq!(
+        accepted_fast_web_selection_prefix(Some(" (c,jh "), "(c,jh "),
+        Some(String::from(" "))
+    );
+    assert_eq!(
+        accepted_fast_web_selection_prefix(Some("1. ыуьпкфз"), "ыуьпкфз"),
+        Some(String::from("1. "))
+    );
+    assert_eq!(
+        accepted_fast_web_selection_prefix(Some("jo, Api rk.x "), "rk.x "),
+        Some(String::from("jo, Api "))
+    );
+    assert_eq!(
+        accepted_fast_web_selection_prefix(Some("(c,jh "), "(c,jh "),
+        Some(String::new())
+    );
+    assert_eq!(
+        accepted_fast_web_selection_prefix(Some("x(c,jh "), "(c,jh "),
+        Some(String::from("x"))
     );
 }
 

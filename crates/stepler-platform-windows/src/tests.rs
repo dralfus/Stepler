@@ -205,6 +205,16 @@ fn terminal_passthrough_keeps_only_local_powershell_forwardable() {
 }
 
 #[test]
+fn codex_embedded_terminal_host_titles_are_allowlisted() {
+    assert!(is_codex_embedded_terminal_host_title("Codex"));
+    assert!(is_codex_embedded_terminal_host_title("ChatGPT"));
+    assert!(!is_codex_embedded_terminal_host_title(
+        "ChatGPT - Google Chrome"
+    ));
+    assert!(!is_codex_embedded_terminal_host_title("Windows PowerShell"));
+}
+
+#[test]
 fn context_capabilities_carry_method_binding() {
     let capabilities = Capabilities {
         can_replace_directly: true,

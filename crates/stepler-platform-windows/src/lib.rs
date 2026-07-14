@@ -838,7 +838,7 @@ fn refresh_foreground_is_codex_embedded_terminal(foreground: isize) -> bool {
 #[cfg(windows)]
 fn foreground_is_codex_embedded_terminal_cached(foreground: isize, allow_cached: bool) -> bool {
     let title = window_title(foreground).unwrap_or_default();
-    if !title.eq_ignore_ascii_case("Codex") {
+    if !is_codex_embedded_terminal_host_title(&title) {
         return false;
     }
 
@@ -861,6 +861,10 @@ fn foreground_is_codex_embedded_terminal_cached(foreground: isize, allow_cached:
         *guard = Some((foreground, Instant::now(), value));
     }
     value
+}
+
+fn is_codex_embedded_terminal_host_title(title: &str) -> bool {
+    title.eq_ignore_ascii_case("Codex") || title.eq_ignore_ascii_case("ChatGPT")
 }
 
 fn allow_uia_document_caret_fallback(target: &ForegroundTarget) -> bool {

@@ -1734,6 +1734,24 @@ fn clipboard_snapshot_can_hold_multiple_formats() {
     assert_eq!(snapshot.text.as_deref(), Some("hello"));
 }
 
+#[cfg(windows)]
+#[test]
+fn text_probe_restore_preserves_non_text_clipboard_formats() {
+    let snapshot = ClipboardSnapshot {
+        text: None,
+        sequence_number: Some(42),
+        formats: vec![ClipboardFormatSnapshot {
+            format: 8,
+            bytes: vec![1, 2, 3, 4],
+        }],
+    };
+
+    let restore_snapshot = clipboard_snapshot_for_text_probe_restore(&snapshot).unwrap();
+
+    assert_eq!(restore_snapshot.formats, snapshot.formats);
+    assert_eq!(restore_snapshot.text, None);
+}
+
 #[test]
 fn keyboard_control_action_message_ids_round_trip() {
     for action in [

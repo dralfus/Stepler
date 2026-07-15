@@ -2827,7 +2827,6 @@ unsafe extern "system" {
     fn EmptyClipboard() -> i32;
     fn EnumClipboardFormats(format: u32) -> u32;
     fn GetClipboardData(format: u32) -> isize;
-    fn IsClipboardFormatAvailable(format: u32) -> i32;
     fn SetClipboardData(format: u32, mem: isize) -> isize;
     fn GetClipboardSequenceNumber() -> u32;
     fn RegisterHotKey(hwnd: isize, id: i32, modifiers: u32, virtual_key: u32) -> i32;

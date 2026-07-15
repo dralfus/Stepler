@@ -9,19 +9,7 @@ pub(super) fn capture_clipboard_text_only() -> Result<ClipboardSnapshot, Platfor
 pub(super) fn capture_clipboard_text_only_with_timeout(
     timeout: Duration,
 ) -> Result<ClipboardSnapshot, PlatformError> {
-    let _guard = ClipboardGuard::open(timeout)?;
-    let sequence_number = Some(unsafe { GetClipboardSequenceNumber() });
-    let text = if unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) } != 0 {
-        Some(read_clipboard_text()?)
-    } else {
-        None
-    };
-
-    Ok(ClipboardSnapshot {
-        text,
-        sequence_number,
-        formats: Vec::new(),
-    })
+    capture_clipboard_with_timeout(timeout)
 }
 
 #[cfg(windows)]
@@ -36,8 +24,8 @@ pub(super) fn restore_clipboard_text_only_with_timeout(
     snapshot: &ClipboardSnapshot,
     timeout: Duration,
 ) -> Result<(), PlatformError> {
-    if let Some(text) = &snapshot.text {
-        restore_clipboard_with_timeout(clipboard_snapshot_from_text(text), timeout)
+    if let Some(snapshot) = clipboard_snapshot_for_text_probe_restore(snapshot) {
+        restore_clipboard_with_timeout(snapshot, timeout)
     } else {
         let _guard = ClipboardGuard::open(timeout)?;
         unsafe {
@@ -47,6 +35,20 @@ pub(super) fn restore_clipboard_text_only_with_timeout(
         }
         Ok(())
     }
+}
+
+#[cfg(windows)]
+pub(super) fn clipboard_snapshot_for_text_probe_restore(
+    snapshot: &ClipboardSnapshot,
+) -> Option<ClipboardSnapshot> {
+    if !snapshot.formats.is_empty() {
+        return Some(snapshot.clone());
+    }
+
+    snapshot
+        .text
+        .as_ref()
+        .map(|text| clipboard_snapshot_from_text(text))
 }
 
 #[cfg(windows)]
@@ -63,7 +65,12 @@ pub(super) fn clipboard_snapshot_from_text(text: &str) -> ClipboardSnapshot {
 
 #[cfg(windows)]
 pub(super) fn capture_clipboard() -> Result<ClipboardSnapshot, PlatformError> {
-    let _guard = ClipboardGuard::open(Duration::from_millis(450))?;
+    capture_clipboard_with_timeout(Duration::from_millis(450))
+}
+
+#[cfg(windows)]
+fn capture_clipboard_with_timeout(timeout: Duration) -> Result<ClipboardSnapshot, PlatformError> {
+    let _guard = ClipboardGuard::open(timeout)?;
     let sequence_number = Some(unsafe { GetClipboardSequenceNumber() });
     let formats = clipboard_formats();
     let mut snapshots = Vec::new();

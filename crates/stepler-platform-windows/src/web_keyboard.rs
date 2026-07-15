@@ -1246,7 +1246,9 @@ pub(super) fn web_keyboard_allows_captured_left_apply_selection(
     context: &TextContext,
     selected_text: &str,
 ) -> bool {
-    !web_keyboard_text_has_line_break(selected_text) || is_sticky_notes_context(context)
+    !web_keyboard_text_has_line_break(selected_text)
+        || is_sticky_notes_context(context)
+        || web_keyboard_wrapped_list_tail_selection(context, selected_text).is_some()
 }
 
 #[cfg(windows)]
@@ -1287,6 +1289,31 @@ pub(super) fn web_keyboard_captured_left_replacement_text(
     plan: &ReplacementPlan,
     selected_text: &str,
 ) -> Result<(String, String), PlatformError> {
+    if let Some(wrapped_tail) = web_keyboard_wrapped_list_tail_selection(context, selected_text) {
+        let tail_context = TextContext {
+            app_id: context.app_id.clone(),
+            window_id: context.window_id.clone(),
+            control_id: context.control_id.clone(),
+            text_snapshot: wrapped_tail.to_owned(),
+            caret_range: TextRange::caret(wrapped_tail.len()),
+            selection_range: None,
+            capabilities: context.capabilities.clone(),
+        };
+        let tail_plan =
+            stepler_core::build_replacement_plan(&tail_context, correction_mode_from_plan(plan))
+                .map_err(|error| {
+                    PlatformError::ReplacementUnavailableReason(format!(
+                        "web_keyboard_captured_left_replan_failed error={error:?} selected={}",
+                        preview_for_error(wrapped_tail, 40)
+                    ))
+                })?;
+        let replacement_text =
+            replace_range_text(wrapped_tail, tail_plan.range, &tail_plan.replacement_text)
+                .ok_or(PlatformError::PreflightFailed)?;
+
+        return Ok((replacement_text, tail_plan.expected_before_text));
+    }
+
     let (selected_core, selected_suffix) = split_trailing_line_breaks(selected_text);
     let (context_core, _) = split_trailing_line_breaks(&context.text_snapshot);
 
@@ -1379,6 +1406,56 @@ pub(super) fn web_keyboard_captured_left_replacement_text(
     let replacement_text = format!("{replacement_text}{selected_suffix}");
 
     Ok((replacement_text, selected_plan.expected_before_text))
+}
+
+#[cfg(windows)]
+fn web_keyboard_wrapped_list_tail_selection<'a>(
+    context: &TextContext,
+    selected_text: &'a str,
+) -> Option<&'a str> {
+    if is_sticky_notes_context(context) || !web_keyboard_text_has_line_break(selected_text) {
+        return None;
+    }
+
+    let (context_core, _) = split_trailing_line_breaks(&context.text_snapshot);
+    if context_core.is_empty() || web_keyboard_text_has_line_break(context_core) {
+        return None;
+    }
+
+    let tail = selected_text
+        .rsplit(['\r', '\n'])
+        .find(|line| !line.trim().is_empty())?
+        .trim_start();
+    if tail.is_empty() || !context_core.ends_with(tail) {
+        return None;
+    }
+
+    let prefix = &context_core[..context_core.len() - tail.len()];
+    if web_keyboard_is_wrapped_list_marker_prefix(prefix) {
+        Some(tail)
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn web_keyboard_is_wrapped_list_marker_prefix(prefix: &str) -> bool {
+    let prefix = prefix.trim_start();
+    let mut chars = prefix.chars().peekable();
+
+    if chars.next_if(|ch| matches!(ch, '-' | '*' | '•')).is_some() {
+        return chars.next().is_some_and(char::is_whitespace) && chars.all(char::is_whitespace);
+    }
+
+    let mut saw_digit = false;
+    while chars.next_if(|ch| ch.is_ascii_digit()).is_some() {
+        saw_digit = true;
+    }
+
+    saw_digit
+        && chars.next_if(|ch| matches!(ch, '.' | ')')).is_some()
+        && chars.next().is_some_and(char::is_whitespace)
+        && chars.all(char::is_whitespace)
 }
 
 #[cfg(windows)]

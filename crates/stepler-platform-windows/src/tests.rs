@@ -940,6 +940,35 @@ fn web_keyboard_captured_left_apply_rejects_multiline_browser_selection() {
 
 #[cfg(windows)]
 #[test]
+fn web_keyboard_captured_left_apply_allows_wrapped_list_tail_selection() {
+    let context = TextContext {
+        app_id: String::from("Chrome_WidgetWin_1/Chrome_WidgetWin_1"),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("web-keyboard-captured-left-selection:hwnd:2"),
+        text_snapshot: String::from("1. ,eltv pfgecrfnm d "),
+        caret_range: TextRange::caret("1. ,eltv pfgecrfnm d ".len()),
+        selection_range: None,
+        capabilities: Capabilities::default(),
+    };
+    let selected_text = "1. ?\n   ,eltv pfgecrfnm d ";
+
+    assert!(web_keyboard_allows_captured_left_apply_selection(
+        &context,
+        selected_text
+    ));
+
+    let plan =
+        stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::ScrollLock)
+            .unwrap();
+    let (replacement_text, actual_before_text) =
+        web_keyboard_captured_left_replacement_text(&context, &plan, selected_text).unwrap();
+
+    assert_eq!(actual_before_text, ",eltv pfgecrfnm d");
+    assert_eq!(replacement_text, "будем запускать в ");
+}
+
+#[cfg(windows)]
+#[test]
 fn web_keyboard_precise_range_apply_is_confluence_line_only() {
     assert!(web_keyboard_uses_precise_range_apply(
         "Security features - Chips - GS-Labs Wiki — Mozilla Firefox",

@@ -127,6 +127,23 @@ fn facts_keep_yandex_as_separate_surface_but_browser_like_technical_target() {
     );
 }
 
+#[test]
+fn facts_detect_whatsapp_desktop_as_browser_editor() {
+    let target = target(
+        "WinUIDesktopWin32WindowClass",
+        "Chrome_WidgetWin_0",
+        Some("WhatsApp"),
+        "WhatsApp",
+    );
+
+    let facts = target_facts(&target);
+
+    assert!(facts.is_whatsapp_desktop);
+    assert!(!facts.is_browser_editor_class);
+    assert!(facts.is_browser_like_technical_target);
+    assert_eq!(classify_surface(&target).kind, SurfaceKind::BrowserEditor);
+}
+
 fn target(
     app_class: &str,
     focused_class: &str,

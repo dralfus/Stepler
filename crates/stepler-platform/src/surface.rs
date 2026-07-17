@@ -214,12 +214,12 @@ pub fn default_surface_policies() -> Vec<SurfacePolicy> {
         SurfacePolicy {
             surface: SurfaceKind::RocketChatEditor,
             pause_methods: same_preferences(vec![
-                MethodId::WebKeyboardSelection,
                 MethodId::UiAutomationEditableText,
+                MethodId::WebKeyboardSelection,
             ]),
             scrolllock_methods: same_preferences(vec![
-                MethodId::WebKeyboardSelection,
                 MethodId::UiAutomationEditableText,
+                MethodId::WebKeyboardSelection,
             ]),
             forbidden_methods: vec![
                 MethodId::Win32EditMessages,
@@ -435,8 +435,8 @@ pub fn default_probe_policies() -> Vec<ProbePolicy> {
         probe_policy(
             SurfaceKind::RocketChatEditor,
             vec![
-                MethodId::WebKeyboardSelection,
                 MethodId::UiAutomationEditableText,
+                MethodId::WebKeyboardSelection,
             ],
             true,
         ),
@@ -651,6 +651,14 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
             SurfaceKind::TelegramDesktop,
             95,
             vec!["process=Telegram or Qt window"],
+        );
+    }
+
+    if facts.is_whatsapp_desktop {
+        return surface(
+            SurfaceKind::BrowserEditor,
+            95,
+            vec!["WhatsApp Desktop WinUI Chromium host"],
         );
     }
 

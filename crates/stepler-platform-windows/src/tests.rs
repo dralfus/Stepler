@@ -715,7 +715,7 @@ fn fast_web_keyboard_target_uses_probe_plan_runtime_stack() {
 
 #[cfg(windows)]
 #[test]
-fn rocket_chat_search_runtime_stack_allows_uia_editable_fallback() {
+fn rocket_chat_search_runtime_stack_prefers_uia_editable_before_keyboard() {
     let target = ForegroundTarget {
         app_class: String::from("Chrome_WidgetWin_1"),
         focused_class: String::from("Chrome_WidgetWin_1"),
@@ -733,8 +733,8 @@ fn rocket_chat_search_runtime_stack_allows_uia_editable_fallback() {
     assert_eq!(
         method_ids,
         vec![
-            MethodId::WebKeyboardSelection,
-            MethodId::UiAutomationEditableText
+            MethodId::UiAutomationEditableText,
+            MethodId::WebKeyboardSelection
         ]
     );
 }

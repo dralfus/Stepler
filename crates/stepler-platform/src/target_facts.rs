@@ -22,6 +22,7 @@ pub struct TargetFacts {
     pub is_telegram_technical_target: bool,
     pub is_browser_editor_class: bool,
     pub is_yandex_browser_widget_class: bool,
+    pub is_whatsapp_desktop: bool,
     pub is_browser_like_technical_target: bool,
     pub is_fast_browser_title: bool,
     pub is_rocket_chat: bool,
@@ -46,6 +47,10 @@ pub fn target_facts(target: &ForegroundTarget) -> TargetFacts {
         || class_eq(app, "MozillaWindowClass")
         || class_eq(focused, "Chrome_RenderWidgetHostHWND");
     let is_yandex_browser_widget_class = class_starts(app, "Chrome_Yandex_WidgetWin");
+    let is_whatsapp_desktop = (process_eq(process, "WhatsApp")
+        || title_contains(title, "WhatsApp"))
+        && class_eq(app, "WinUIDesktopWin32WindowClass")
+        && class_starts(focused, "Chrome_WidgetWin");
 
     TargetFacts {
         is_classic_console: class_eq(app, "ConsoleWindowClass")
@@ -74,7 +79,10 @@ pub fn target_facts(target: &ForegroundTarget) -> TargetFacts {
         is_telegram_technical_target: is_telegram_process || is_telegram_qt_chat_title,
         is_browser_editor_class,
         is_yandex_browser_widget_class,
-        is_browser_like_technical_target: is_browser_editor_class || is_yandex_browser_widget_class,
+        is_whatsapp_desktop,
+        is_browser_like_technical_target: is_browser_editor_class
+            || is_yandex_browser_widget_class
+            || is_whatsapp_desktop,
         is_fast_browser_title: title_contains(title, "jira")
             || title_contains(title, "confluence")
             || title_contains(title, "gs-labs wiki")

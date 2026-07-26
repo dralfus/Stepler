@@ -9,7 +9,23 @@ pub(super) fn capture_clipboard_text_only() -> Result<ClipboardSnapshot, Platfor
 pub(super) fn capture_clipboard_text_only_with_timeout(
     timeout: Duration,
 ) -> Result<ClipboardSnapshot, PlatformError> {
-    capture_clipboard_with_timeout(timeout)
+    let _guard = ClipboardGuard::open(timeout)?;
+    let sequence_number = Some(unsafe { GetClipboardSequenceNumber() });
+    let text = if unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) } != 0 {
+        Some(read_clipboard_text()?)
+    } else {
+        None
+    };
+    let formats = text
+        .as_ref()
+        .map(|text| clipboard_snapshot_from_text(text).formats)
+        .unwrap_or_default();
+
+    Ok(ClipboardSnapshot {
+        text,
+        sequence_number,
+        formats,
+    })
 }
 
 #[cfg(windows)]
@@ -41,10 +57,6 @@ pub(super) fn restore_clipboard_text_only_with_timeout(
 pub(super) fn clipboard_snapshot_for_text_probe_restore(
     snapshot: &ClipboardSnapshot,
 ) -> Option<ClipboardSnapshot> {
-    if !snapshot.formats.is_empty() {
-        return Some(snapshot.clone());
-    }
-
     snapshot
         .text
         .as_ref()
@@ -75,6 +87,9 @@ fn capture_clipboard_with_timeout(timeout: Duration) -> Result<ClipboardSnapshot
     let formats = clipboard_formats();
     let mut snapshots = Vec::new();
     for format in formats {
+        if !clipboard_format_uses_hglobal(format) {
+            continue;
+        }
         if let Some(bytes) = read_clipboard_format_bytes(format) {
             snapshots.push(ClipboardFormatSnapshot { format, bytes });
         }
@@ -118,6 +133,9 @@ pub(super) fn restore_clipboard_with_timeout(
         }
 
         for format_snapshot in snapshot.formats {
+            if !clipboard_format_uses_hglobal(format_snapshot.format) {
+                continue;
+            }
             let handle = global_alloc_from_bytes(&format_snapshot.bytes)?;
             if SetClipboardData(format_snapshot.format, handle) == 0 {
                 GlobalFree(handle);
@@ -234,6 +252,21 @@ pub(super) fn utf16_to_le_bytes(input: &[u16]) -> Vec<u8> {
         .iter()
         .flat_map(|unit| unit.to_le_bytes())
         .collect::<Vec<_>>()
+}
+
+#[cfg(windows)]
+pub(super) fn clipboard_format_uses_hglobal(format: u32) -> bool {
+    !matches!(
+        format,
+        CF_BITMAP
+            | CF_METAFILEPICT
+            | CF_OWNERDISPLAY
+            | CF_DSPTEXT
+            | CF_DSPBITMAP
+            | CF_DSPMETAFILEPICT
+            | CF_ENHMETAFILE
+            | CF_DSPENHMETAFILE
+    )
 }
 
 #[cfg(test)]

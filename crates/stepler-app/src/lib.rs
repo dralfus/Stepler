@@ -216,6 +216,8 @@ fn should_guard_clipboard(context: &TextContext) -> bool {
         matches!(
             method,
             MethodId::TerminalClipboardShortcut
+                | MethodId::XtermKeyboardSelection
+                | MethodId::WebKeyboardSelection
                 | MethodId::ClipboardSelection
                 | MethodId::SendInput
         )
@@ -381,6 +383,19 @@ mod tests {
         }
     }
 
+    struct FakeWebKeyboardContextProvider;
+
+    impl TextContextProvider for FakeWebKeyboardContextProvider {
+        fn text_context(&self) -> Result<TextContext, PlatformError> {
+            let mut context = TextContext::new("k.,jdm");
+            context.capabilities.method_binding = Some(stepler_core::MethodBinding::new(
+                MethodId::WebKeyboardSelection,
+                vec![MethodId::WebKeyboardSelection],
+            ));
+            Ok(context)
+        }
+    }
+
     struct FakeReplacer;
 
     impl TextReplacer for FakeReplacer {
@@ -514,6 +529,34 @@ mod tests {
         assert!(report.clipboard_changed);
         assert!(report.restore_ok);
         assert!(report.donor_marker_seen);
+        assert_eq!(
+            clipboard.capture().unwrap().text.as_deref(),
+            Some("original clipboard")
+        );
+    }
+
+    #[test]
+    fn runner_guards_web_keyboard_clipboard_mutation() {
+        let foreground = FakeForeground {
+            controls: vec![control()],
+        };
+        let context_provider = FakeWebKeyboardContextProvider;
+        let clipboard = FakeClipboard::new("original clipboard");
+        let replacer = MutatingReplacer {
+            clipboard: &clipboard,
+        };
+        let mut runner = OperationRunner::new_with_clipboard(
+            &foreground,
+            &context_provider,
+            &replacer,
+            &clipboard,
+        );
+
+        let outcome = runner.handle_hotkey(CorrectionMode::Pause).unwrap();
+        let report = outcome.clipboard_guard.unwrap();
+
+        assert!(report.clipboard_changed);
+        assert!(report.restore_ok);
         assert_eq!(
             clipboard.capture().unwrap().text.as_deref(),
             Some("original clipboard")

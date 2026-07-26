@@ -1765,7 +1765,7 @@ fn clipboard_snapshot_can_hold_multiple_formats() {
 
 #[cfg(windows)]
 #[test]
-fn text_probe_restore_preserves_non_text_clipboard_formats() {
+fn text_probe_restore_does_not_restore_non_text_clipboard_formats() {
     let snapshot = ClipboardSnapshot {
         text: None,
         sequence_number: Some(42),
@@ -1775,10 +1775,40 @@ fn text_probe_restore_preserves_non_text_clipboard_formats() {
         }],
     };
 
+    assert!(clipboard_snapshot_for_text_probe_restore(&snapshot).is_none());
+}
+
+#[cfg(windows)]
+#[test]
+fn text_probe_restore_rebuilds_unicode_text_only_snapshot() {
+    let snapshot = ClipboardSnapshot {
+        text: Some(String::from("hello")),
+        sequence_number: Some(42),
+        formats: vec![
+            ClipboardFormatSnapshot {
+                format: CF_UNICODETEXT,
+                bytes: utf16_to_le_bytes(&string_to_null_terminated_utf16("hello")),
+            },
+            ClipboardFormatSnapshot {
+                format: 8,
+                bytes: vec![1, 2, 3, 4],
+            },
+        ],
+    };
+
     let restore_snapshot = clipboard_snapshot_for_text_probe_restore(&snapshot).unwrap();
 
-    assert_eq!(restore_snapshot.formats, snapshot.formats);
-    assert_eq!(restore_snapshot.text, None);
+    assert_eq!(restore_snapshot.text.as_deref(), Some("hello"));
+    assert_eq!(restore_snapshot.formats.len(), 1);
+    assert_eq!(restore_snapshot.formats[0].format, CF_UNICODETEXT);
+}
+
+#[cfg(windows)]
+#[test]
+fn clipboard_hglobal_filter_skips_gdi_handle_formats() {
+    assert!(!clipboard_format_uses_hglobal(CF_BITMAP));
+    assert!(!clipboard_format_uses_hglobal(CF_ENHMETAFILE));
+    assert!(clipboard_format_uses_hglobal(CF_UNICODETEXT));
 }
 
 #[test]

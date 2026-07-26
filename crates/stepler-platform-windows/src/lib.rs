@@ -2580,6 +2580,22 @@ const EM_REPLACESEL: u32 = 0x00C2;
 #[cfg(windows)]
 const CF_UNICODETEXT: u32 = 13;
 #[cfg(windows)]
+const CF_BITMAP: u32 = 2;
+#[cfg(windows)]
+const CF_METAFILEPICT: u32 = 3;
+#[cfg(windows)]
+const CF_ENHMETAFILE: u32 = 14;
+#[cfg(windows)]
+const CF_OWNERDISPLAY: u32 = 0x0080;
+#[cfg(windows)]
+const CF_DSPTEXT: u32 = 0x0081;
+#[cfg(windows)]
+const CF_DSPBITMAP: u32 = 0x0082;
+#[cfg(windows)]
+const CF_DSPMETAFILEPICT: u32 = 0x0083;
+#[cfg(windows)]
+const CF_DSPENHMETAFILE: u32 = 0x008E;
+#[cfg(windows)]
 const GMEM_MOVEABLE: u32 = 0x0002;
 #[cfg(windows)]
 const WM_HOTKEY: u32 = 0x0312;
@@ -2827,6 +2843,7 @@ unsafe extern "system" {
     fn EmptyClipboard() -> i32;
     fn EnumClipboardFormats(format: u32) -> u32;
     fn GetClipboardData(format: u32) -> isize;
+    fn IsClipboardFormatAvailable(format: u32) -> i32;
     fn SetClipboardData(format: u32, mem: isize) -> isize;
     fn GetClipboardSequenceNumber() -> u32;
     fn RegisterHotKey(hwnd: isize, id: i32, modifiers: u32, virtual_key: u32) -> i32;

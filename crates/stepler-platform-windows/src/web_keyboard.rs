@@ -595,6 +595,7 @@ impl WebKeyboardSelectionMethod {
         }
 
         if context.selection_range.is_some() {
+            preflight_web_keyboard_selected_context(&actual_before)?;
             send_unicode_text(&plan.replacement_text)?;
             return Ok(ApplyReplacementResult {
                 applied: true,
@@ -894,6 +895,45 @@ impl WebKeyboardSelectionMethod {
             method: MethodId::WebKeyboardSelection.as_str().to_owned(),
         })
     }
+}
+
+#[cfg(windows)]
+fn preflight_web_keyboard_selected_context(expected_selection: &str) -> Result<(), PlatformError> {
+    let snapshot = capture_clipboard_text_only()?;
+    let selected = copy_selected_text_checked(&snapshot, Duration::from_millis(260));
+    if selected.as_deref() == Some(expected_selection) {
+        let _ = restore_clipboard_text_only(&snapshot);
+        return Ok(());
+    }
+
+    if selected.is_none() {
+        select_left_utf16_units(expected_selection.encode_utf16().count())?;
+        std::thread::sleep(Duration::from_millis(25));
+        let selected_after_recovery =
+            copy_selected_text_checked(&snapshot, Duration::from_millis(360));
+        let _ = restore_clipboard_text_only(&snapshot);
+        if selected_after_recovery.as_deref() == Some(expected_selection) {
+            append_hotkey_signal_log(&format!(
+                "web_keyboard_selected_preflight_recovered expected_len={}",
+                expected_selection.len()
+            ));
+            return Ok(());
+        }
+
+        send_key(VK_RIGHT);
+        return Err(PlatformError::ReplacementUnavailableReason(format!(
+            "web_keyboard_selected_preflight expected={} actual={}",
+            preview_for_error(expected_selection, 40),
+            preview_for_error(selected_after_recovery.as_deref().unwrap_or("<none>"), 40)
+        )));
+    }
+
+    let _ = restore_clipboard_text_only(&snapshot);
+    Err(PlatformError::ReplacementUnavailableReason(format!(
+        "web_keyboard_selected_preflight expected={} actual={}",
+        preview_for_error(expected_selection, 40),
+        preview_for_error(selected.as_deref().unwrap_or("<none>"), 40)
+    )))
 }
 
 #[cfg(windows)]

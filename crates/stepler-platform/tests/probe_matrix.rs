@@ -158,6 +158,7 @@ fn parse_surface(value: &str) -> SurfaceKind {
         "OutlookWordEditor" => SurfaceKind::OutlookWordEditor,
         "OutlookShell" => SurfaceKind::OutlookShell,
         "WordEditor" => SurfaceKind::WordEditor,
+        "ExcelCellEditor" => SurfaceKind::ExcelCellEditor,
         "Unknown" => SurfaceKind::Unknown,
         _ => panic!("unknown surface kind: {value}"),
     }

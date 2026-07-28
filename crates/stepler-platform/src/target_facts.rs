@@ -9,6 +9,7 @@ pub struct TargetFacts {
     pub is_outlook_word_editor: bool,
     pub is_word_process: bool,
     pub is_word_app_class: bool,
+    pub is_excel_cell_editor: bool,
     pub is_win32_edit: bool,
     pub is_notepad_like: bool,
     pub is_sticky_notes: bool,
@@ -61,6 +62,7 @@ pub fn target_facts(target: &ForegroundTarget) -> TargetFacts {
         is_outlook_word_editor: is_outlook_process && class_eq(focused, "_WwG"),
         is_word_process,
         is_word_app_class,
+        is_excel_cell_editor: class_eq(app, "XLMAIN") && class_eq(focused, "EXCEL6"),
         is_win32_edit: class_eq(focused, "Edit"),
         is_notepad_like: title_contains(title, "Notepad")
             || process_eq(process, "Notepad")

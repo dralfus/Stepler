@@ -6,6 +6,7 @@ pub(super) fn is_web_keyboard_technical_target(target: &ForegroundTarget) -> boo
         || facts.is_telegram_technical_target
         || facts.is_notepad_like
         || facts.is_sticky_notes
+        || facts.is_excel_cell_editor
 }
 
 pub(super) fn is_browser_like_target(target: &ForegroundTarget) -> bool {

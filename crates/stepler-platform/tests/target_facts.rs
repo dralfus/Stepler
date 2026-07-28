@@ -144,6 +144,21 @@ fn facts_detect_whatsapp_desktop_as_browser_editor() {
     assert_eq!(classify_surface(&target).kind, SurfaceKind::BrowserEditor);
 }
 
+#[test]
+fn facts_detect_only_the_excel_cell_editor_surface() {
+    let editor = target("XLMAIN", "EXCEL6", Some("EXCEL"), "Book1 - Excel");
+    let editor_facts = target_facts(&editor);
+
+    assert!(editor_facts.is_excel_cell_editor);
+    assert_eq!(classify_surface(&editor).kind, SurfaceKind::ExcelCellEditor);
+
+    let workbook = target("XLMAIN", "EXCEL7", Some("EXCEL"), "Book1 - Excel");
+    let workbook_facts = target_facts(&workbook);
+
+    assert!(!workbook_facts.is_excel_cell_editor);
+    assert_eq!(classify_surface(&workbook).kind, SurfaceKind::Unknown);
+}
+
 fn target(
     app_class: &str,
     focused_class: &str,

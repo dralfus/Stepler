@@ -19,6 +19,7 @@ pub enum SurfaceKind {
     OutlookWordEditor,
     OutlookShell,
     WordEditor,
+    ExcelCellEditor,
     Unknown,
 }
 
@@ -362,6 +363,21 @@ pub fn default_surface_policies() -> Vec<SurfacePolicy> {
             ],
             allow_risky_methods: false,
         },
+        SurfacePolicy {
+            surface: SurfaceKind::ExcelCellEditor,
+            pause_methods: same_preferences(vec![MethodId::WebKeyboardSelection]),
+            scrolllock_methods: same_preferences(vec![MethodId::WebKeyboardSelection]),
+            forbidden_methods: vec![
+                MethodId::Win32EditMessages,
+                MethodId::UiAutomationEditableText,
+                MethodId::UiAutomationDocumentText,
+                MethodId::UiAutomationText,
+                MethodId::TerminalClipboardShortcut,
+                MethodId::ClipboardSelection,
+                MethodId::SendInput,
+            ],
+            allow_risky_methods: false,
+        },
         default_surface_policy(),
     ]
 }
@@ -483,6 +499,11 @@ pub fn default_probe_policies() -> Vec<ProbePolicy> {
             false,
         ),
         probe_policy(SurfaceKind::WordEditor, vec![MethodId::WordCom], false),
+        probe_policy(
+            SurfaceKind::ExcelCellEditor,
+            vec![MethodId::WebKeyboardSelection],
+            false,
+        ),
         probe_policy(SurfaceKind::Unknown, unknown_probe_methods(), false),
     ]
 }
@@ -601,6 +622,14 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
             SurfaceKind::WordEditor,
             95,
             vec!["process=WINWORD or app_class=OpusApp"],
+        );
+    }
+
+    if facts.is_excel_cell_editor {
+        return surface(
+            SurfaceKind::ExcelCellEditor,
+            100,
+            vec!["app_class=XLMAIN", "focused_class=EXCEL6"],
         );
     }
 

@@ -1334,6 +1334,35 @@ fn web_keyboard_technical_target_does_not_expand_unknown_runtime_stack() {
 
 #[cfg(windows)]
 #[test]
+fn excel_cell_editor_gets_only_the_explicit_keyboard_selection_stack() {
+    let editor = ForegroundTarget {
+        app_class: String::from("XLMAIN"),
+        focused_class: String::from("EXCEL6"),
+        title: String::from("Book1 - Excel"),
+        process_name: Some(String::from("EXCEL")),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("hwnd:2"),
+    };
+
+    assert!(is_web_keyboard_technical_target(&editor));
+    let editor_methods = windows_method_probes(&editor)
+        .iter()
+        .map(|probe| probe.method_id)
+        .collect::<Vec<_>>();
+    assert_eq!(editor_methods, vec![MethodId::WebKeyboardSelection]);
+
+    let workbook = ForegroundTarget {
+        focused_class: String::from("EXCEL7"),
+        ..editor
+    };
+    assert!(!is_web_keyboard_technical_target(&workbook));
+    assert!(!windows_method_probes(&workbook)
+        .iter()
+        .any(|probe| probe.method_id == MethodId::WebKeyboardSelection));
+}
+
+#[cfg(windows)]
+#[test]
 fn hotkey_failure_trace_summary_includes_probe_and_resolver_boundaries() {
     let target = ForegroundTarget {
         app_class: String::from("SomeCustomWindow"),

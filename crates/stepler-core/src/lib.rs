@@ -111,6 +111,20 @@ mod tests {
     }
 
     #[test]
+    fn scrolllock_converts_every_mistyped_word_in_current_line() {
+        let context = TextContext::new("2. dct ghjtrne");
+
+        let plan = build_replacement_plan(&context, CorrectionMode::ScrollLock).unwrap();
+
+        assert_eq!(
+            plan.range,
+            TextRange::new("2. ".len(), "2. dct ghjtrne".len())
+        );
+        assert_eq!(plan.expected_before_text, "dct ghjtrne");
+        assert_eq!(plan.replacement_text, "все проекту");
+    }
+
+    #[test]
     fn scrolllock_builds_plan_for_single_mistyped_word() {
         let context = TextContext::new("k.,jdm");
 

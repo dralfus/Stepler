@@ -14,15 +14,8 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        if (TryRunWatchdog(args))
-        {
-            return;
-        }
-
         if (args.Any(arg => string.Equals(arg, "--stop", StringComparison.OrdinalIgnoreCase)))
         {
-            SuppressWatchdogRestart();
-            MarkNormalShutdown("stop-requested");
             StopExistingProcesses();
             return;
         }
@@ -38,8 +31,6 @@ internal static class Program
             }
 
             SafeLog($"tray main start pid={Environment.ProcessId}");
-            var watchdogToken = Guid.NewGuid().ToString("N");
-            StartWatchdog(watchdogToken);
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             ApplicationConfiguration.Initialize();
             Application.ThreadException += (_, error) =>
@@ -48,194 +39,13 @@ internal static class Program
                 SafeLog($"tray unhandled exception terminating={error.IsTerminating} {error.ExceptionObject}");
             Application.ApplicationExit += (_, _) =>
                 SafeLog("tray application exit");
-            Application.Run(new SteplerTrayForm(watchdogToken));
+            Application.Run(new SteplerTrayForm());
             SafeLog("tray main stop");
         }
         catch (Exception error)
         {
             SafeLog($"tray fatal {error}");
         }
-    }
-
-    private static bool TryRunWatchdog(string[] args)
-    {
-        if (args.Length < 3 || !string.Equals(args[0], "--watchdog", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (!int.TryParse(args[1], out var parentProcessId))
-        {
-            SafeLog($"watchdog invalid parent pid arg={args[1]}");
-            return true;
-        }
-
-        var token = args[2];
-        RunWatchdog(parentProcessId, token);
-        return true;
-    }
-
-    private static void RunWatchdog(int parentProcessId, string token)
-    {
-        SafeLog($"watchdog start parent={parentProcessId} token={token}");
-        try
-        {
-            using var parent = Process.GetProcessById(parentProcessId);
-            parent.WaitForExit();
-            Thread.Sleep(1000);
-        }
-        catch (ArgumentException)
-        {
-            Thread.Sleep(1000);
-        }
-        catch (Exception error)
-        {
-            SafeLog($"watchdog wait failed parent={parentProcessId} {error.GetType().Name}: {error.Message}");
-            Thread.Sleep(1000);
-        }
-
-        if (WasNormalShutdown(token) || IsWatchdogRestartSuppressed())
-        {
-            SafeLog($"watchdog normal shutdown parent={parentProcessId}");
-            return;
-        }
-
-        var executablePath = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
-        {
-            SafeLog("watchdog restart skipped executable path unavailable");
-            return;
-        }
-
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = executablePath,
-                WorkingDirectory = AppContext.BaseDirectory,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WindowStyle = ProcessWindowStyle.Hidden,
-            });
-            SafeLog($"watchdog restarted tray exe={executablePath}");
-        }
-        catch (Exception error)
-        {
-            SafeLog($"watchdog restart failed {error}");
-        }
-    }
-
-    private static void StartWatchdog(string token)
-    {
-        var executablePath = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
-        {
-            SafeLog("watchdog start skipped executable path unavailable");
-            return;
-        }
-
-        try
-        {
-            ClearNormalShutdown(token);
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = executablePath,
-                ArgumentList = { "--watchdog", Environment.ProcessId.ToString(), token },
-                WorkingDirectory = AppContext.BaseDirectory,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WindowStyle = ProcessWindowStyle.Hidden,
-            });
-            SafeLog($"watchdog spawned token={token}");
-        }
-        catch (Exception error)
-        {
-            SafeLog($"watchdog spawn failed {error}");
-        }
-    }
-
-    internal static void MarkNormalShutdown(string token)
-    {
-        try
-        {
-            Directory.CreateDirectory(StateDirectory());
-            File.WriteAllText(WatchdogShutdownPath(token), DateTimeOffset.Now.ToString("o"));
-        }
-        catch (Exception error)
-        {
-            SafeLog($"watchdog shutdown marker failed token={token} {error.GetType().Name}: {error.Message}");
-        }
-    }
-
-    private static void SuppressWatchdogRestart()
-    {
-        try
-        {
-            Directory.CreateDirectory(StateDirectory());
-            File.WriteAllText(WatchdogSuppressPath(), DateTimeOffset.Now.ToString("o"));
-        }
-        catch (Exception error)
-        {
-            SafeLog($"watchdog suppress marker failed {error.GetType().Name}: {error.Message}");
-        }
-    }
-
-    private static bool IsWatchdogRestartSuppressed()
-    {
-        try
-        {
-            var path = WatchdogSuppressPath();
-            if (!File.Exists(path))
-            {
-                return false;
-            }
-
-            var age = DateTimeOffset.UtcNow - new DateTimeOffset(File.GetLastWriteTimeUtc(path));
-            return age >= TimeSpan.Zero && age < TimeSpan.FromSeconds(45);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static bool WasNormalShutdown(string token)
-    {
-        try
-        {
-            return File.Exists(WatchdogShutdownPath(token));
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static void ClearNormalShutdown(string token)
-    {
-        try
-        {
-            var path = WatchdogShutdownPath(token);
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch
-        {
-            // A stale marker only affects this unique token, so cleanup is best-effort.
-        }
-    }
-
-    private static string WatchdogShutdownPath(string token)
-    {
-        var safeToken = string.Concat(token.Where(char.IsLetterOrDigit));
-        return Path.Combine(StateDirectory(), $"watchdog-normal-exit-{safeToken}.txt");
-    }
-
-    private static string WatchdogSuppressPath()
-    {
-        return Path.Combine(StateDirectory(), "watchdog-suppress-restart.txt");
     }
 
     internal static void SafeLog(string message)
@@ -314,7 +124,6 @@ internal static class Program
 
 internal sealed class SteplerTrayForm : Form
 {
-    private readonly string _watchdogToken;
     private readonly NotifyIcon _notifyIcon;
     private readonly ContextMenuStrip _trayMenu;
     private readonly Icon _appIcon;
@@ -352,9 +161,8 @@ internal sealed class SteplerTrayForm : Form
     private bool _stoppingRunner;
     private bool _closing;
 
-    public SteplerTrayForm(string watchdogToken)
+    public SteplerTrayForm()
     {
-        _watchdogToken = watchdogToken;
         _repoRoot = FindRepoRoot();
         _settings = SteplerSettingsStore.Load();
         Program.SafeLog($"settings loaded path={SteplerSettingsStore.SettingsPath()} {JsonSerializer.Serialize(_settings)}");
@@ -537,7 +345,6 @@ internal sealed class SteplerTrayForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        Program.MarkNormalShutdown(_watchdogToken);
         _closing = true;
         StopHotkeyLogWatcher();
         _timingOverlay?.Close();

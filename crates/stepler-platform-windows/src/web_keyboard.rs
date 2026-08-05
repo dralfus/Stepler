@@ -1093,7 +1093,7 @@ fn restore_web_keyboard_clipboard(
 
 #[cfg(windows)]
 fn restore_web_line_left_context_caret() {
-    send_key(VK_RIGHT);
+    send_key_virtual(VK_RIGHT);
     release_modifier_keys();
 }
 

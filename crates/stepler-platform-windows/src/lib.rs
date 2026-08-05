@@ -1297,54 +1297,39 @@ fn wait_for_clipboard_text_different_from_with_clipboard_timeout(
 }
 
 #[cfg(windows)]
+fn web_navigation_input(vk: u32, key_up: bool) -> KeyboardInputEvent {
+    KeyboardInputEvent::new(vk, key_up, KeyboardInputMode::VirtualKey)
+}
+
+#[cfg(windows)]
 fn select_web_left_context() {
     let modifiers = [
-        KeyboardInputEvent::new(VK_CONTROL, false, KeyboardInputMode::ScanCode),
-        KeyboardInputEvent::new(VK_LSHIFT, false, KeyboardInputMode::ScanCode),
+        web_navigation_input(VK_CONTROL, false),
+        web_navigation_input(VK_LSHIFT, false),
     ];
     let _ = send_keyboard_input(&modifiers);
     std::thread::sleep(Duration::from_millis(25));
 
     let mut events = Vec::new();
     for _ in 0..6 {
-        events.push(KeyboardInputEvent::new(
-            VK_LEFT,
-            false,
-            KeyboardInputMode::ScanCode,
-        ));
-        events.push(KeyboardInputEvent::new(
-            VK_LEFT,
-            true,
-            KeyboardInputMode::ScanCode,
-        ));
+        events.push(web_navigation_input(VK_LEFT, false));
+        events.push(web_navigation_input(VK_LEFT, true));
     }
-    events.push(KeyboardInputEvent::new(
-        VK_LSHIFT,
-        true,
-        KeyboardInputMode::ScanCode,
-    ));
-    events.push(KeyboardInputEvent::new(
-        VK_CONTROL,
-        true,
-        KeyboardInputMode::ScanCode,
-    ));
+    events.push(web_navigation_input(VK_LSHIFT, true));
+    events.push(web_navigation_input(VK_CONTROL, true));
     let _ = send_keyboard_input(&events);
     release_modifier_keys();
 }
 
 #[cfg(windows)]
 fn select_web_line_left_context() {
-    let shift_down = [KeyboardInputEvent::new(
-        VK_LSHIFT,
-        false,
-        KeyboardInputMode::ScanCode,
-    )];
+    let shift_down = [web_navigation_input(VK_LSHIFT, false)];
     let _ = send_keyboard_input(&shift_down);
     std::thread::sleep(Duration::from_millis(25));
     let _ = send_keyboard_input(&[
-        KeyboardInputEvent::new(VK_HOME, false, KeyboardInputMode::ScanCode),
-        KeyboardInputEvent::new(VK_HOME, true, KeyboardInputMode::ScanCode),
-        KeyboardInputEvent::new(VK_LSHIFT, true, KeyboardInputMode::ScanCode),
+        web_navigation_input(VK_HOME, false),
+        web_navigation_input(VK_HOME, true),
+        web_navigation_input(VK_LSHIFT, true),
     ]);
     release_modifier_keys();
 }
@@ -1371,11 +1356,7 @@ fn select_left_utf16_units(count: usize) -> Result<(), PlatformError> {
         return Err(PlatformError::PreflightFailed);
     }
 
-    let shift_down = [KeyboardInputEvent::new(
-        VK_LSHIFT,
-        false,
-        KeyboardInputMode::ScanCode,
-    )];
+    let shift_down = [web_navigation_input(VK_LSHIFT, false)];
     if !send_keyboard_input(&shift_down) {
         return Err(PlatformError::Unsupported);
     }
@@ -1383,22 +1364,10 @@ fn select_left_utf16_units(count: usize) -> Result<(), PlatformError> {
 
     let mut events = Vec::with_capacity(count * 2 + 1);
     for _ in 0..count {
-        events.push(KeyboardInputEvent::new(
-            VK_LEFT,
-            false,
-            KeyboardInputMode::ScanCode,
-        ));
-        events.push(KeyboardInputEvent::new(
-            VK_LEFT,
-            true,
-            KeyboardInputMode::ScanCode,
-        ));
+        events.push(web_navigation_input(VK_LEFT, false));
+        events.push(web_navigation_input(VK_LEFT, true));
     }
-    events.push(KeyboardInputEvent::new(
-        VK_LSHIFT,
-        true,
-        KeyboardInputMode::ScanCode,
-    ));
+    events.push(web_navigation_input(VK_LSHIFT, true));
 
     send_keyboard_input(&events)
         .then_some(())
@@ -1425,11 +1394,7 @@ fn extend_web_selection_to_expected_prefix(
         return selected;
     }
 
-    let shift_down = [KeyboardInputEvent::new(
-        VK_LSHIFT,
-        false,
-        KeyboardInputMode::ScanCode,
-    )];
+    let shift_down = [web_navigation_input(VK_LSHIFT, false)];
     if !send_keyboard_input(&shift_down) {
         return selected;
     }
@@ -1437,22 +1402,10 @@ fn extend_web_selection_to_expected_prefix(
 
     let mut events = Vec::with_capacity(missing_units * 2 + 1);
     for _ in 0..missing_units {
-        events.push(KeyboardInputEvent::new(
-            VK_LEFT,
-            false,
-            KeyboardInputMode::ScanCode,
-        ));
-        events.push(KeyboardInputEvent::new(
-            VK_LEFT,
-            true,
-            KeyboardInputMode::ScanCode,
-        ));
+        events.push(web_navigation_input(VK_LEFT, false));
+        events.push(web_navigation_input(VK_LEFT, true));
     }
-    events.push(KeyboardInputEvent::new(
-        VK_LSHIFT,
-        true,
-        KeyboardInputMode::ScanCode,
-    ));
+    events.push(web_navigation_input(VK_LSHIFT, true));
     if !send_keyboard_input(&events) {
         release_modifier_keys();
         return selected;

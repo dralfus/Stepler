@@ -2095,6 +2095,19 @@ fn send_input_can_use_virtual_keys_for_terminal_shortcuts() {
 
 #[cfg(windows)]
 #[test]
+fn web_navigation_events_use_virtual_keys() {
+    for vk in [VK_CONTROL, VK_LSHIFT, VK_HOME, VK_LEFT] {
+        let input = keyboard_input_from_event(web_navigation_input(vk, false));
+        let keyboard = unsafe { input.input.ki };
+
+        assert_eq!(keyboard.vk, vk as u16);
+        assert_eq!(keyboard.scan, 0);
+        assert_eq!(keyboard.flags & KEYEVENTF_SCANCODE, 0);
+    }
+}
+
+#[cfg(windows)]
+#[test]
 fn send_input_can_emit_unicode_units() {
     let input = Input::keyboard_unicode('я' as u16, false);
     let keyboard = unsafe { input.input.ki };

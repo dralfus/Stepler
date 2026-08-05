@@ -59,22 +59,34 @@ internal sealed class QwenInputCorrectionController
             return;
         }
 
+        var selectionStart = _input.SelectionStart;
+        var selectionLength = _input.SelectionLength;
+        var scopeStart = 0;
+        var scopeEnd = text.Length;
+        if (mode == "scrolllock" && selectionLength == 0)
+        {
+            scopeStart = CurrentLineStart(text, selectionStart);
+            scopeEnd = selectionStart;
+        }
+        var planningText = text[scopeStart..scopeEnd];
+        var planningCursor = selectionStart - scopeStart;
+
         var args = new List<string>
         {
             "psreadline-plan",
             "--mode",
             mode,
             "--text-b64",
-            Convert.ToBase64String(Encoding.Unicode.GetBytes(text)),
+            Convert.ToBase64String(Encoding.Unicode.GetBytes(planningText)),
             "--cursor",
-            _input.SelectionStart.ToString(),
+            planningCursor.ToString(),
         };
-        if (_input.SelectionLength > 0)
+        if (selectionLength > 0)
         {
             args.Add("--selection-start");
-            args.Add(_input.SelectionStart.ToString());
+            args.Add(selectionStart.ToString());
             args.Add("--selection-length");
-            args.Add(_input.SelectionLength.ToString());
+            args.Add(selectionLength.ToString());
         }
 
         var result = RunCli(args);
@@ -94,12 +106,16 @@ internal sealed class QwenInputCorrectionController
                 return;
             }
 
-            var nextText = root.TryGetProperty("text_b64", out var textBase64)
+            var plannedText = root.TryGetProperty("text_b64", out var textBase64)
                 ? Encoding.Unicode.GetString(Convert.FromBase64String(textBase64.GetString() ?? string.Empty))
                 : root.GetProperty("text").GetString() ?? string.Empty;
-            var cursor = root.TryGetProperty("cursor", out var cursorElement)
+            var plannedCursor = root.TryGetProperty("cursor", out var cursorElement)
                 ? cursorElement.GetInt32()
-                : nextText.Length;
+                : plannedText.Length;
+            var nextText = scopeStart == 0 && scopeEnd == text.Length
+                ? plannedText
+                : string.Concat(text.AsSpan(0, scopeStart), plannedText, text.AsSpan(scopeEnd));
+            var cursor = scopeStart + plannedCursor;
 
             _input.Text = nextText;
             RestoreSelection(cursor);
@@ -363,6 +379,18 @@ internal sealed class QwenInputCorrectionController
         }
 
         return start == wordEnd ? TextRange.Caret(caret) : new TextRange(start, end);
+    }
+
+    private static int CurrentLineStart(string text, int caret)
+    {
+        caret = Math.Clamp(caret, 0, text.Length);
+        var start = caret;
+        while (start > 0 && text[start - 1] is not '\r' and not '\n')
+        {
+            start--;
+        }
+
+        return start;
     }
 
     private static int AdjustedCursorAfterReplacement(int cursor, TextRange range, int replacementLength)

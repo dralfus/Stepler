@@ -175,14 +175,8 @@ pub(super) fn send_keyboard_input(events: &[KeyboardInputEvent]) -> bool {
 
     let mut inputs = events
         .iter()
-        .map(|event| match event.mode {
-            KeyboardInputMode::ScanCode => {
-                Input::keyboard_scan_code(event.vk, event.key_up, event.extra_info)
-            }
-            KeyboardInputMode::VirtualKey => {
-                Input::keyboard_virtual_key(event.vk, event.key_up, event.extra_info)
-            }
-        })
+        .copied()
+        .map(keyboard_input_from_event)
         .collect::<Vec<_>>();
 
     let sent = unsafe {
@@ -193,6 +187,18 @@ pub(super) fn send_keyboard_input(events: &[KeyboardInputEvent]) -> bool {
         )
     };
     sent == inputs.len() as u32
+}
+
+#[cfg(windows)]
+pub(super) fn keyboard_input_from_event(event: KeyboardInputEvent) -> Input {
+    match event.mode {
+        KeyboardInputMode::ScanCode => {
+            Input::keyboard_scan_code(event.vk, event.key_up, event.extra_info)
+        }
+        KeyboardInputMode::VirtualKey => {
+            Input::keyboard_virtual_key(event.vk, event.key_up, event.extra_info)
+        }
+    }
 }
 
 #[cfg(windows)]

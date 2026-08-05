@@ -376,6 +376,23 @@ mod tests {
     }
 
     #[test]
+    fn psreadline_method_converts_the_full_current_line_left_segment() {
+        let text = "вальс ghjlern ghbdtn";
+        let plan = PsReadLineMethod
+            .plan(PsReadLineRequest {
+                mode: CorrectionMode::ScrollLock,
+                text_b64: encode_utf16le_base64(text),
+                cursor_utf16: text.encode_utf16().count(),
+                selection_start_utf16: None,
+                selection_length_utf16: None,
+            })
+            .unwrap();
+
+        assert!(plan.json.contains("\"expected\":\"ghjlern ghbdtn\""));
+        assert!(plan.json.contains("\"text\":\"вальс продукт привет\""));
+    }
+
+    #[test]
     fn psreadline_self_test_covers_command_and_word() {
         let lines = self_test_lines().unwrap();
 

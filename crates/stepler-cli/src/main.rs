@@ -924,6 +924,7 @@ fn should_skip_layout_after_replacement(context: &stepler_core::TextContext) -> 
     context
         .app_id
         .eq_ignore_ascii_case("rctrl_renwnd32/RICHEDIT60W")
+        || context.app_id.eq_ignore_ascii_case("rctrl_renwnd32/_WwG")
 }
 
 #[cfg(test)]
@@ -938,10 +939,10 @@ mod tests {
     }
 
     #[test]
-    fn outlook_word_com_does_not_skip_layout_after_replacement() {
+    fn outlook_word_com_skips_layout_after_replacement() {
         let context = context("rctrl_renwnd32/_WwG", "outlook-word-com:0:hwnd:1234");
 
-        assert!(!should_skip_layout_after_replacement(&context));
+        assert!(should_skip_layout_after_replacement(&context));
     }
 
     #[test]

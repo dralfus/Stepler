@@ -73,12 +73,19 @@ pub struct MethodBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TelemetryTiming {
+    pub phase: String,
+    pub elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextTelemetry {
     pub surface_kind: Option<String>,
     pub surface_confidence: Option<u8>,
     pub profile: Option<String>,
     pub capture_branch: Option<String>,
     pub retry_count: u32,
+    pub timings: Vec<TelemetryTiming>,
 }
 
 impl Default for ContextTelemetry {
@@ -89,6 +96,7 @@ impl Default for ContextTelemetry {
             profile: None,
             capture_branch: None,
             retry_count: 0,
+            timings: Vec::new(),
         }
     }
 }

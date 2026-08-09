@@ -10,7 +10,7 @@ use stepler_app::{
 };
 use stepler_core::{
     build_replacement_plan, CorrectionError, CorrectionMode, LogTrigger, MethodId,
-    OperationLogEvent, OperationMetrics, OperationState, PerformanceEvent,
+    OperationLogEvent, OperationMetrics, OperationState, PerformanceEvent, TelemetryTiming,
 };
 use stepler_platform::{
     ClipboardBackend, ClipboardSnapshot, PlatformError, TextContextProvider, TextReplacer,
@@ -758,6 +758,7 @@ fn handle_hotkey_event<F, C, R, B>(
                 Some(&outcome.plan),
                 Some(outcome.apply_result.method.as_str()),
                 outcome.apply_result.retry_count,
+                &outcome.apply_result.timings,
                 Some(&outcome.metrics),
                 outcome.clipboard_guard.is_some(),
             );
@@ -839,6 +840,7 @@ fn handle_hotkey_event<F, C, R, B>(
                 None,
                 replacement_method,
                 0,
+                &[],
                 Some(&error_metrics),
                 false,
             );
@@ -905,6 +907,7 @@ fn log_hotkey_unsupported(
         None,
         None,
         0,
+        &[],
         Some(&metrics),
         false,
     );
@@ -920,6 +923,7 @@ fn append_performance_event(
     plan: Option<&stepler_core::ReplacementPlan>,
     replacement_method: Option<&str>,
     replacement_retry_count: u32,
+    replacement_timings: &[TelemetryTiming],
     metrics: Option<&OperationMetrics>,
     clipboard_used: bool,
 ) {
@@ -935,6 +939,7 @@ fn append_performance_event(
         plan,
         replacement_method,
         replacement_retry_count,
+        replacement_timings,
         metrics,
         cold_warm,
         clipboard_used,

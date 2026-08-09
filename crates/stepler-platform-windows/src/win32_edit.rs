@@ -83,6 +83,7 @@ impl Win32EditMessagesMethod {
             actual_after_text: actual_after,
             method: MethodId::Win32EditMessages.as_str().to_owned(),
             retry_count: 0,
+            timings: Vec::new(),
         })
     }
 }

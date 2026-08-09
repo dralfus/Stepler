@@ -66,6 +66,7 @@ impl ConsoleBufferMethod {
             actual_after_text: Some(replacement),
             method: MethodId::ConsoleBuffer.as_str().to_owned(),
             retry_count: 0,
+            timings: Vec::new(),
         })
     }
 }

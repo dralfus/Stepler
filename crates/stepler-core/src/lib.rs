@@ -15,7 +15,7 @@ pub use transaction::{
 };
 pub use types::{
     Capabilities, ContextTelemetry, CorrectionMode, MethodBinding, MethodId, ReplacementPlan,
-    SelectionRange, TextContext, TextRange,
+    SelectionRange, TelemetryTiming, TextContext, TextRange,
 };
 
 #[cfg(test)]

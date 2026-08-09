@@ -83,6 +83,7 @@ impl ClipboardSelectionMethod {
             actual_after_text: Some(plan.replacement_text.clone()),
             method: MethodId::ClipboardSelection.as_str().to_owned(),
             retry_count: 0,
+            timings: Vec::new(),
         })
     }
 }

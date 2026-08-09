@@ -83,6 +83,7 @@ pub struct ApplyReplacementResult {
     pub actual_after_text: Option<String>,
     pub method: String,
     pub retry_count: u32,
+    pub timings: Vec<stepler_core::TelemetryTiming>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

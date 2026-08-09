@@ -215,6 +215,7 @@ impl UiAutomationDocumentTextMethod {
             actual_after_text: Some(plan.replacement_text.clone()),
             method: MethodId::UiAutomationDocumentText.as_str().to_owned(),
             retry_count: 0,
+            timings: Vec::new(),
         })
     }
 
@@ -278,6 +279,7 @@ impl UiAutomationDocumentTextMethod {
             actual_after_text: Some(plan.replacement_text.clone()),
             method: MethodId::UiAutomationDocumentText.as_str().to_owned(),
             retry_count: 0,
+            timings: Vec::new(),
         })
     }
 
@@ -342,6 +344,7 @@ impl UiAutomationDocumentTextMethod {
             actual_after_text: actual_after,
             method: MethodId::UiAutomationDocumentText.as_str().to_owned(),
             retry_count: 0,
+            timings: Vec::new(),
         })
     }
 }
@@ -512,5 +515,6 @@ fn apply_uia_text_replacement(
         actual_after_text: actual_after,
         method: method.as_str().to_owned(),
         retry_count: 0,
+        timings: Vec::new(),
     })
 }

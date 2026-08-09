@@ -1,6 +1,6 @@
 use crate::log_event::LogTrigger;
-use crate::transaction::{OperationMetrics, OperationState, StageTiming};
-use crate::types::{ReplacementPlan, TextContext};
+use crate::transaction::{OperationMetrics, OperationState};
+use crate::types::{ReplacementPlan, TelemetryTiming, TextContext};
 
 const UNKNOWN: &str = "unknown";
 
@@ -26,7 +26,7 @@ pub struct PerformanceEvent {
     pub range: Option<(usize, usize)>,
     pub clipboard_used: bool,
     pub duration_ms: u128,
-    pub timings: Vec<StageTiming>,
+    pub timings: Vec<TelemetryTiming>,
 }
 
 impl PerformanceEvent {
@@ -42,6 +42,7 @@ impl PerformanceEvent {
         plan: Option<&ReplacementPlan>,
         replacement_method: Option<&str>,
         replacement_retry_count: u32,
+        replacement_timings: &[TelemetryTiming],
         metrics: Option<&OperationMetrics>,
         cold_warm: impl Into<String>,
         clipboard_used: bool,
@@ -55,6 +56,20 @@ impl PerformanceEvent {
             .unwrap_or(UNKNOWN)
             .to_owned();
         let telemetry = context.map(|value| &value.telemetry);
+
+        let mut timings = telemetry
+            .map(|value| value.timings.clone())
+            .unwrap_or_default();
+        timings.extend(replacement_timings.iter().cloned());
+        timings.extend(
+            metrics
+                .into_iter()
+                .flat_map(|value| value.timings.iter())
+                .map(|timing| TelemetryTiming {
+                    phase: timing.state.as_str().to_owned(),
+                    elapsed_ms: timing.elapsed_ms,
+                }),
+        );
 
         Self {
             operation_id: operation_id.into(),
@@ -90,9 +105,7 @@ impl PerformanceEvent {
             range: plan.map(|value| (value.range.start, value.range.end)),
             clipboard_used,
             duration_ms: metrics.map(|value| value.duration_ms).unwrap_or_default(),
-            timings: metrics
-                .map(|value| value.timings.clone())
-                .unwrap_or_default(),
+            timings,
         }
     }
 
@@ -150,13 +163,13 @@ fn push_optional_usize(fields: &mut Vec<String>, name: &str, value: Option<usize
     ));
 }
 
-fn timings_json(timings: &[StageTiming]) -> String {
+fn timings_json(timings: &[TelemetryTiming]) -> String {
     let values = timings
         .iter()
         .map(|timing| {
             format!(
-                "{{\"state\":\"{}\",\"elapsed_ms\":{}}}",
-                timing.state.as_str(),
+                "{{\"phase\":\"{}\",\"elapsed_ms\":{}}}",
+                escape_json_string(&timing.phase),
                 timing.elapsed_ms
             )
         })
@@ -207,6 +220,10 @@ mod tests {
             profile: Some("Fast".to_owned()),
             capture_branch: Some("web-keyboard-line-selection".to_owned()),
             retry_count: 1,
+            timings: vec![TelemetryTiming {
+                phase: "capture".to_owned(),
+                elapsed_ms: 7,
+            }],
         };
         context.selection_range = Some(TextRange::new(0, 6));
         let plan = ReplacementPlan {
@@ -227,6 +244,7 @@ mod tests {
             Some(&plan),
             Some("web_keyboard_selection"),
             0,
+            &[],
             None,
             "cold",
             true,
@@ -236,6 +254,7 @@ mod tests {
         assert!(json.contains("performance_operation_v1"));
         assert!(json.contains("FastBrowserEditor"));
         assert!(json.contains("\"retry_count\":1"));
+        assert!(json.contains("\"phase\":\"capture\""));
         assert!(json.contains("\"selection_state\":\"selected\""));
         assert!(!json.contains("secret user text"));
         assert!(!json.contains("secret"));

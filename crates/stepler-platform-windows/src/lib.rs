@@ -4,7 +4,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use stepler_core::{
     Capabilities, ContextTelemetry, CorrectionMode, MethodBinding, MethodId, ReplacementPlan,
-    TextContext, TextRange,
+    TelemetryTiming, TextContext, TextRange,
 };
 use stepler_platform::{
     classify_surface, probe_plan_for, surface_policy_for, web_keyboard_profile_for_surface,
@@ -620,6 +620,7 @@ fn text_context() -> Result<TextContext, PlatformError> {
                     profile: Some(profile.to_owned()),
                     capture_branch: Some(branch.to_owned()),
                     retry_count: u32::from(branch.contains("retry")),
+                    timings: context.telemetry.timings.clone(),
                 };
                 return Ok(context);
             }

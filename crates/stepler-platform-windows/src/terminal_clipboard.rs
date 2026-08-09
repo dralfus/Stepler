@@ -79,6 +79,7 @@ impl TerminalClipboardShortcutMethod {
             actual_after_text: Some(replacement),
             method: MethodId::TerminalClipboardShortcut.as_str().to_owned(),
             retry_count: 0,
+            timings: Vec::new(),
         })
     }
 }

@@ -39,6 +39,137 @@ public static class SteplerUser32 {
 $script:SteplerCli = (Resolve-Path -LiteralPath $SteplerCli).Path
 $script:SteplerPsReadLineEnabled = $false
 $script:SteplerTerminalAppWrapperNames = @()
+$script:SteplerPerformanceSeen = @{}
+
+function Get-SteplerPerformanceLogPath {
+    $override = [Environment]::GetEnvironmentVariable('STEPLER_HOTKEY_LOG_PATH')
+    if (-not [string]::IsNullOrWhiteSpace($override)) {
+        return $override
+    }
+
+    $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
+    return (Join-Path $localAppData 'Stepler\logs\stepler_hotkey_log.jsonl')
+}
+
+function Get-SteplerPerformanceBuildVersion {
+    $buildInfo = Join-Path (Split-Path -Parent $script:SteplerCli) 'BUILD_INFO.txt'
+    if (-not (Test-Path -LiteralPath $buildInfo)) {
+        return 'unknown'
+    }
+
+    $line = Get-Content -LiteralPath $buildInfo -ErrorAction SilentlyContinue |
+        Where-Object { $_ -like 'BuildVersion:*' } |
+        Select-Object -First 1
+    if ($line) {
+        $value = ($line -replace '^BuildVersion:\s*', '').Trim()
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            return $value
+        }
+    }
+
+    return 'unknown'
+}
+
+function Get-SteplerPerformanceColdWarm {
+    param(
+        [Parameter(Mandatory)] [string] $SurfaceKind,
+        [Parameter(Mandatory)] [string] $ContextMethod,
+        [Parameter(Mandatory)] [string] $ReplacementMethod,
+        [Parameter(Mandatory)] [string] $Profile,
+        [Parameter(Mandatory)] [string] $Branch,
+        [Parameter(Mandatory)] [string] $Mode,
+        [Parameter(Mandatory)] [string] $SelectionState
+    )
+
+    $key = "$SurfaceKind|$ContextMethod|$ReplacementMethod|$Profile|$Branch|$Mode|$SelectionState"
+    if ($script:SteplerPerformanceSeen.ContainsKey($key)) {
+        return 'warm'
+    }
+
+    $script:SteplerPerformanceSeen[$key] = $true
+    return 'cold'
+}
+
+function Get-SteplerUtf8Length {
+    param([AllowNull()] [string] $Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    return [System.Text.Encoding]::UTF8.GetByteCount($Value)
+}
+
+function Write-SteplerPerformanceEvent {
+    param(
+        [Parameter(Mandatory)] [string] $OperationId,
+        [Parameter(Mandatory)] [ValidateSet('pause', 'scrolllock')] [string] $Mode,
+        [Parameter(Mandatory)] [string] $Outcome,
+        [Parameter(Mandatory)] [string] $SurfaceKind,
+        [Parameter(Mandatory)] [string] $ContextMethod,
+        [Parameter(Mandatory)] [string] $ReplacementMethod,
+        [Parameter(Mandatory)] [string] $Profile,
+        [Parameter(Mandatory)] [string] $Branch,
+        [Parameter(Mandatory)] [string] $SelectionState,
+        [Parameter(Mandatory)] [string] $ColdWarm,
+        [Parameter(Mandatory)] [int] $RetryCount,
+        [AllowNull()] [Nullable[int]] $InputLength,
+        [AllowNull()] [Nullable[int]] $ReplacementLength,
+        [AllowNull()] [Nullable[int]] $RangeStart,
+        [AllowNull()] [Nullable[int]] $RangeEnd,
+        [Parameter(Mandatory)] [bool] $ClipboardUsed,
+        [Parameter(Mandatory)] [long] $DurationMs,
+        [AllowNull()] [object[]] $Timings
+    )
+
+    try {
+        $logPath = Get-SteplerPerformanceLogPath
+        $logDirectory = Split-Path -Parent $logPath
+        New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
+        $range = $null
+        if ($null -ne $RangeStart -and $null -ne $RangeEnd) {
+            $range = @([int] $RangeStart, [int] $RangeEnd)
+        }
+        $timingValues = @($Timings | ForEach-Object {
+            [ordered]@{
+                phase = [string] $_.phase
+                elapsed_ms = [long] $_.elapsed_ms
+            }
+        })
+        $environment = [Environment]::GetEnvironmentVariable('STEPLER_PERF_ENV')
+        if ([string]::IsNullOrWhiteSpace($environment)) {
+            $environment = 'unlabeled'
+        }
+        $trigger = if ($Mode -eq 'pause') { 'Pause' } else { 'ScrollLock' }
+        $event = [ordered]@{
+            event = 'performance_operation_v1'
+            operation_id = $OperationId
+            timestamp_unix_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+            trigger = $trigger
+            outcome = $Outcome
+            build_version = Get-SteplerPerformanceBuildVersion
+            environment_label = $environment
+            surface_kind = $SurfaceKind
+            surface_confidence = 100
+            context_method = $ContextMethod
+            replacement_method = $ReplacementMethod
+            profile = $Profile
+            algorithm_branch = $Branch
+            selection_state = $SelectionState
+            cold_warm = $ColdWarm
+            retry_count = $RetryCount
+            input_length = $InputLength
+            replacement_length = $ReplacementLength
+            range = $range
+            clipboard_used = $ClipboardUsed
+            duration_ms = $DurationMs
+            timings_ms = $timingValues
+        }
+        Add-Content -LiteralPath $logPath -Value ($event | ConvertTo-Json -Compress -Depth 5) -Encoding UTF8
+    } catch {
+        # Telemetry must never change the correction behavior.
+    }
+}
 
 function Resolve-SteplerPsReadLineChord {
     param(
@@ -63,6 +194,25 @@ function Resolve-SteplerPsReadLineChord {
     return $FallbackChord
 }
 
+function Add-SteplerPerformanceTiming {
+    param(
+        [Parameter(Mandatory)] [object] $Timings,
+        [Parameter(Mandatory)] [string] $Phase,
+        [Parameter(Mandatory)] [long] $ElapsedMs
+    )
+
+    $existing = $Timings | Where-Object { $_.phase -eq $Phase } | Select-Object -First 1
+    if ($null -ne $existing) {
+        $existing.elapsed_ms += $ElapsedMs
+        return
+    }
+
+    $Timings.Add([pscustomobject]@{
+        phase = $Phase
+        elapsed_ms = $ElapsedMs
+    }) | Out-Null
+}
+
 function Invoke-SteplerPsReadLineCorrection {
     param(
         [Parameter(Mandatory)]
@@ -70,68 +220,149 @@ function Invoke-SteplerPsReadLineCorrection {
         [string] $Mode
     )
 
+    $operationId = [guid]::NewGuid().ToString('N')
+    $surfaceKind = 'PowerShell'
+    $branch = 'psreadline-buffer'
+    $selectionState = 'none'
+    $outcome = 'RolledBackOrFailed'
+    $coldWarm = $null
+    $operationStarted = [System.Diagnostics.Stopwatch]::StartNew()
     $line = $null
     $cursor = 0
-    [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref] $line, [ref] $cursor)
+    $inputLength = $null
+    $replacementLength = $null
+    $rangeStart = $null
+    $rangeEnd = $null
+    $timings = [System.Collections.Generic.List[object]]::new()
+
+    try {
+        $planStarted = [System.Diagnostics.Stopwatch]::StartNew()
+        [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref] $line, [ref] $cursor)
+        Add-SteplerPerformanceTiming -Timings $timings -Phase 'capture' -ElapsedMs $planStarted.ElapsedMilliseconds
+        $inputLength = Get-SteplerUtf8Length $line
     $selectionStart = 0
     $selectionLength = 0
-    try {
-        [Microsoft.PowerShell.PSConsoleReadLine]::GetSelectionState([ref] $selectionStart, [ref] $selectionLength)
-    } catch {
-        $selectionStart = 0
-        $selectionLength = 0
-    }
+        try {
+            [Microsoft.PowerShell.PSConsoleReadLine]::GetSelectionState([ref] $selectionStart, [ref] $selectionLength)
+        } catch {
+            $selectionStart = 0
+            $selectionLength = 0
+        }
+        if ($selectionLength -gt 0) {
+            $selectionState = 'selected'
+        }
 
-    if ([string]::IsNullOrWhiteSpace($line)) {
-        return
-    }
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            $outcome = 'NoChange'
+            return
+        }
 
-    $textBytes = [System.Text.Encoding]::Unicode.GetBytes($line)
-    $textBase64 = [Convert]::ToBase64String($textBytes)
-    $args = @('psreadline-plan', '--mode', $Mode, '--text-b64', $textBase64, '--cursor', $cursor)
-    if ($selectionLength -gt 0) {
-        $args += @('--selection-start', $selectionStart, '--selection-length', $selectionLength)
-    }
-    $output = & $script:SteplerCli @args 2>$null
+        $textBytes = [System.Text.Encoding]::Unicode.GetBytes($line)
+        $textBase64 = [Convert]::ToBase64String($textBytes)
+        $args = @('psreadline-plan', '--mode', $Mode, '--text-b64', $textBase64, '--cursor', $cursor)
+        if ($selectionLength -gt 0) {
+            $args += @('--selection-start', $selectionStart, '--selection-length', $selectionLength)
+        }
+        $planStarted = [System.Diagnostics.Stopwatch]::StartNew()
+        $output = & $script:SteplerCli @args 2>$null
+        Add-SteplerPerformanceTiming -Timings $timings -Phase 'correction_plan' -ElapsedMs $planStarted.ElapsedMilliseconds
 
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($output)) {
-        return
-    }
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($output)) {
+            return
+        }
 
-    try {
-        $plan = $output | ConvertFrom-Json
-    } catch {
-        return
-    }
+        try {
+            $plan = $output | ConvertFrom-Json
+        } catch {
+            return
+        }
 
-    if (-not $plan.applied) {
-        return
-    }
+        if (-not $plan.applied) {
+            $outcome = 'NoChange'
+            return
+        }
+        $rangeStart = [int] $plan.range_start
+        $rangeEnd = [int] $plan.range_end
 
-    if ($plan.text_b64) {
-        $nextLine = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([string] $plan.text_b64))
-    } else {
-        $nextLine = [string] $plan.text
-    }
+        if ($plan.text_b64) {
+            $nextLine = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([string] $plan.text_b64))
+        } else {
+            $nextLine = [string] $plan.text
+        }
 
-    [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
-    [Microsoft.PowerShell.PSConsoleReadLine]::Insert($nextLine)
-    try {
-        [Microsoft.PowerShell.PSConsoleReadLine]::SetCursorPosition([int] $plan.cursor)
-    } catch {
-        # Older PSReadLine versions may not expose SetCursorPosition. In that case,
-        # leaving the cursor at the end is safer than mutating the terminal buffer.
-    }
+        $replacementText = if ($null -ne $plan.replacement_text) {
+            [string] $plan.replacement_text
+        } else {
+            [string] $plan.replacement
+        }
+        $replacementLength = Get-SteplerUtf8Length $replacementText
+        $coldWarm = Get-SteplerPerformanceColdWarm `
+            -SurfaceKind $surfaceKind `
+            -ContextMethod 'psreadline' `
+            -ReplacementMethod 'psreadline' `
+            -Profile 'none' `
+            -Branch $branch `
+            -Mode $Mode `
+            -SelectionState $selectionState
 
-    $replacementText = if ($null -ne $plan.replacement_text) {
-        [string] $plan.replacement_text
-    } else {
-        [string] $plan.replacement
-    }
+        $replacementStarted = [System.Diagnostics.Stopwatch]::StartNew()
+        [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
+        [Microsoft.PowerShell.PSConsoleReadLine]::Insert($nextLine)
+        try {
+            [Microsoft.PowerShell.PSConsoleReadLine]::SetCursorPosition([int] $plan.cursor)
+        } catch {
+            # Older PSReadLine versions may not expose SetCursorPosition. In that case,
+            # leaving the cursor at the end is safer than mutating the terminal buffer.
+        }
+        Add-SteplerPerformanceTiming -Timings $timings -Phase 'replacement' -ElapsedMs $replacementStarted.ElapsedMilliseconds
 
-    $targetLayout = Get-SteplerTargetLayout -Text $replacementText
-    if ($targetLayout) {
-        Invoke-SteplerLayoutSwitch -TargetLayout $targetLayout -TargetHwnd ([SteplerUser32]::GetForegroundWindow())
+        $targetLayout = Get-SteplerTargetLayout -Text $replacementText
+        if ($targetLayout) {
+            $layoutTimings = Invoke-SteplerLayoutSwitch `
+                -TargetLayout $targetLayout `
+                -TargetHwnd ([SteplerUser32]::GetForegroundWindow()) `
+                -OperationId $operationId `
+                -Mode $Mode `
+                -ColdWarm $coldWarm `
+                -SelectionState $selectionState
+            foreach ($layoutTiming in @($layoutTimings)) {
+                Add-SteplerPerformanceTiming `
+                    -Timings $timings `
+                    -Phase ([string] $layoutTiming.phase) `
+                    -ElapsedMs ([long] $layoutTiming.elapsed_ms)
+            }
+        }
+        $outcome = 'Completed'
+    } finally {
+        if ($null -eq $coldWarm) {
+            $coldWarm = Get-SteplerPerformanceColdWarm `
+                -SurfaceKind $surfaceKind `
+                -ContextMethod 'psreadline' `
+                -ReplacementMethod 'psreadline' `
+                -Profile 'none' `
+                -Branch $branch `
+                -Mode $Mode `
+                -SelectionState $selectionState
+        }
+        Write-SteplerPerformanceEvent `
+            -OperationId $operationId `
+            -Mode $Mode `
+            -Outcome $outcome `
+            -SurfaceKind $surfaceKind `
+            -ContextMethod 'psreadline' `
+            -ReplacementMethod 'psreadline' `
+            -Profile 'none' `
+            -Branch $branch `
+            -SelectionState $selectionState `
+            -ColdWarm $coldWarm `
+            -RetryCount 0 `
+            -InputLength $inputLength `
+            -ReplacementLength $replacementLength `
+            -RangeStart $rangeStart `
+            -RangeEnd $rangeEnd `
+            -ClipboardUsed $false `
+            -DurationMs ([long] $operationStarted.ElapsedMilliseconds) `
+            -Timings @($timings)
     }
 }
 
@@ -142,9 +373,22 @@ function Invoke-SteplerLayoutSwitch {
         [string] $TargetLayout,
 
         [Parameter(Mandatory)]
-        [IntPtr] $TargetHwnd
+        [IntPtr] $TargetHwnd,
+        [Parameter(Mandatory)]
+        [string] $OperationId,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('pause', 'scrolllock')]
+        [string] $Mode,
+
+        [Parameter(Mandatory)]
+        [string] $ColdWarm,
+
+        [Parameter(Mandatory)]
+        [string] $SelectionState
     )
 
+    $primaryStarted = [System.Diagnostics.Stopwatch]::StartNew()
     $hwndValue = $TargetHwnd.ToInt64().ToString()
     $psResult = Set-SteplerPowerShellInputLanguage -TargetLayout $TargetLayout
     Write-SteplerPsReadLineLog -Message "layout ps target=$TargetLayout hwnd=$hwndValue result=$psResult"
@@ -160,10 +404,22 @@ function Invoke-SteplerLayoutSwitch {
     $encodedCli = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($script:SteplerCli))
     $encodedLayout = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($TargetLayout))
     $encodedHwnd = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($hwndValue))
+    $encodedOperationId = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($OperationId))
+    $encodedMode = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Mode))
+    $encodedColdWarm = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($ColdWarm))
+    $encodedSelectionState = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($SelectionState))
+    $encodedPerformanceLog = [Convert]::ToBase64String(
+        [System.Text.Encoding]::UTF8.GetBytes((Get-SteplerPerformanceLogPath)))
     $script = @"
 `$cli = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('$encodedCli'))
 `$layout = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('$encodedLayout'))
 `$hwnd = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('$encodedHwnd'))
+`$operationId = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$encodedOperationId'))
+`$mode = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$encodedMode'))
+`$coldWarm = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$encodedColdWarm'))
+`$selectionState = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$encodedSelectionState'))
+`$performanceLog = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$encodedPerformanceLog'))
+`$repairStarted = [System.Diagnostics.Stopwatch]::StartNew()
 Start-Sleep -Milliseconds 120
 & `$cli trigger-layout-control `$layout 2>`$null | Out-Null
 & `$cli switch-layout `$layout --hwnd `$hwnd 2>`$null | Out-Null
@@ -176,7 +432,47 @@ Start-Sleep -Milliseconds 260
 `$dir = Split-Path -Parent `$log
 New-Item -ItemType Directory -Force -Path `$dir | Out-Null
 Add-Content -LiteralPath `$log -Value ("{0:o} layout delayed target={1} hwnd={2} exit1={3} exit2={4}" -f [DateTimeOffset]::Now, `$layout, `$hwnd, `$exit1, `$exit2)
+`$duration = [long] `$repairStarted.ElapsedMilliseconds
+`$buildVersion = 'unknown'
+`$buildInfo = Join-Path (Split-Path -Parent `$cli) 'BUILD_INFO.txt'
+if (Test-Path -LiteralPath `$buildInfo) {
+  `$buildLine = Get-Content -LiteralPath `$buildInfo -ErrorAction SilentlyContinue | Where-Object { `$_ -like 'BuildVersion:*' } | Select-Object -First 1
+  if (`$buildLine) { `$buildVersion = (`$buildLine -replace '^BuildVersion:\s*', '').Trim() }
+}
+`$environment = [Environment]::GetEnvironmentVariable('STEPLER_PERF_ENV')
+if ([string]::IsNullOrWhiteSpace(`$environment)) { `$environment = 'unlabeled' }
+`$trigger = if (`$mode -eq 'pause') { 'Pause' } else { 'ScrollLock' }
+`$outcome = if (`$exit1 -eq 0 -and `$exit2 -eq 0) { 'Completed' } else { 'RolledBackOrFailed' }
+`$event = [ordered]@{
+  event = 'performance_operation_v1'
+  operation_id = `$operationId
+  timestamp_unix_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  trigger = `$trigger
+  outcome = `$outcome
+  build_version = `$buildVersion
+  environment_label = `$environment
+  surface_kind = 'PowerShell'
+  surface_confidence = 100
+  context_method = 'psreadline'
+  replacement_method = 'psreadline'
+  profile = 'none'
+  algorithm_branch = 'psreadline-delayed-layout-repair'
+  selection_state = `$selectionState
+  cold_warm = `$coldWarm
+  retry_count = 0
+  input_length = `$null
+  replacement_length = `$null
+  range = `$null
+  clipboard_used = `$false
+  duration_ms = `$duration
+  timings_ms = @([ordered]@{ phase = 'delayed_layout_repair'; elapsed_ms = `$duration })
+}
+try {
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent `$performanceLog) | Out-Null
+  Add-Content -LiteralPath `$performanceLog -Value (`$event | ConvertTo-Json -Compress -Depth 5) -Encoding UTF8
+} catch { }
 "@
+    $scheduleStarted = [System.Diagnostics.Stopwatch]::StartNew()
     Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList @(
         '-NoLogo',
         '-NoProfile',
@@ -185,6 +481,16 @@ Add-Content -LiteralPath `$log -Value ("{0:o} layout delayed target={1} hwnd={2}
         '-Command',
         $script
     ) | Out-Null
+    @(
+        [pscustomobject]@{
+            phase = 'primary_layout_switch'
+            elapsed_ms = [long] $primaryStarted.ElapsedMilliseconds
+        }
+        [pscustomobject]@{
+            phase = 'delayed_layout_repair_schedule'
+            elapsed_ms = [long] $scheduleStarted.ElapsedMilliseconds
+        }
+    )
 }
 
 function Set-SteplerPowerShellInputLanguage {

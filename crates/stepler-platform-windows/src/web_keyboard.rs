@@ -37,6 +37,10 @@ impl XtermKeyboardSelectionMethod {
         app_class: &str,
         focused_class: &str,
     ) -> Result<TextContext, PlatformError> {
+        let mut timings = vec![TelemetryTiming {
+            phase: String::from("retry"),
+            elapsed_ms: 0,
+        }];
         append_hotkey_signal_log(&format!(
             "xterm_capture start app={app_class:?} focused={focused_class:?} marker={}",
             has_active_terminal_app_marker()
@@ -55,7 +59,14 @@ impl XtermKeyboardSelectionMethod {
             )));
         }
 
+        let capture_started = Instant::now();
         let snapshot = capture_clipboard_text_only()?;
+        add_telemetry_timing(
+            &mut timings,
+            "capture",
+            capture_started.elapsed().as_millis(),
+        );
+        let verify_started = Instant::now();
         let selected = copy_selected_text_checked_with_chord(
             &snapshot,
             &[VK_CONTROL, VK_SHIFT],
@@ -64,7 +75,14 @@ impl XtermKeyboardSelectionMethod {
         )
         .filter(|text| !text.trim().is_empty())
         .filter(|text| !looks_like_hotkeyhandler_marker(text));
+        add_telemetry_timing(&mut timings, "verify", verify_started.elapsed().as_millis());
+        let restore_started = Instant::now();
         let _ = restore_clipboard_text_only(&snapshot);
+        add_telemetry_timing(
+            &mut timings,
+            "clipboard_restore",
+            restore_started.elapsed().as_millis(),
+        );
         if let Some(text) = selected {
             let text_len = text.len();
             append_hotkey_signal_log(&format!(
@@ -87,13 +105,23 @@ impl XtermKeyboardSelectionMethod {
                         vec![MethodId::XtermKeyboardSelection],
                     )),
                 },
-                telemetry: Default::default(),
+                telemetry: ContextTelemetry {
+                    timings,
+                    ..Default::default()
+                },
             });
         }
 
+        let capture_started = Instant::now();
         let snapshot = capture_clipboard_text_only()?;
+        add_telemetry_timing(
+            &mut timings,
+            "capture",
+            capture_started.elapsed().as_millis(),
+        );
         send_key_chord(&[VK_LSHIFT], VK_HOME);
         std::thread::sleep(Duration::from_millis(40));
+        let verify_started = Instant::now();
         let copied = copy_selected_text_checked_with_chord(
             &snapshot,
             &[VK_CONTROL, VK_SHIFT],
@@ -102,8 +130,15 @@ impl XtermKeyboardSelectionMethod {
         )
         .filter(|text| !text.trim().is_empty())
         .filter(|text| !looks_like_hotkeyhandler_marker(text));
+        add_telemetry_timing(&mut timings, "verify", verify_started.elapsed().as_millis());
         send_key(VK_RIGHT);
+        let restore_started = Instant::now();
         let _ = restore_clipboard_text_only(&snapshot);
+        add_telemetry_timing(
+            &mut timings,
+            "clipboard_restore",
+            restore_started.elapsed().as_millis(),
+        );
 
         if let Some(text) = copied {
             let text_len = text.len();
@@ -127,7 +162,10 @@ impl XtermKeyboardSelectionMethod {
                         vec![MethodId::XtermKeyboardSelection],
                     )),
                 },
-                telemetry: Default::default(),
+                telemetry: ContextTelemetry {
+                    timings,
+                    ..Default::default()
+                },
             });
         }
 
@@ -142,6 +180,10 @@ impl XtermKeyboardSelectionMethod {
         context: &TextContext,
         plan: &ReplacementPlan,
     ) -> Result<ApplyReplacementResult, PlatformError> {
+        let mut timings = vec![TelemetryTiming {
+            phase: String::from("retry"),
+            elapsed_ms: 0,
+        }];
         let actual_before = slice_by_range(&context.text_snapshot, plan.range)
             .ok_or(PlatformError::PreflightFailed)?
             .to_owned();
@@ -163,7 +205,13 @@ impl XtermKeyboardSelectionMethod {
             actual_before.as_str()
         };
 
+        let capture_started = Instant::now();
         let snapshot = capture_clipboard_text_only()?;
+        add_telemetry_timing(
+            &mut timings,
+            "capture",
+            capture_started.elapsed().as_millis(),
+        );
         if context.selection_range.is_none() {
             if context.control_id.starts_with("xterm-line-selection:") && replace_entire_context {
                 send_key_chord(&[VK_LSHIFT], VK_HOME);
@@ -171,15 +219,23 @@ impl XtermKeyboardSelectionMethod {
                 select_left_utf16_units(expected_selection.encode_utf16().count())?;
             }
             std::thread::sleep(Duration::from_millis(35));
+            let verify_started = Instant::now();
             let selected = copy_selected_text_checked_with_chord(
                 &snapshot,
                 &[VK_CONTROL, VK_SHIFT],
                 VK_C,
                 Duration::from_millis(360),
             );
+            add_telemetry_timing(&mut timings, "verify", verify_started.elapsed().as_millis());
             if selected.as_deref() != Some(expected_selection) {
                 restore_web_line_left_context_caret();
+                let restore_started = Instant::now();
                 let _ = restore_clipboard_text_only(&snapshot);
+                add_telemetry_timing(
+                    &mut timings,
+                    "clipboard_restore",
+                    restore_started.elapsed().as_millis(),
+                );
                 return Err(PlatformError::ReplacementUnavailableReason(format!(
                     "xterm_keyboard_preflight expected={} actual={}",
                     preview_for_error(expected_selection, 40),
@@ -188,10 +244,18 @@ impl XtermKeyboardSelectionMethod {
             }
         }
 
+        let apply_started = Instant::now();
         restore_clipboard(clipboard_snapshot_from_text(&replacement_text))?;
         send_key_chord_virtual(&[VK_CONTROL, VK_SHIFT], VK_V);
         std::thread::sleep(Duration::from_millis(80));
+        add_telemetry_timing(&mut timings, "apply", apply_started.elapsed().as_millis());
+        let restore_started = Instant::now();
         let _ = restore_clipboard_text_only(&snapshot);
+        add_telemetry_timing(
+            &mut timings,
+            "clipboard_restore",
+            restore_started.elapsed().as_millis(),
+        );
 
         Ok(ApplyReplacementResult {
             applied: true,
@@ -199,7 +263,20 @@ impl XtermKeyboardSelectionMethod {
             actual_after_text: Some(replacement_text),
             method: MethodId::XtermKeyboardSelection.as_str().to_owned(),
             retry_count: 0,
+            timings,
         })
+    }
+}
+
+#[cfg(windows)]
+fn add_telemetry_timing(timings: &mut Vec<TelemetryTiming>, phase: &str, elapsed_ms: u128) {
+    if let Some(existing) = timings.iter_mut().find(|timing| timing.phase == phase) {
+        existing.elapsed_ms += elapsed_ms;
+    } else {
+        timings.push(TelemetryTiming {
+            phase: phase.to_owned(),
+            elapsed_ms,
+        });
     }
 }
 
@@ -595,6 +672,7 @@ impl WebKeyboardSelectionMethod {
                 actual_after_text: Some(replacement_text),
                 method: MethodId::WebKeyboardSelection.as_str().to_owned(),
                 retry_count: 0,
+                timings: Vec::new(),
             });
         }
 
@@ -607,6 +685,7 @@ impl WebKeyboardSelectionMethod {
                 actual_after_text: Some(plan.replacement_text.clone()),
                 method: MethodId::WebKeyboardSelection.as_str().to_owned(),
                 retry_count: 0,
+                timings: Vec::new(),
             });
         }
 
@@ -699,6 +778,7 @@ impl WebKeyboardSelectionMethod {
                 actual_after_text: Some(replacement_text),
                 method: MethodId::WebKeyboardSelection.as_str().to_owned(),
                 retry_count: replacement_retry_count as u32,
+                timings: Vec::new(),
             });
         }
 
@@ -740,6 +820,7 @@ impl WebKeyboardSelectionMethod {
                 actual_after_text: Some(replacement_text),
                 method: MethodId::WebKeyboardSelection.as_str().to_owned(),
                 retry_count: 0,
+                timings: Vec::new(),
             });
         }
 
@@ -810,6 +891,7 @@ impl WebKeyboardSelectionMethod {
                     actual_after_text: Some(text_to_send),
                     method: MethodId::WebKeyboardSelection.as_str().to_owned(),
                     retry_count: 0,
+                    timings: Vec::new(),
                 });
             }
             append_hotkey_signal_log(&format!(
@@ -823,6 +905,7 @@ impl WebKeyboardSelectionMethod {
                 actual_after_text: Some(replacement_text),
                 method: MethodId::WebKeyboardSelection.as_str().to_owned(),
                 retry_count: 0,
+                timings: Vec::new(),
             });
         }
         if web_keyboard_fast_context(&context.control_id) {
@@ -905,6 +988,7 @@ impl WebKeyboardSelectionMethod {
             actual_after_text: Some(text_to_send),
             method: MethodId::WebKeyboardSelection.as_str().to_owned(),
             retry_count: 0,
+            timings: Vec::new(),
         })
     }
 }
@@ -1003,6 +1087,7 @@ fn apply_web_keyboard_precise_range(
         actual_after_text: Some(plan.replacement_text.clone()),
         method: MethodId::WebKeyboardSelection.as_str().to_owned(),
         retry_count: 0,
+        timings: Vec::new(),
     })
 }
 

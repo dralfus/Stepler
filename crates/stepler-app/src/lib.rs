@@ -410,6 +410,7 @@ mod tests {
                 actual_after_text: Some(plan.replacement_text.clone()),
                 method: String::from("fake"),
                 retry_count: 0,
+                timings: Vec::new(),
             })
         }
     }
@@ -431,6 +432,7 @@ mod tests {
                 actual_after_text: Some(plan.replacement_text.clone()),
                 method: String::from("fake_mutating"),
                 retry_count: 0,
+                timings: Vec::new(),
             })
         }
     }

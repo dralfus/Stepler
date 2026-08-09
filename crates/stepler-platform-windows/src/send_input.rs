@@ -41,6 +41,7 @@ impl SendInputMethod {
             actual_after_text: Some(plan.replacement_text.clone()),
             method: MethodId::SendInput.as_str().to_owned(),
             retry_count: 0,
+            timings: Vec::new(),
         })
     }
 }

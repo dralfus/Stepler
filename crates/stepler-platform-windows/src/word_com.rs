@@ -159,6 +159,7 @@ impl WordComMethod {
             actual_after_text: actual_after,
             method: MethodId::WordCom.as_str().to_owned(),
             retry_count: 0,
+            timings: Vec::new(),
         })
     }
 }

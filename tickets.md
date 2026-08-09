@@ -37,18 +37,27 @@ JSONL. Для сравнительного baseline обязательны `STEP
 
 ## T02. Performance-телеметрия bridge paths
 
+**Status:** implemented for PSReadLine and Xterm bridge paths on 2026-08-09.
+Deferred PSReadLine layout repair is written as a separate event with the same
+operation id and a dedicated branch. SSH forwarding remains fail-closed and is
+kept separate from Qwen/PowerShell surface labels.
+
 **What to build:** PSReadLine, Xterm и другие специальные control-plane paths
 пишут те же измерения, что обычный OperationRunner, поэтому их задержку можно
 сравнивать по одинаковым фазам.
 
 **Blocked by:** T01. Единая performance-телеметрия OperationRunner.
 
-- [ ] PSReadLine path записывает correction plan, replacement, primary layout switch и delayed layout repair раздельно.
-- [ ] Xterm path записывает capture, apply, verify, retry и clipboard restore раздельно.
-- [ ] Bridge events используют те же outcome и context fields, что обычные операции.
-- [ ] Delayed layout repair не маскируется внутри неизвестной общей длительности.
-- [ ] SSH и Qwen terminal markers не смешиваются с обычным PowerShell.
-- [ ] Existing bridge/control-plane contracts остаются зелеными.
+- [x] PSReadLine path записывает correction plan, replacement, primary layout switch и delayed layout repair раздельно.
+- [x] Xterm path записывает capture, apply, verify, retry и clipboard restore раздельно.
+- [x] Bridge events используют те же outcome и context fields, что обычные операции.
+- [x] Delayed layout repair не маскируется внутри неизвестной общей длительности.
+- [x] SSH forwarding, Qwen terminal и PowerShell получают отдельные branch/surface labels и не смешиваются в performance aggregation.
+- [x] Existing bridge/control-plane contracts остаются зелеными.
+
+Bridge timing names are stored in `timings_ms[].phase`. The deferred repair
+event uses branch `psreadline-delayed-layout-repair`; its measured duration is
+not included in the primary PSReadLine operation duration.
 
 ## T03. Воспроизводимый baseline-отчет
 

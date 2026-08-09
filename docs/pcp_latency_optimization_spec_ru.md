@@ -153,6 +153,13 @@ replacement behavior. Затем снять воспроизводимый basel
 - Добавить недостающие поля ко всем terminal operation events, включая
   no-change, unsupported и failure.
 - Для special/bridge paths записывать те же фазы, что и для OperationRunner.
+- Bridge phases используют тот же `timings_ms`, но с именем фазы в поле `phase`:
+  `capture`, `correction_plan`, `replacement`, `apply`, `verify`, `retry`,
+  `clipboard_restore`, `primary_layout_switch` и
+  `delayed_layout_repair`.
+- Deferred PSReadLine layout repair пишет отдельный
+  `performance_operation_v1` event с тем же operation id и отдельным branch;
+  его длительность не входит в primary operation duration.
 - Добавить branch markers для keyboard selection, UIA и terminal paths.
 - Снять не меньше 30 warm операций на каждый активный slow method и не меньше
   5 cold операций на method/environment.

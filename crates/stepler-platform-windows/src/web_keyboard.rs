@@ -280,6 +280,52 @@ fn add_telemetry_timing(timings: &mut Vec<TelemetryTiming>, phase: &str, elapsed
     }
 }
 
+#[cfg(all(test, windows))]
+mod telemetry_tests {
+    use super::*;
+
+    #[test]
+    fn xterm_phase_timings_stay_separate_and_aggregate_per_phase() {
+        let mut timings = Vec::new();
+        for (phase, elapsed_ms) in [
+            ("capture", 4),
+            ("apply", 5),
+            ("verify", 6),
+            ("retry", 0),
+            ("clipboard_restore", 2),
+            ("capture", 3),
+        ] {
+            add_telemetry_timing(&mut timings, phase, elapsed_ms);
+        }
+
+        assert_eq!(
+            timings,
+            vec![
+                TelemetryTiming {
+                    phase: String::from("capture"),
+                    elapsed_ms: 7,
+                },
+                TelemetryTiming {
+                    phase: String::from("apply"),
+                    elapsed_ms: 5,
+                },
+                TelemetryTiming {
+                    phase: String::from("verify"),
+                    elapsed_ms: 6,
+                },
+                TelemetryTiming {
+                    phase: String::from("retry"),
+                    elapsed_ms: 0,
+                },
+                TelemetryTiming {
+                    phase: String::from("clipboard_restore"),
+                    elapsed_ms: 2,
+                },
+            ]
+        );
+    }
+}
+
 #[cfg(windows)]
 impl WebKeyboardSelectionMethod {
     pub(super) fn probe(&self, target: &ForegroundTarget) -> Option<MethodProbe> {

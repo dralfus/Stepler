@@ -37,10 +37,11 @@ JSONL. Для сравнительного baseline обязательны `STEP
 
 ## T02. Performance-телеметрия bridge paths
 
-**Status:** implemented for PSReadLine and Xterm bridge paths on 2026-08-09.
-Deferred PSReadLine layout repair is written as a separate event with the same
-operation id and a dedicated branch. SSH forwarding remains fail-closed and is
-kept separate from Qwen/PowerShell surface labels.
+**Status:** implemented for PSReadLine, Xterm and SSH forwarding paths on
+2026-08-09. Deferred PSReadLine layout repair is written as a separate event
+with the same operation id and a dedicated branch. SSH forwarding remains
+fail-closed and writes its own `SshRemote` / `ssh-remote-forwarded` event, so it
+is kept separate from Qwen and PowerShell aggregation.
 
 **What to build:** PSReadLine, Xterm и другие специальные control-plane paths
 пишут те же измерения, что обычный OperationRunner, поэтому их задержку можно

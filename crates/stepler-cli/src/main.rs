@@ -598,6 +598,10 @@ fn run_hotkeys() {
                 "unsupported_surface",
             );
         },
+        |mode, duration_ms| {
+            let mut tracker = performance_tracker.borrow_mut();
+            log_ssh_remote_forwarded(log_path.as_path(), &mut tracker, mode, duration_ms);
+        },
         |action| {
             if !settings.layout_action_enabled(action) {
                 eprintln!("{action:?}: disabled");
@@ -947,6 +951,71 @@ fn append_performance_event(
     append_log(log_path, &performance_event.to_json_line());
 }
 
+fn log_ssh_remote_forwarded(
+    log_path: &std::path::Path,
+    performance_tracker: &mut PerformanceTracker,
+    mode: CorrectionMode,
+    duration_ms: u128,
+) {
+    let cold_warm = performance_tracker.classify_bridge(
+        "SshRemote",
+        "ssh_terminal",
+        "ssh_terminal",
+        "none",
+        "ssh-remote-forwarded",
+        mode,
+        "none",
+    );
+    let timestamp = timestamp_unix_ms();
+    let performance_event = ssh_remote_forwarded_performance_event(
+        format!("ssh-forwarded-{timestamp}"),
+        timestamp,
+        mode,
+        runtime_build_version(),
+        performance_environment_label(),
+        cold_warm,
+        duration_ms,
+    );
+    append_log(log_path, &performance_event.to_json_line());
+}
+
+fn ssh_remote_forwarded_performance_event(
+    operation_id: impl Into<String>,
+    timestamp_unix_ms: u128,
+    mode: CorrectionMode,
+    build_version: impl Into<String>,
+    environment_label: impl Into<String>,
+    cold_warm: impl Into<String>,
+    duration_ms: u128,
+) -> PerformanceEvent {
+    PerformanceEvent {
+        operation_id: operation_id.into(),
+        timestamp_unix_ms,
+        trigger: LogTrigger::from(mode),
+        outcome: OperationState::Completed,
+        build_version: build_version.into(),
+        environment_label: environment_label.into(),
+        surface_kind: String::from("SshRemote"),
+        surface_confidence: 100,
+        context_method: String::from("ssh_terminal"),
+        replacement_method: String::from("ssh_terminal"),
+        profile: String::from("none"),
+        algorithm_branch: String::from("ssh-remote-forwarded"),
+        selection_state: String::from("none"),
+        cold_warm: cold_warm.into(),
+        retry_count: 0,
+        input_length: None,
+        replacement_length: None,
+        range: None,
+        clipboard_used: false,
+        duration_ms,
+        timings: vec![TelemetryTiming {
+            phase: String::from("apply"),
+            elapsed_ms: duration_ms,
+        }],
+    }
+}
+
 fn is_no_text_to_replace_error(error: &OperationError) -> bool {
     matches!(
         error,
@@ -989,10 +1058,28 @@ impl PerformanceTracker {
             .map(|value| value.selection_range.is_some_and(|range| !range.is_empty()))
             .map(|selected| if selected { "selected" } else { "none" })
             .unwrap_or("unknown");
-        let key = format!(
+        self.classify_key(format!(
             "{surface}|{context_method}|{}|{profile}|{mode:?}|{selection_state}",
             replacement_method.unwrap_or("unknown")
-        );
+        ))
+    }
+
+    fn classify_bridge(
+        &mut self,
+        surface: &str,
+        context_method: &str,
+        replacement_method: &str,
+        profile: &str,
+        branch: &str,
+        mode: CorrectionMode,
+        selection_state: &str,
+    ) -> &'static str {
+        self.classify_key(format!(
+            "{surface}|{context_method}|{replacement_method}|{profile}|{branch}|{mode:?}|{selection_state}"
+        ))
+    }
+
+    fn classify_key(&mut self, key: String) -> &'static str {
         if self.seen.insert(key) {
             "cold"
         } else {
@@ -1147,6 +1234,106 @@ mod tests {
         let context = context("rctrl_renwnd32/RICHEDIT60W", "richedit:hwnd:1234");
 
         assert!(should_skip_layout_after_replacement(&context));
+    }
+
+    #[test]
+    fn ssh_forwarding_uses_a_separate_performance_branch() {
+        let event = ssh_remote_forwarded_performance_event(
+            "ssh-forwarded-test",
+            42,
+            CorrectionMode::Pause,
+            "1.0.test",
+            "home-win11",
+            "cold",
+            17,
+        );
+
+        assert_eq!(event.outcome, OperationState::Completed);
+        assert_eq!(event.surface_kind, "SshRemote");
+        assert_eq!(event.context_method, "ssh_terminal");
+        assert_eq!(event.replacement_method, "ssh_terminal");
+        assert_eq!(event.algorithm_branch, "ssh-remote-forwarded");
+        assert_eq!(event.selection_state, "none");
+        assert_eq!(event.duration_ms, 17);
+        assert_eq!(
+            event.timings,
+            vec![TelemetryTiming {
+                phase: String::from("apply"),
+                elapsed_ms: 17,
+            }]
+        );
+    }
+
+    #[test]
+    fn psreadline_bridge_contract_keeps_required_phases_and_deferred_failure_checks() {
+        let script = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/Stepler.PSReadLine.ps1"
+        ));
+
+        for phase in [
+            "capture",
+            "correction_plan",
+            "replacement",
+            "primary_layout_switch",
+            "delayed_layout_repair",
+        ] {
+            assert!(script.contains(phase), "missing bridge phase {phase}");
+        }
+        assert!(script.contains("`$controlExit1 = `$LASTEXITCODE"));
+        assert!(script.contains("`$syncExit1 = `$LASTEXITCODE"));
+        assert!(script.contains("`$controlExit2 = `$LASTEXITCODE"));
+        assert!(script.contains("`$syncExit2 = `$LASTEXITCODE"));
+        assert!(script.contains("`$controlExit1 -eq 0 -and `$syncExit1 -eq 0"));
+        assert!(!script.contains("delayed_layout_repair_schedule"));
+    }
+
+    #[test]
+    fn psreadline_performance_writer_emits_the_operation_schema() {
+        let test_id = format!("{}-{}", std::process::id(), timestamp_unix_ms());
+        let temp_dir = std::env::temp_dir().join(format!("stepler-psreadline-{test_id}"));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let log_path = temp_dir.join("performance.jsonl");
+        let runner_path = temp_dir.join("writer-test.ps1");
+        let adapter_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/Stepler.PSReadLine.ps1");
+        let escaped_adapter_path = adapter_path.display().to_string().replace('\'', "''");
+        let escaped_log_path = log_path.display().to_string().replace('\'', "''");
+        let runner = format!(
+            r#"
+$env:STEPLER_HOTKEY_LOG_PATH = '{escaped_log_path}'
+$env:STEPLER_PERF_ENV = 'home-win11'
+. '{escaped_adapter_path}' -SteplerCli $env:ComSpec -NoBindings -Quiet
+$timings = @(
+    [pscustomobject]@{{ phase = 'capture'; elapsed_ms = 7 }},
+    [pscustomobject]@{{ phase = 'replacement'; elapsed_ms = 3 }}
+)
+Write-SteplerPerformanceEvent -OperationId 'bridge-test' -Mode pause -Outcome 'Completed' -SurfaceKind 'PowerShell' -ContextMethod 'psreadline' -ReplacementMethod 'psreadline' -Profile 'none' -Branch 'psreadline-buffer' -SelectionState 'none' -ColdWarm 'cold' -RetryCount 0 -InputLength 6 -ReplacementLength 6 -RangeStart 0 -RangeEnd 6 -ClipboardUsed $false -DurationMs 10 -Timings $timings
+"#
+        );
+        std::fs::write(&runner_path, runner).unwrap();
+
+        let status = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(&runner_path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let event = std::fs::read_to_string(&log_path).unwrap();
+        assert!(event.contains("\"event\":\"performance_operation_v1\""));
+        assert!(event.contains("\"operation_id\":\"bridge-test\""));
+        assert!(event.contains("\"range\":[0,6]"));
+        assert!(event.contains("\"timings_ms\":[{\"phase\":\"capture\",\"elapsed_ms\":7},{\"phase\":\"replacement\",\"elapsed_ms\":3}]"));
+        assert!(!event.contains("secret user text"));
+
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }
 

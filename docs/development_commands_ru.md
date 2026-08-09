@@ -236,12 +236,15 @@ cold/warm, retry, ranges, lengths, outcome и phase timings. Существую�
 ]
 ```
 
-Для PSReadLine primary event содержит `correction_plan`, `replacement`,
-`primary_layout_switch` и `delayed_layout_repair_schedule`. Фактический
-отложенный repair записывается отдельным event с branch
+Для PSReadLine primary event содержит `capture`, `correction_plan`,
+`replacement` и `primary_layout_switch`. Фактический отложенный repair
+записывается отдельным event с branch
 `psreadline-delayed-layout-repair`, поэтому его длительность не смешивается с
 основной операцией. Xterm события используют отдельные `capture`, `apply`,
 `verify`, `retry` и `clipboard_restore`; Qwen получает `QwenTerminal` surface,
+а SSH forwarding получает отдельные `SshRemote` surface и
+`ssh-remote-forwarded` branch. Его `duration_ms` и фаза `apply` измеряют только
+локальную передачу shortcut, а не сетевую задержку SSH.
 а обычный PowerShell `PowerShell` surface.
 
 Остановить runner можно через `Ctrl+C` в его консоли.

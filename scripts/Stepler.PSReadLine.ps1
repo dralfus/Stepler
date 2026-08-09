@@ -4,7 +4,8 @@ param(
     [string] $ScrollLockChord = 'Ctrl+Pause',
     [string[]] $AdditionalPauseChords = @('F13', 'Ctrl+F11'),
     [string[]] $AdditionalScrollLockChords = @('F14', 'Ctrl+F12'),
-    [switch] $Quiet
+    [switch] $Quiet,
+    [switch] $NoBindings
 )
 
 if ([string]::IsNullOrWhiteSpace($SteplerCli)) {
@@ -21,11 +22,11 @@ if (-not (Test-Path -LiteralPath $SteplerCli)) {
     throw "stepler-cli.exe not found at '$SteplerCli'. Build it first: cargo build -p stepler-cli"
 }
 
-if (-not ('Microsoft.PowerShell.PSConsoleReadLine' -as [type])) {
+if (-not $NoBindings -and -not ('Microsoft.PowerShell.PSConsoleReadLine' -as [type])) {
     throw "PSReadLine is not loaded. Import-Module PSReadLine and load this adapter from an interactive PowerShell session."
 }
 
-if (-not ('SteplerUser32' -as [type])) {
+if (-not $NoBindings -and -not ('SteplerUser32' -as [type])) {
     Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -422,16 +423,18 @@ function Invoke-SteplerLayoutSwitch {
 `$repairStarted = [System.Diagnostics.Stopwatch]::StartNew()
 Start-Sleep -Milliseconds 120
 & `$cli trigger-layout-control `$layout 2>`$null | Out-Null
+`$controlExit1 = `$LASTEXITCODE
 & `$cli switch-layout `$layout --hwnd `$hwnd 2>`$null | Out-Null
-`$exit1 = `$LASTEXITCODE
+`$syncExit1 = `$LASTEXITCODE
 Start-Sleep -Milliseconds 260
 & `$cli trigger-layout-control `$layout 2>`$null | Out-Null
+`$controlExit2 = `$LASTEXITCODE
 & `$cli switch-layout `$layout --hwnd `$hwnd 2>`$null | Out-Null
-`$exit2 = `$LASTEXITCODE
+`$syncExit2 = `$LASTEXITCODE
 `$log = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Stepler\logs\psreadline_layout.log'
 `$dir = Split-Path -Parent `$log
 New-Item -ItemType Directory -Force -Path `$dir | Out-Null
-Add-Content -LiteralPath `$log -Value ("{0:o} layout delayed target={1} hwnd={2} exit1={3} exit2={4}" -f [DateTimeOffset]::Now, `$layout, `$hwnd, `$exit1, `$exit2)
+Add-Content -LiteralPath `$log -Value ("{0:o} layout delayed target={1} hwnd={2} control1={3} sync1={4} control2={5} sync2={6}" -f [DateTimeOffset]::Now, `$layout, `$hwnd, `$controlExit1, `$syncExit1, `$controlExit2, `$syncExit2)
 `$duration = [long] `$repairStarted.ElapsedMilliseconds
 `$buildVersion = 'unknown'
 `$buildInfo = Join-Path (Split-Path -Parent `$cli) 'BUILD_INFO.txt'
@@ -442,7 +445,7 @@ if (Test-Path -LiteralPath `$buildInfo) {
 `$environment = [Environment]::GetEnvironmentVariable('STEPLER_PERF_ENV')
 if ([string]::IsNullOrWhiteSpace(`$environment)) { `$environment = 'unlabeled' }
 `$trigger = if (`$mode -eq 'pause') { 'Pause' } else { 'ScrollLock' }
-`$outcome = if (`$exit1 -eq 0 -and `$exit2 -eq 0) { 'Completed' } else { 'RolledBackOrFailed' }
+`$outcome = if (`$controlExit1 -eq 0 -and `$syncExit1 -eq 0 -and `$controlExit2 -eq 0 -and `$syncExit2 -eq 0) { 'Completed' } else { 'RolledBackOrFailed' }
 `$event = [ordered]@{
   event = 'performance_operation_v1'
   operation_id = `$operationId
@@ -472,7 +475,6 @@ try {
   Add-Content -LiteralPath `$performanceLog -Value (`$event | ConvertTo-Json -Compress -Depth 5) -Encoding UTF8
 } catch { }
 "@
-    $scheduleStarted = [System.Diagnostics.Stopwatch]::StartNew()
     Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList @(
         '-NoLogo',
         '-NoProfile',
@@ -485,10 +487,6 @@ try {
         [pscustomobject]@{
             phase = 'primary_layout_switch'
             elapsed_ms = [long] $primaryStarted.ElapsedMilliseconds
-        }
-        [pscustomobject]@{
-            phase = 'delayed_layout_repair_schedule'
-            elapsed_ms = [long] $scheduleStarted.ElapsedMilliseconds
         }
     )
 }
@@ -654,55 +652,56 @@ function Register-SteplerTerminalAppWrapper {
     }
 }
 
-$script:SteplerPauseChord = Resolve-SteplerPsReadLineChord -Chord $PauseChord -FallbackChord 'Ctrl+F11'
-$script:SteplerPauseChords = @($script:SteplerPauseChord)
-$script:SteplerScrollLockChord = Resolve-SteplerPsReadLineChord -Chord $ScrollLockChord -FallbackChord 'Ctrl+F12'
-$script:SteplerScrollLockChords = @($script:SteplerScrollLockChord)
+if (-not $NoBindings) {
+    $script:SteplerPauseChord = Resolve-SteplerPsReadLineChord -Chord $PauseChord -FallbackChord 'Ctrl+F11'
+    $script:SteplerPauseChords = @($script:SteplerPauseChord)
+    $script:SteplerScrollLockChord = Resolve-SteplerPsReadLineChord -Chord $ScrollLockChord -FallbackChord 'Ctrl+F12'
+    $script:SteplerScrollLockChords = @($script:SteplerScrollLockChord)
 
-foreach ($chord in $AdditionalPauseChords) {
-    $resolvedChord = Resolve-SteplerPsReadLineChord -Chord $chord -FallbackChord $null
-    if (-not [string]::IsNullOrWhiteSpace($resolvedChord) -and $script:SteplerPauseChords -notcontains $resolvedChord) {
-        $script:SteplerPauseChords += $resolvedChord
+    foreach ($chord in $AdditionalPauseChords) {
+        $resolvedChord = Resolve-SteplerPsReadLineChord -Chord $chord -FallbackChord $null
+        if (-not [string]::IsNullOrWhiteSpace($resolvedChord) -and $script:SteplerPauseChords -notcontains $resolvedChord) {
+            $script:SteplerPauseChords += $resolvedChord
+        }
     }
-}
 
-foreach ($chord in $AdditionalScrollLockChords) {
-    $resolvedChord = Resolve-SteplerPsReadLineChord -Chord $chord -FallbackChord $null
-    if (-not [string]::IsNullOrWhiteSpace($resolvedChord) -and $script:SteplerScrollLockChords -notcontains $resolvedChord) {
-        $script:SteplerScrollLockChords += $resolvedChord
+    foreach ($chord in $AdditionalScrollLockChords) {
+        $resolvedChord = Resolve-SteplerPsReadLineChord -Chord $chord -FallbackChord $null
+        if (-not [string]::IsNullOrWhiteSpace($resolvedChord) -and $script:SteplerScrollLockChords -notcontains $resolvedChord) {
+            $script:SteplerScrollLockChords += $resolvedChord
+        }
     }
-}
 
-foreach ($chord in $script:SteplerPauseChords) {
-    Set-PSReadLineKeyHandler -Chord $chord -BriefDescription SteplerPause -Description 'Stepler: fix the word or selection before the cursor' -ScriptBlock {
-        Invoke-SteplerPsReadLineCorrection -Mode pause
+    foreach ($chord in $script:SteplerPauseChords) {
+        Set-PSReadLineKeyHandler -Chord $chord -BriefDescription SteplerPause -Description 'Stepler: fix the word or selection before the cursor' -ScriptBlock {
+            Invoke-SteplerPsReadLineCorrection -Mode pause
+        }
     }
-}
 
-foreach ($chord in $script:SteplerScrollLockChords) {
-    Set-PSReadLineKeyHandler -Chord $chord -BriefDescription SteplerScrollLock -Description 'Stepler: fix mistyped layout in the current PowerShell input' -ScriptBlock {
-        Invoke-SteplerPsReadLineCorrection -Mode scrolllock
+    foreach ($chord in $script:SteplerScrollLockChords) {
+        Set-PSReadLineKeyHandler -Chord $chord -BriefDescription SteplerScrollLock -Description 'Stepler: fix mistyped layout in the current PowerShell input' -ScriptBlock {
+            Invoke-SteplerPsReadLineCorrection -Mode scrolllock
+        }
     }
-}
 
-Register-SteplerTerminalAppWrapper -Name 'qwen' -WindowTitle 'stepler-terminal-app qwen'
+    Register-SteplerTerminalAppWrapper -Name 'qwen' -WindowTitle 'stepler-terminal-app qwen'
 
-$script:SteplerPsReadLineEnabled = $true
+    $script:SteplerPsReadLineEnabled = $true
 
-function Get-SteplerPsReadLineStatus {
-    [pscustomobject] @{
-        SteplerCli = $script:SteplerCli
-        Enabled = $script:SteplerPsReadLineEnabled
-        PauseChords = $script:SteplerPauseChords -join ', '
-        ScrollLockChords = $script:SteplerScrollLockChords -join ', '
-        TerminalAppWrappers = $script:SteplerTerminalAppWrapperNames -join ', '
+    function Get-SteplerPsReadLineStatus {
+        [pscustomobject] @{
+            SteplerCli = $script:SteplerCli
+            Enabled = $script:SteplerPsReadLineEnabled
+            PauseChords = $script:SteplerPauseChords -join ', '
+            ScrollLockChords = $script:SteplerScrollLockChords -join ', '
+            TerminalAppWrappers = $script:SteplerTerminalAppWrapperNames -join ', '
+        }
     }
-}
 
-function Disable-SteplerPsReadLine {
-    param(
-        [switch] $KeepStatusCommand
-    )
+    function Disable-SteplerPsReadLine {
+        param(
+            [switch] $KeepStatusCommand
+        )
 
     $chords = @()
     if ($script:SteplerPauseChords) {
@@ -735,8 +734,9 @@ function Disable-SteplerPsReadLine {
         Remove-Item Function:\Get-SteplerPsReadLineStatus -ErrorAction SilentlyContinue
         Remove-Item Function:\Disable-SteplerPsReadLine -ErrorAction SilentlyContinue
     }
-}
+    }
 
-if (-not $Quiet) {
-    Write-Host "Stepler PSReadLine adapter loaded: $($script:SteplerPauseChords -join ', ')=Pause mode, $($script:SteplerScrollLockChords -join ', ')=ScrollLock mode -> $script:SteplerCli"
+    if (-not $Quiet) {
+        Write-Host "Stepler PSReadLine adapter loaded: $($script:SteplerPauseChords -join ', ')=Pause mode, $($script:SteplerScrollLockChords -join ', ')=ScrollLock mode -> $script:SteplerCli"
+    }
 }

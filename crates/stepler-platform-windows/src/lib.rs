@@ -234,16 +234,18 @@ impl RegisteredHotkey {
 }
 
 #[cfg(windows)]
-pub fn message_loop_with_keyboard_controls<F, H, U, G>(
+pub fn message_loop_with_keyboard_controls<F, H, U, S, G>(
     mut on_hotkey: F,
     mut on_hotkey_received: H,
     mut on_hotkey_unsupported: U,
+    mut on_ssh_remote_forwarded: S,
     mut on_control: G,
 ) -> Result<(), PlatformError>
 where
     F: FnMut(stepler_core::CorrectionMode),
     H: FnMut(stepler_core::CorrectionMode),
     U: FnMut(stepler_core::CorrectionMode),
+    S: FnMut(stepler_core::CorrectionMode, u128),
     G: FnMut(KeyboardControlAction),
 {
     install_keyboard_control_hook()?;
@@ -303,6 +305,14 @@ where
                     on_hotkey_unsupported(mode);
                 }
             }
+            WM_STEPLER_SSH_REMOTE_FORWARDED => {
+                if let Some(mode) = correction_mode_from_message_id(message.wparam) {
+                    append_hotkey_signal_log(&format!(
+                        "hook_message_ssh_remote_forwarded {mode:?}"
+                    ));
+                    on_ssh_remote_forwarded(mode, message.lparam.max(0) as u128);
+                }
+            }
             WM_STEPLER_KEYBOARD_CONTROL => {
                 if let Some(action) = KeyboardControlAction::from_message_id(message.wparam) {
                     on_control(action);
@@ -314,16 +324,18 @@ where
 }
 
 #[cfg(not(windows))]
-pub fn message_loop_with_keyboard_controls<F, H, U, G>(
+pub fn message_loop_with_keyboard_controls<F, H, U, S, G>(
     _on_hotkey: F,
     _on_hotkey_received: H,
     _on_hotkey_unsupported: U,
+    _on_ssh_remote_forwarded: S,
     _on_control: G,
 ) -> Result<(), PlatformError>
 where
     F: FnMut(stepler_core::CorrectionMode),
     H: FnMut(stepler_core::CorrectionMode),
     U: FnMut(stepler_core::CorrectionMode),
+    S: FnMut(stepler_core::CorrectionMode, u128),
     G: FnMut(KeyboardControlAction),
 {
     Err(PlatformError::Unsupported)
@@ -2146,7 +2158,15 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 "hook_ssh_remote_forwarded mode={mode:?} vk={vk_code} down={is_down} up={is_up}"
             ));
             post_hotkey_received_from_hook(mode, vk_code, is_down, is_up);
+            let forwarding_started = Instant::now();
             send_ssh_terminal_sequence(mode);
+            post_ssh_remote_forwarded_from_hook(
+                mode,
+                vk_code,
+                is_down,
+                is_up,
+                forwarding_started.elapsed().as_millis(),
+            );
             return 1;
         }
         if terminal_passthrough == TerminalPassthrough::SshRemote && is_up {
@@ -2441,6 +2461,34 @@ fn post_hotkey_unsupported_from_hook(
 }
 
 #[cfg(windows)]
+fn post_ssh_remote_forwarded_from_hook(
+    mode: stepler_core::CorrectionMode,
+    vk_code: u32,
+    is_down: bool,
+    is_up: bool,
+    duration_ms: u128,
+) {
+    let duration_ms = duration_ms.min(isize::MAX as u128) as isize;
+    if let Some(thread_id) = KEYBOARD_CONTROL_THREAD_ID.get().copied() {
+        let posted = unsafe {
+            PostThreadMessageW(
+                thread_id,
+                WM_STEPLER_SSH_REMOTE_FORWARDED,
+                correction_mode_message_id(mode),
+                duration_ms,
+            )
+        };
+        append_hotkey_signal_log(&format!(
+            "hook_post_ssh_remote_forwarded mode={mode:?} vk={vk_code} down={is_down} up={is_up} duration_ms={duration_ms} posted={posted}"
+        ));
+    } else {
+        append_hotkey_signal_log(&format!(
+            "hook_post_ssh_remote_forwarded_no_thread mode={mode:?} vk={vk_code} duration_ms={duration_ms}"
+        ));
+    }
+}
+
+#[cfg(windows)]
 fn post_hotkey_signal_from_hook(
     message: u32,
     label: &str,
@@ -2681,6 +2729,8 @@ const WM_STEPLER_HOTKEY: u32 = 0x8002;
 const WM_STEPLER_HOTKEY_RECEIVED: u32 = 0x8003;
 #[cfg(windows)]
 const WM_STEPLER_HOTKEY_UNSUPPORTED: u32 = 0x8004;
+#[cfg(windows)]
+const WM_STEPLER_SSH_REMOTE_FORWARDED: u32 = 0x8005;
 #[cfg(windows)]
 const WM_QUIT: u32 = 0x0012;
 #[cfg(windows)]

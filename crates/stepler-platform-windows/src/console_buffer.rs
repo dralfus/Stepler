@@ -36,6 +36,7 @@ impl ConsoleBufferMethod {
                     vec![MethodId::ConsoleBuffer],
                 )),
             },
+            telemetry: Default::default(),
         })
     }
 
@@ -64,6 +65,7 @@ impl ConsoleBufferMethod {
             actual_before_text: Some(current_text),
             actual_after_text: Some(replacement),
             method: MethodId::ConsoleBuffer.as_str().to_owned(),
+            retry_count: 0,
         })
     }
 }

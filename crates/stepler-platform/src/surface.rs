@@ -23,11 +23,46 @@ pub enum SurfaceKind {
     Unknown,
 }
 
+impl SurfaceKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Win32Edit => "Win32Edit",
+            Self::NotepadLike => "NotepadLike",
+            Self::ClassicConsole => "ClassicConsole",
+            Self::WindowsTerminalCmd => "WindowsTerminalCmd",
+            Self::WindowsTerminalPowerShell => "WindowsTerminalPowerShell",
+            Self::QwenTerminal => "QwenTerminal",
+            Self::BrowserEditor => "BrowserEditor",
+            Self::FastBrowserEditor => "FastBrowserEditor",
+            Self::RocketChatEditor => "RocketChatEditor",
+            Self::YandexBrowserEditor => "YandexBrowserEditor",
+            Self::TelegramDesktop => "TelegramDesktop",
+            Self::StickyNotes => "StickyNotes",
+            Self::OutlookSearch => "OutlookSearch",
+            Self::OutlookWordEditor => "OutlookWordEditor",
+            Self::OutlookShell => "OutlookShell",
+            Self::WordEditor => "WordEditor",
+            Self::ExcelCellEditor => "ExcelCellEditor",
+            Self::Unknown => "Unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WebKeyboardProfile {
     Standard,
     Fast,
     RocketSearch,
+}
+
+impl WebKeyboardProfile {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "Standard",
+            Self::Fast => "Fast",
+            Self::RocketSearch => "RocketSearch",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -178,6 +178,7 @@ impl UiAutomationDocumentTextMethod {
                     vec![MethodId::UiAutomationDocumentText],
                 )),
             },
+            telemetry: Default::default(),
         })
     }
 
@@ -213,6 +214,7 @@ impl UiAutomationDocumentTextMethod {
             actual_before_text: Some(context.text_snapshot.clone()),
             actual_after_text: Some(plan.replacement_text.clone()),
             method: MethodId::UiAutomationDocumentText.as_str().to_owned(),
+            retry_count: 0,
         })
     }
 
@@ -275,6 +277,7 @@ impl UiAutomationDocumentTextMethod {
             actual_before_text: Some(actual_before),
             actual_after_text: Some(plan.replacement_text.clone()),
             method: MethodId::UiAutomationDocumentText.as_str().to_owned(),
+            retry_count: 0,
         })
     }
 
@@ -338,6 +341,7 @@ impl UiAutomationDocumentTextMethod {
             actual_before_text: Some(context.text_snapshot.clone()),
             actual_after_text: actual_after,
             method: MethodId::UiAutomationDocumentText.as_str().to_owned(),
+            retry_count: 0,
         })
     }
 }
@@ -451,6 +455,7 @@ fn capture_uia_text_context(
             can_read_caret: true,
             method_binding: Some(MethodBinding::new(method, vec![method])),
         },
+        telemetry: Default::default(),
     })
 }
 
@@ -506,5 +511,6 @@ fn apply_uia_text_replacement(
         actual_before_text: Some(actual_before),
         actual_after_text: actual_after,
         method: method.as_str().to_owned(),
+        retry_count: 0,
     })
 }

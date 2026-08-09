@@ -87,6 +87,7 @@ impl WordComMethod {
                     vec![MethodId::WordCom],
                 )),
             },
+            telemetry: Default::default(),
         })
     }
 
@@ -157,6 +158,7 @@ impl WordComMethod {
             actual_before_text: Some(actual_before),
             actual_after_text: actual_after,
             method: MethodId::WordCom.as_str().to_owned(),
+            retry_count: 0,
         })
     }
 }

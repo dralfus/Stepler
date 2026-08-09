@@ -11,6 +11,9 @@
 
 ## T01. Единая performance-телеметрия OperationRunner
 
+**Status:** implemented for ordinary OperationRunner terminal outcomes on
+2026-08-09. Bridge/control-plane events remain in T02.
+
 **What to build:** пользователь и разработчик получают единообразное измерение
 полного времени обычной P/CP-операции с достаточным контекстом, чтобы отличить
 задержку конкретной surface и ветки алгоритма без сохранения пользовательского
@@ -18,14 +21,19 @@
 
 **Blocked by:** None - can start immediately.
 
-- [ ] Terminal event содержит build version и обезличенный environment label.
-- [ ] Event содержит `SurfaceKind`, confidence, context method и replacement method.
-- [ ] Event содержит profile, algorithm branch, P/CP, selection state, cold/warm и retry count.
-- [ ] Одинаковый набор полей записывается для completed, no-change, unsupported и failed outcomes.
-- [ ] Сохраняются phase timings от hotkey до полного восстановления служебного состояния.
-- [ ] Пользовательский текст и clipboard payload не добавляются в performance fields.
-- [ ] Существующие resolver, probe, policy и replacement contracts остаются зелеными.
-- [ ] Выбор method, timeout и runtime replacement behavior не изменяются.
+- [x] Terminal event содержит build version и обезличенный environment label.
+- [x] Event содержит `SurfaceKind`, confidence, context method и replacement method.
+- [x] Event содержит profile, algorithm branch, P/CP, selection state, cold/warm и retry count.
+- [x] Одинаковый набор полей записывается для completed, no-change, unsupported и failed outcomes.
+- [x] Сохраняются phase timings от hotkey до полного восстановления служебного состояния.
+- [x] Пользовательский текст и clipboard payload не добавляются в performance fields.
+- [x] Существующие resolver, probe, policy и replacement contracts остаются зелеными.
+- [x] Выбор method, timeout и runtime replacement behavior не изменяются.
+
+Performance event пишется отдельной строкой `performance_operation_v1` в тот же
+JSONL. Для сравнительного baseline обязательны `STEPLER_PERF_ENV=home-win11`
+или `STEPLER_PERF_ENV=work-win11`; `unlabeled` считается диагностическим
+режимом и исключается из snapshot.
 
 ## T02. Performance-телеметрия bridge paths
 

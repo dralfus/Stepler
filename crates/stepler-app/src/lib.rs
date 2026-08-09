@@ -409,6 +409,7 @@ mod tests {
                 actual_before_text: Some(plan.expected_before_text.clone()),
                 actual_after_text: Some(plan.replacement_text.clone()),
                 method: String::from("fake"),
+                retry_count: 0,
             })
         }
     }
@@ -429,6 +430,7 @@ mod tests {
                 actual_before_text: Some(plan.expected_before_text.clone()),
                 actual_after_text: Some(plan.replacement_text.clone()),
                 method: String::from("fake_mutating"),
+                retry_count: 0,
             })
         }
     }

@@ -46,6 +46,7 @@ impl Win32EditMessagesMethod {
                     vec![MethodId::Win32EditMessages],
                 )),
             },
+            telemetry: Default::default(),
         })
     }
 
@@ -81,6 +82,7 @@ impl Win32EditMessagesMethod {
             actual_before_text: Some(actual_before),
             actual_after_text: actual_after,
             method: MethodId::Win32EditMessages.as_str().to_owned(),
+            retry_count: 0,
         })
     }
 }

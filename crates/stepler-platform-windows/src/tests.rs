@@ -249,6 +249,7 @@ fn context_replacement_method_uses_first_bound_replace_method() {
                 vec![MethodId::ConsoleBuffer],
             )),
         },
+        telemetry: Default::default(),
     };
 
     assert_eq!(
@@ -273,6 +274,7 @@ fn apply_replacement_requires_method_binding() {
             can_read_caret: true,
             method_binding: None,
         },
+        telemetry: Default::default(),
     };
     let plan = ReplacementPlan {
         range: TextRange::new(0, "k.,jdm".len()),
@@ -306,6 +308,7 @@ fn apply_replacement_does_not_guess_terminal_adapter_without_binding() {
             can_read_caret: false,
             method_binding: None,
         },
+        telemetry: Default::default(),
     };
     let plan = ReplacementPlan {
         range: TextRange::new(0, "пше".len()),
@@ -342,6 +345,7 @@ fn production_like_test_contexts_have_method_binding() {
                     vec![MethodId::Win32EditMessages],
                 )),
             },
+            telemetry: Default::default(),
         },
         TextContext {
             app_id: String::from("ConsoleWindowClass"),
@@ -359,6 +363,7 @@ fn production_like_test_contexts_have_method_binding() {
                     vec![MethodId::ConsoleBuffer],
                 )),
             },
+            telemetry: Default::default(),
         },
         TextContext {
             app_id: String::from("Chrome_WidgetWin_1/Chrome_RenderWidgetHostHWND"),
@@ -376,6 +381,7 @@ fn production_like_test_contexts_have_method_binding() {
                     vec![MethodId::WebKeyboardSelection],
                 )),
             },
+            telemetry: Default::default(),
         },
     ];
 
@@ -921,6 +927,7 @@ fn web_keyboard_captured_left_apply_rejects_multiline_browser_selection() {
         caret_range: TextRange::caret("3 ,thb dct".len()),
         selection_range: None,
         capabilities: Capabilities::default(),
+        telemetry: Default::default(),
     };
 
     assert!(!web_keyboard_allows_captured_left_apply_selection(
@@ -949,6 +956,7 @@ fn web_keyboard_captured_left_apply_allows_wrapped_list_tail_selection() {
         caret_range: TextRange::caret("1. ,eltv pfgecrfnm d ".len()),
         selection_range: None,
         capabilities: Capabilities::default(),
+        telemetry: Default::default(),
     };
     let selected_text = "1. ?\n   ,eltv pfgecrfnm d ";
 
@@ -1028,6 +1036,7 @@ fn web_keyboard_captured_left_replans_expanded_preflight_selection() {
         caret_range: TextRange::caret("jnftn".len()),
         selection_range: None,
         capabilities: Capabilities::default(),
+        telemetry: Default::default(),
     };
     let original_plan =
         stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::ScrollLock)
@@ -1058,6 +1067,7 @@ fn web_keyboard_captured_left_scrolllock_rejects_multiline_preflight_prefix() {
         caret_range: TextRange::caret("jnftn".len()),
         selection_range: None,
         capabilities: Capabilities::default(),
+        telemetry: Default::default(),
     };
     let plan =
         stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::ScrollLock)
@@ -1088,6 +1098,7 @@ fn web_keyboard_captured_left_retries_short_suffix_selection() {
         caret_range: TextRange::caret("z cjplfk".len()),
         selection_range: None,
         capabilities: Capabilities::default(),
+        telemetry: Default::default(),
     };
 
     assert!(web_keyboard_captured_left_should_retry_selection(
@@ -1112,6 +1123,7 @@ fn web_keyboard_captured_left_pause_rejects_non_whitespace_preflight_prefix() {
         caret_range: TextRange::caret("\r\nbcgjkmpeq outlookhaging.md".len()),
         selection_range: None,
         capabilities: Capabilities::default(),
+        telemetry: Default::default(),
     };
     let plan = stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::Pause)
         .unwrap();
@@ -1141,6 +1153,7 @@ fn web_keyboard_captured_left_trims_trailing_line_breaks_for_sticky_notes() {
         caret_range: TextRange::caret(". \r\nbcgjkpeq outlookhaging.md\r\n".len()),
         selection_range: None,
         capabilities: Capabilities::default(),
+        telemetry: Default::default(),
     };
     let original_plan =
         stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::Pause)
@@ -1187,6 +1200,7 @@ fn web_keyboard_sticky_line_replans_expanded_selection() {
         ),
         selection_range: None,
         capabilities: Capabilities::default(),
+        telemetry: Default::default(),
     };
     let plan =
         stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::ScrollLock)
@@ -1220,6 +1234,7 @@ fn rocket_active_line_context_does_not_mark_technical_selection_as_user_selectio
         caret_range: TextRange::caret("hello ghbdtn".len()),
         selection_range: None,
         capabilities: Capabilities::default(),
+        telemetry: Default::default(),
     };
 
     assert_eq!(context.selection_range, None);

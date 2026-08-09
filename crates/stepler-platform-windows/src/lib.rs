@@ -3,7 +3,8 @@ use std::os::windows::process::CommandExt;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use stepler_core::{
-    Capabilities, CorrectionMode, MethodBinding, MethodId, ReplacementPlan, TextContext, TextRange,
+    Capabilities, ContextTelemetry, CorrectionMode, MethodBinding, MethodId, ReplacementPlan,
+    TextContext, TextRange,
 };
 use stepler_platform::{
     classify_surface, probe_plan_for, surface_policy_for, web_keyboard_profile_for_surface,
@@ -599,7 +600,29 @@ fn text_context() -> Result<TextContext, PlatformError> {
             &app_class,
             &focused_class,
         ) {
-            Ok(context) => return Ok(context),
+            Ok(mut context) => {
+                let surface = decision.surface;
+                let profile = matches!(
+                    decision.context_method,
+                    MethodId::WebKeyboardSelection | MethodId::XtermKeyboardSelection
+                )
+                .then(|| web_keyboard_profile_for_surface(surface.kind).as_str())
+                .unwrap_or("none");
+                let branch = context
+                    .control_id
+                    .split(':')
+                    .next()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(decision.context_method.as_str());
+                context.telemetry = ContextTelemetry {
+                    surface_kind: Some(surface.kind.as_str().to_owned()),
+                    surface_confidence: Some(surface.confidence),
+                    profile: Some(profile.to_owned()),
+                    capture_branch: Some(branch.to_owned()),
+                    retry_count: u32::from(branch.contains("retry")),
+                };
+                return Ok(context);
+            }
             Err(error @ PlatformError::ReplacementUnavailable)
             | Err(error @ PlatformError::ReplacementUnavailableReason(_)) => {
                 last_unavailable = Some(error);

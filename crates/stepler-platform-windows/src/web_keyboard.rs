@@ -87,6 +87,7 @@ impl XtermKeyboardSelectionMethod {
                         vec![MethodId::XtermKeyboardSelection],
                     )),
                 },
+                telemetry: Default::default(),
             });
         }
 
@@ -126,6 +127,7 @@ impl XtermKeyboardSelectionMethod {
                         vec![MethodId::XtermKeyboardSelection],
                     )),
                 },
+                telemetry: Default::default(),
             });
         }
 
@@ -196,6 +198,7 @@ impl XtermKeyboardSelectionMethod {
             actual_before_text: Some(actual_before),
             actual_after_text: Some(replacement_text),
             method: MethodId::XtermKeyboardSelection.as_str().to_owned(),
+            retry_count: 0,
         })
     }
 }
@@ -591,6 +594,7 @@ impl WebKeyboardSelectionMethod {
                 actual_before_text: Some(actual_before),
                 actual_after_text: Some(replacement_text),
                 method: MethodId::WebKeyboardSelection.as_str().to_owned(),
+                retry_count: 0,
             });
         }
 
@@ -602,12 +606,14 @@ impl WebKeyboardSelectionMethod {
                 actual_before_text: Some(actual_before),
                 actual_after_text: Some(plan.replacement_text.clone()),
                 method: MethodId::WebKeyboardSelection.as_str().to_owned(),
+                retry_count: 0,
             });
         }
 
         if web_keyboard_captured_left_context(&context.control_id) {
             let snapshot = capture_clipboard_text_only()?;
             let mut replacement = None;
+            let mut replacement_retry_count = 0;
             for attempt in 0..2 {
                 select_web_left_context();
                 std::thread::sleep(if attempt == 0 {
@@ -645,6 +651,7 @@ impl WebKeyboardSelectionMethod {
 
                 match web_keyboard_captured_left_replacement_text(context, plan, &selected_text) {
                     Ok(result) => {
+                        replacement_retry_count = attempt;
                         replacement = Some(result);
                         break;
                     }
@@ -691,6 +698,7 @@ impl WebKeyboardSelectionMethod {
                 actual_before_text: Some(actual_before_text),
                 actual_after_text: Some(replacement_text),
                 method: MethodId::WebKeyboardSelection.as_str().to_owned(),
+                retry_count: replacement_retry_count as u32,
             });
         }
 
@@ -731,6 +739,7 @@ impl WebKeyboardSelectionMethod {
                 actual_before_text: Some(actual_before_text),
                 actual_after_text: Some(replacement_text),
                 method: MethodId::WebKeyboardSelection.as_str().to_owned(),
+                retry_count: 0,
             });
         }
 
@@ -800,6 +809,7 @@ impl WebKeyboardSelectionMethod {
                     actual_before_text: Some(actual_before),
                     actual_after_text: Some(text_to_send),
                     method: MethodId::WebKeyboardSelection.as_str().to_owned(),
+                    retry_count: 0,
                 });
             }
             append_hotkey_signal_log(&format!(
@@ -812,6 +822,7 @@ impl WebKeyboardSelectionMethod {
                 actual_before_text: Some(actual_before),
                 actual_after_text: Some(replacement_text),
                 method: MethodId::WebKeyboardSelection.as_str().to_owned(),
+                retry_count: 0,
             });
         }
         if web_keyboard_fast_context(&context.control_id) {
@@ -893,6 +904,7 @@ impl WebKeyboardSelectionMethod {
             actual_before_text: Some(actual_before),
             actual_after_text: Some(text_to_send),
             method: MethodId::WebKeyboardSelection.as_str().to_owned(),
+            retry_count: 0,
         })
     }
 }
@@ -990,6 +1002,7 @@ fn apply_web_keyboard_precise_range(
         actual_before_text: Some(actual_before.to_owned()),
         actual_after_text: Some(plan.replacement_text.clone()),
         method: MethodId::WebKeyboardSelection.as_str().to_owned(),
+        retry_count: 0,
     })
 }
 
@@ -1229,6 +1242,7 @@ pub(super) fn web_keyboard_context(
                 vec![MethodId::WebKeyboardSelection],
             )),
         },
+        telemetry: Default::default(),
     }
 }
 
@@ -1338,6 +1352,7 @@ pub(super) fn web_keyboard_captured_left_replacement_text(
             caret_range: TextRange::caret(wrapped_tail.len()),
             selection_range: None,
             capabilities: context.capabilities.clone(),
+            telemetry: context.telemetry.clone(),
         };
         let tail_plan =
             stepler_core::build_replacement_plan(&tail_context, correction_mode_from_plan(plan))
@@ -1369,6 +1384,7 @@ pub(super) fn web_keyboard_captured_left_replacement_text(
                 caret_range: TextRange::caret(context_core.len()),
                 selection_range: None,
                 capabilities: context.capabilities.clone(),
+                telemetry: context.telemetry.clone(),
             };
             stepler_core::build_replacement_plan(&core_context, correction_mode_from_plan(plan))
                 .map_err(|error| {
@@ -1428,6 +1444,7 @@ pub(super) fn web_keyboard_captured_left_replacement_text(
         caret_range: TextRange::caret(selected_core.len()),
         selection_range: None,
         capabilities: context.capabilities.clone(),
+        telemetry: context.telemetry.clone(),
     };
     let selected_plan =
         stepler_core::build_replacement_plan(&selected_context, CorrectionMode::ScrollLock)
@@ -1543,6 +1560,7 @@ pub(super) fn web_keyboard_sticky_line_replacement_text(
         caret_range: TextRange::caret(selected_core.len()),
         selection_range: None,
         capabilities: context.capabilities.clone(),
+        telemetry: context.telemetry.clone(),
     };
     let selected_plan =
         stepler_core::build_replacement_plan(&selected_context, correction_mode_from_plan(plan))

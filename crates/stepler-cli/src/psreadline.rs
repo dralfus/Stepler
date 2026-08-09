@@ -108,6 +108,7 @@ impl PsReadLineMethod {
                     vec![MethodId::PsReadLine],
                 )),
             },
+            telemetry: Default::default(),
         }
     }
 }

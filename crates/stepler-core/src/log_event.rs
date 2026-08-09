@@ -76,7 +76,7 @@ impl OperationLogEvent {
 }
 
 impl LogTrigger {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Pause => "Pause",
             Self::ScrollLock => "ScrollLock",
@@ -85,7 +85,7 @@ impl LogTrigger {
 }
 
 impl OperationState {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Idle => "Idle",
             Self::HotkeyReceived => "HotkeyReceived",

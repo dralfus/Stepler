@@ -2,18 +2,20 @@ mod engine;
 mod language;
 mod layout;
 mod log_event;
+mod performance;
 mod transaction;
 mod types;
 
 pub use engine::{build_replacement_plan, CorrectionError};
 pub use layout::{convert_layout_text, convert_selected_text};
 pub use log_event::{LogTrigger, OperationLogEvent};
+pub use performance::PerformanceEvent;
 pub use transaction::{
     OperationGate, OperationMetrics, OperationState, StageTiming, Transaction, TransactionError,
 };
 pub use types::{
-    Capabilities, CorrectionMode, MethodBinding, MethodId, ReplacementPlan, SelectionRange,
-    TextContext, TextRange,
+    Capabilities, ContextTelemetry, CorrectionMode, MethodBinding, MethodId, ReplacementPlan,
+    SelectionRange, TextContext, TextRange,
 };
 
 #[cfg(test)]

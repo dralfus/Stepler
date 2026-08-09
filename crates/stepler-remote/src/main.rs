@@ -136,6 +136,7 @@ fn convert_line(
                 vec![MethodId::SshTerminal],
             )),
         },
+        telemetry: Default::default(),
     };
     let plan = build_replacement_plan(&context, mode)?;
     let actual = context

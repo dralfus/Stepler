@@ -1,6 +1,7 @@
 # Спецификация: снижение задержки P/CP
 
-Статус: готово к декомпозиции после сбора нового instrumented baseline.
+Статус: T01 реализован для обычного OperationRunner; bridge paths остаются
+задачей T02 перед сбором нового baseline.
 
 Исходные данные:
 `docs/pcp_latency_baseline_ru.md`.
@@ -16,8 +17,8 @@ baseline.
 |---|---|---|
 | Анализ существующего накопительного лога | Выполнено 2026-07-26 | Baseline сохранен в отдельном документе |
 | Определение медленных method families и bottlenecks | Выполнено 2026-07-26 | Составлен план для каждого method с наблюдаемым временем выше 300 ms |
-| Спецификация и acceptance budgets | Выполнено 2026-07-26, требуется подтверждение порогов | Пользователь подтверждает p50/p95 и test seam |
-| Этап 0A: расширение performance telemetry | Не начат | Все перечисленные telemetry fields пишутся для terminal outcomes |
+| Спецификация и acceptance budgets | Подтверждено 2026-08-09 | `p50 <= 300 ms`, `p95 <= 600 ms`, performance event seam |
+| Этап 0A: расширение performance telemetry | Выполнено для обычного OperationRunner 2026-08-09 | Terminal `performance_operation_v1` event пишется для completed/no-change/unsupported/failed |
 | Этап 0B: новый instrumented baseline | Заблокирован этапом 0A | Не меньше 30 warm и 5 cold операций на method/environment |
 | Этап 1: `WebKeyboardSelection` | Не начат | Выполнены budget и regression criteria этапа |
 | Этап 2: UI Automation family | Не начат | Выполнены budget, parity и worker recovery criteria |
@@ -141,6 +142,14 @@ replacement behavior. Затем снять воспроизводимый basel
 
 ### Этап 0. Instrumented baseline
 
+- Обычный OperationRunner пишет отдельную строку `performance_operation_v1`;
+  существующий diagnostic event с preview текста не заменяется и не входит в
+  performance dataset.
+- Все performance events имеют одинаковую схему, включая `null` для полей,
+  которые недоступны до capture, и всегда содержат `timings_ms` и `range`.
+- `STEPLER_PERF_ENV` задает обезличенную метку `home-win11` или `work-win11`;
+  `unlabeled` исключается из сравнительного snapshot. Release version берется
+  из `BUILD_INFO.txt` рядом с runner.
 - Добавить недостающие поля ко всем terminal operation events, включая
   no-change, unsupported и failure.
 - Для special/bridge paths записывать те же фазы, что и для OperationRunner.

@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::io::Write;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 mod psreadline;
@@ -8,7 +10,7 @@ use stepler_app::{
 };
 use stepler_core::{
     build_replacement_plan, CorrectionError, CorrectionMode, LogTrigger, MethodId,
-    OperationLogEvent, OperationState,
+    OperationLogEvent, OperationMetrics, OperationState, PerformanceEvent,
 };
 use stepler_platform::{
     ClipboardBackend, ClipboardSnapshot, PlatformError, TextContextProvider, TextReplacer,
@@ -552,6 +554,7 @@ fn run_hotkeys() {
         OperationRunner::new_with_clipboard(&foreground, &context_provider, &replacer, &clipboard);
     let log_path = hotkey_log_path();
     let settings = RuntimeSettings::from_env();
+    let performance_tracker = RefCell::new(PerformanceTracker::default());
 
     eprintln!("Stepler hotkey runner started.");
     eprintln!("Registered: Pause, Ctrl+Pause. Controls: LeftCtrl=RU, RightCtrl=EN, Menu=next.");
@@ -571,7 +574,14 @@ fn run_hotkeys() {
     let result = message_loop_with_keyboard_controls(
         |mode| {
             if settings.hotkey_enabled(mode) {
-                handle_hotkey_event(mode, &mut runner, &layout_switcher, log_path.as_path());
+                let mut tracker = performance_tracker.borrow_mut();
+                handle_hotkey_event(
+                    mode,
+                    &mut runner,
+                    &layout_switcher,
+                    &mut tracker,
+                    log_path.as_path(),
+                );
             } else {
                 eprintln!("{mode:?}: disabled");
             }
@@ -580,7 +590,13 @@ fn run_hotkeys() {
             log_hotkey_received(log_path.as_path(), mode);
         },
         |mode| {
-            log_hotkey_unsupported(log_path.as_path(), mode, "unsupported_surface");
+            let mut tracker = performance_tracker.borrow_mut();
+            log_hotkey_unsupported(
+                log_path.as_path(),
+                &mut tracker,
+                mode,
+                "unsupported_surface",
+            );
         },
         |action| {
             if !settings.layout_action_enabled(action) {
@@ -673,6 +689,7 @@ fn handle_hotkey_event<F, C, R, B>(
     mode: CorrectionMode,
     runner: &mut OperationRunner<'_, F, C, R, B>,
     layout_switcher: &WindowsLayoutSwitcher,
+    performance_tracker: &mut PerformanceTracker,
     log_path: &std::path::Path,
 ) where
     F: stepler_platform::ForegroundProvider,
@@ -731,6 +748,19 @@ fn handle_hotkey_event<F, C, R, B>(
                 timings: outcome.metrics.timings.clone(),
             };
             append_log(log_path, &event.to_json_line());
+            append_performance_event(
+                log_path,
+                performance_tracker,
+                mode,
+                OperationState::Completed,
+                &outcome.operation_id,
+                Some(&outcome.context),
+                Some(&outcome.plan),
+                Some(outcome.apply_result.method.as_str()),
+                outcome.apply_result.retry_count,
+                Some(&outcome.metrics),
+                outcome.clipboard_guard.is_some(),
+            );
             eprintln!("{mode:?}: applied in {}ms", outcome.metrics.duration_ms);
         }
         Err(error) => {
@@ -786,6 +816,32 @@ fn handle_hotkey_event<F, C, R, B>(
                 timings: Vec::new(),
             };
             append_log(log_path, &event.to_json_line());
+            let context = operation_error_context(error);
+            let replacement_method = context.and_then(|value| {
+                value
+                    .capabilities
+                    .method_binding
+                    .as_ref()
+                    .and_then(|binding| binding.replace_methods.first())
+                    .map(|method| method.as_str())
+            });
+            let error_metrics = OperationMetrics {
+                duration_ms: started.elapsed().as_millis(),
+                timings: Vec::new(),
+            };
+            append_performance_event(
+                log_path,
+                performance_tracker,
+                mode,
+                event.state,
+                "unknown",
+                context,
+                None,
+                replacement_method,
+                0,
+                Some(&error_metrics),
+                false,
+            );
             eprintln!("{mode:?}: {error:?}");
         }
     }
@@ -812,7 +868,12 @@ fn log_hotkey_received(log_path: &std::path::Path, mode: CorrectionMode) {
     append_log(log_path, &event.to_json_line());
 }
 
-fn log_hotkey_unsupported(log_path: &std::path::Path, mode: CorrectionMode, reason: &str) {
+fn log_hotkey_unsupported(
+    log_path: &std::path::Path,
+    performance_tracker: &mut PerformanceTracker,
+    mode: CorrectionMode,
+    reason: &str,
+) {
     let event = OperationLogEvent {
         operation_id: String::from("unsupported"),
         timestamp_unix_ms: timestamp_unix_ms(),
@@ -830,6 +891,55 @@ fn log_hotkey_unsupported(log_path: &std::path::Path, mode: CorrectionMode, reas
         timings: Vec::new(),
     };
     append_log(log_path, &event.to_json_line());
+    let metrics = OperationMetrics {
+        duration_ms: 0,
+        timings: Vec::new(),
+    };
+    append_performance_event(
+        log_path,
+        performance_tracker,
+        mode,
+        OperationState::Unsupported,
+        "unsupported",
+        None,
+        None,
+        None,
+        0,
+        Some(&metrics),
+        false,
+    );
+}
+
+fn append_performance_event(
+    log_path: &std::path::Path,
+    performance_tracker: &mut PerformanceTracker,
+    mode: CorrectionMode,
+    outcome: OperationState,
+    operation_id: &str,
+    context: Option<&stepler_core::TextContext>,
+    plan: Option<&stepler_core::ReplacementPlan>,
+    replacement_method: Option<&str>,
+    replacement_retry_count: u32,
+    metrics: Option<&OperationMetrics>,
+    clipboard_used: bool,
+) {
+    let cold_warm = performance_tracker.classify(context, replacement_method, mode);
+    let performance_event = PerformanceEvent::from_operation(
+        operation_id,
+        timestamp_unix_ms(),
+        LogTrigger::from(mode),
+        outcome,
+        runtime_build_version(),
+        performance_environment_label(),
+        context,
+        plan,
+        replacement_method,
+        replacement_retry_count,
+        metrics,
+        cold_warm,
+        clipboard_used,
+    );
+    append_log(log_path, &performance_event.to_json_line());
 }
 
 fn is_no_text_to_replace_error(error: &OperationError) -> bool {
@@ -846,6 +956,88 @@ fn is_unsupported_error(error: &OperationError) -> bool {
         OperationError::Platform(PlatformError::Unsupported)
             | OperationError::Platform(PlatformError::UnsupportedControl { .. })
     )
+}
+
+#[derive(Debug, Default)]
+struct PerformanceTracker {
+    seen: HashSet<String>,
+}
+
+impl PerformanceTracker {
+    fn classify(
+        &mut self,
+        context: Option<&stepler_core::TextContext>,
+        replacement_method: Option<&str>,
+        mode: CorrectionMode,
+    ) -> &'static str {
+        let context_method = context
+            .and_then(|value| value.capabilities.method_binding.as_ref())
+            .map(|binding| binding.context_method.as_str())
+            .unwrap_or("unknown");
+        let surface = context
+            .and_then(|value| value.telemetry.surface_kind.as_deref())
+            .unwrap_or("unknown");
+        let profile = context
+            .and_then(|value| value.telemetry.profile.as_deref())
+            .unwrap_or("unknown");
+        let selection_state = context
+            .map(|value| value.selection_range.is_some_and(|range| !range.is_empty()))
+            .map(|selected| if selected { "selected" } else { "none" })
+            .unwrap_or("unknown");
+        let key = format!(
+            "{surface}|{context_method}|{}|{profile}|{mode:?}|{selection_state}",
+            replacement_method.unwrap_or("unknown")
+        );
+        if self.seen.insert(key) {
+            "cold"
+        } else {
+            "warm"
+        }
+    }
+}
+
+fn operation_error_context(error: &OperationError) -> Option<&stepler_core::TextContext> {
+    match error {
+        OperationError::CorrectionWithContext(_, context) => Some(context),
+        _ => None,
+    }
+}
+
+fn runtime_build_version() -> String {
+    static BUILD_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BUILD_VERSION
+        .get_or_init(|| {
+            if let Ok(value) = std::env::var("STEPLER_BUILD_VERSION") {
+                if !value.trim().is_empty() {
+                    return value;
+                }
+            }
+            let path = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|parent| parent.join("BUILD_INFO.txt")));
+            let Some(path) = path else {
+                return String::from("unknown");
+            };
+            std::fs::read_to_string(path)
+                .ok()
+                .and_then(|contents| {
+                    contents.lines().find_map(|line| {
+                        line.strip_prefix("BuildVersion:")
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_owned)
+                    })
+                })
+                .unwrap_or_else(|| String::from("unknown"))
+        })
+        .clone()
+}
+
+fn performance_environment_label() -> String {
+    std::env::var("STEPLER_PERF_ENV")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| String::from("unlabeled"))
 }
 
 fn set_active_correction_mode(mode: CorrectionMode) {

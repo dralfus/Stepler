@@ -45,6 +45,7 @@ impl TerminalClipboardShortcutMethod {
                     vec![MethodId::TerminalClipboardShortcut],
                 )),
             },
+            telemetry: Default::default(),
         })
     }
 
@@ -77,6 +78,7 @@ impl TerminalClipboardShortcutMethod {
             actual_before_text: Some(context.text_snapshot.clone()),
             actual_after_text: Some(replacement),
             method: MethodId::TerminalClipboardShortcut.as_str().to_owned(),
+            retry_count: 0,
         })
     }
 }

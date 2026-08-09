@@ -72,6 +72,27 @@ pub struct MethodBinding {
     pub replace_methods: Vec<MethodId>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextTelemetry {
+    pub surface_kind: Option<String>,
+    pub surface_confidence: Option<u8>,
+    pub profile: Option<String>,
+    pub capture_branch: Option<String>,
+    pub retry_count: u32,
+}
+
+impl Default for ContextTelemetry {
+    fn default() -> Self {
+        Self {
+            surface_kind: None,
+            surface_confidence: None,
+            profile: None,
+            capture_branch: None,
+            retry_count: 0,
+        }
+    }
+}
+
 impl MethodBinding {
     pub fn new(context_method: MethodId, replace_methods: Vec<MethodId>) -> Self {
         Self {
@@ -109,6 +130,7 @@ pub struct TextContext {
     pub caret_range: TextRange,
     pub selection_range: Option<SelectionRange>,
     pub capabilities: Capabilities,
+    pub telemetry: ContextTelemetry,
 }
 
 impl TextContext {
@@ -123,6 +145,7 @@ impl TextContext {
             caret_range: TextRange::caret(end),
             selection_range: None,
             capabilities: Capabilities::default(),
+            telemetry: ContextTelemetry::default(),
         }
     }
 

@@ -58,6 +58,7 @@ impl ClipboardSelectionMethod {
                     vec![MethodId::ClipboardSelection, MethodId::SendInput],
                 )),
             },
+            telemetry: Default::default(),
         })
     }
 
@@ -81,6 +82,7 @@ impl ClipboardSelectionMethod {
             actual_before_text: Some(context.text_snapshot.clone()),
             actual_after_text: Some(plan.replacement_text.clone()),
             method: MethodId::ClipboardSelection.as_str().to_owned(),
+            retry_count: 0,
         })
     }
 }

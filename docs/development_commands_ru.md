@@ -207,6 +207,25 @@ stepler_hotkey_log.jsonl
 %LOCALAPPDATA%\Stepler\logs\stepler_hotkey_log.jsonl
 ```
 
+Для performance baseline перед запуском runner нужно задать обезличенную метку
+окружения. На домашнем ПК используй `home-win11`, на рабочем - `work-win11`:
+
+```powershell
+$env:STEPLER_PERF_ENV = "home-win11"
+cargo run -p stepler-cli -- run-hotkeys
+```
+
+Если переменная не задана, event получает явную метку `unlabeled` и не должен
+попадать в сравнительный snapshot. Release build version читается из
+`BUILD_INFO.txt` рядом с `stepler-cli.exe`; для debug-запуска допускается
+`STEPLER_BUILD_VERSION`.
+
+Строки с `event=performance_operation_v1` содержат только обезличенные поля:
+build/environment, surface, method, profile, branch, trigger, selection,
+cold/warm, retry, ranges, lengths, outcome и phase timings. Существующие
+диагностические события с preview текста сохраняются отдельно и не должны
+использоваться для performance aggregation.
+
 Остановить runner можно через `Ctrl+C` в его консоли.
 
 В этом же runner включены клавиши переключения раскладки по ТЗ:

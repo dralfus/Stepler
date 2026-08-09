@@ -40,6 +40,7 @@ impl SendInputMethod {
             actual_before_text: Some(context.text_snapshot.clone()),
             actual_after_text: Some(plan.replacement_text.clone()),
             method: MethodId::SendInput.as_str().to_owned(),
+            retry_count: 0,
         })
     }
 }

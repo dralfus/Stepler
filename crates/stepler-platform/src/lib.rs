@@ -82,6 +82,7 @@ pub struct ApplyReplacementResult {
     pub actual_before_text: Option<String>,
     pub actual_after_text: Option<String>,
     pub method: String,
+    pub retry_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

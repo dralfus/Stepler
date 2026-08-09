@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 const EVENT_NAME: &str = "performance_operation_v1";
-const WARM_MINIMUM: usize = 30;
+const WARM_COMPLETED_MINIMUM: usize = 30;
 const COLD_MINIMUM: usize = 5;
 const SUPPORTED_ENVIRONMENTS: [&str; 2] = ["home-win11", "work-win11"];
 const TERMINAL_OUTCOMES: [&str; 4] = ["Completed", "NoChange", "Unsupported", "RolledBackOrFailed"];
@@ -144,7 +144,7 @@ impl Display for SnapshotError {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct MethodKey {
+struct BaselineSeriesKey {
     build_version: String,
     environment_label: String,
     surface_kind: String,
@@ -158,14 +158,14 @@ struct MethodKey {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct GroupKey {
-    method: MethodKey,
+struct BaselineGroupKey {
+    series: BaselineSeriesKey,
     cold_warm: String,
 }
 
 #[derive(Debug)]
 struct Record {
-    key: GroupKey,
+    key: BaselineGroupKey,
     outcome: String,
     duration_ms: u64,
     retry_count: u64,
@@ -176,6 +176,30 @@ struct Record {
 struct Timing {
     phase: String,
     elapsed_ms: u64,
+}
+
+#[derive(Default)]
+struct SampleCounts {
+    warm_n: usize,
+    warm_completed_n: usize,
+    cold_n: usize,
+    destructive_outcome_n: usize,
+}
+
+impl SampleCounts {
+    fn add(&mut self, record: &Record) {
+        if record.outcome == "RolledBackOrFailed" {
+            self.destructive_outcome_n += 1;
+        }
+        if record.key.cold_warm == "warm" {
+            self.warm_n += 1;
+            if record.outcome == "Completed" {
+                self.warm_completed_n += 1;
+            }
+        } else {
+            self.cold_n += 1;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -266,7 +290,7 @@ fn build_snapshot(source: &str) -> Result<Value, SnapshotError> {
             continue;
         }
         let record = parse_record(&value, line_number)?;
-        builds.insert(record.key.method.build_version.clone());
+        builds.insert(record.key.series.build_version.clone());
         records.push(record);
     }
 
@@ -277,27 +301,25 @@ fn build_snapshot(source: &str) -> Result<Value, SnapshotError> {
         return Err(SnapshotError::MultipleBuilds(builds.into_iter().collect()));
     }
 
-    let build_version = records[0].key.method.build_version.clone();
+    let build_version = records[0].key.series.build_version.clone();
     let environment_labels = records
         .iter()
-        .map(|record| record.key.method.environment_label.clone())
+        .map(|record| record.key.series.environment_label.clone())
         .collect::<BTreeSet<_>>();
-    let mut groups = BTreeMap::<GroupKey, Aggregate>::new();
-    let mut samples = BTreeMap::<MethodKey, [usize; 2]>::new();
+    let mut groups = BTreeMap::<BaselineGroupKey, Aggregate>::new();
+    let mut samples = BTreeMap::<BaselineSeriesKey, SampleCounts>::new();
     for record in records {
-        let sample = samples.entry(record.key.method.clone()).or_default();
-        if record.key.cold_warm == "warm" {
-            sample[0] += 1;
-        } else {
-            sample[1] += 1;
-        }
+        samples
+            .entry(record.key.series.clone())
+            .or_default()
+            .add(&record);
         groups.entry(record.key.clone()).or_default().add(record);
     }
 
     let groups = groups
         .iter()
         .map(|(key, aggregate)| {
-            let mut group = method_key_json(&key.method);
+            let mut group = baseline_series_key_json(&key.series);
             group["cold_warm"] = Value::String(key.cold_warm.clone());
             if let Value::Object(fields) = &mut group {
                 if let Value::Object(metrics) = aggregate.to_json() {
@@ -310,27 +332,33 @@ fn build_snapshot(source: &str) -> Result<Value, SnapshotError> {
     let sample_assessments = samples
         .iter()
         .map(|(key, counts)| {
-            let warm_n = counts[0];
-            let cold_n = counts[1];
             let mut missing = Vec::new();
-            if warm_n < WARM_MINIMUM {
-                missing.push("warm>=30");
+            if counts.warm_completed_n < WARM_COMPLETED_MINIMUM {
+                missing.push("warm_completed>=30");
             }
-            if cold_n < COLD_MINIMUM {
+            if counts.cold_n < COLD_MINIMUM {
                 missing.push("cold>=5");
             }
-            let mut assessment = method_key_json(key);
+            let status = if !missing.is_empty() {
+                "insufficient_sample"
+            } else if counts.destructive_outcome_n > 0 {
+                "blocked_by_destructive_outcomes"
+            } else {
+                "sufficient"
+            };
+            let mut assessment = baseline_series_key_json(key);
             if let Value::Object(fields) = &mut assessment {
-                fields.insert("warm_n".to_owned(), json!(warm_n));
-                fields.insert("cold_n".to_owned(), json!(cold_n));
+                fields.insert("warm_n".to_owned(), json!(counts.warm_n));
                 fields.insert(
-                    "status".to_owned(),
-                    Value::String(if missing.is_empty() {
-                        "sufficient".to_owned()
-                    } else {
-                        "insufficient_sample".to_owned()
-                    }),
+                    "warm_completed_n".to_owned(),
+                    json!(counts.warm_completed_n),
                 );
+                fields.insert("cold_n".to_owned(), json!(counts.cold_n));
+                fields.insert(
+                    "destructive_outcome_n".to_owned(),
+                    json!(counts.destructive_outcome_n),
+                );
+                fields.insert("status".to_owned(), Value::String(status.to_owned()));
                 fields.insert("missing".to_owned(), json!(missing));
             }
             assessment
@@ -343,10 +371,12 @@ fn build_snapshot(source: &str) -> Result<Value, SnapshotError> {
         "environment_labels": environment_labels,
         "source_event": EVENT_NAME,
         "sample_rule": {
-            "warm_minimum": WARM_MINIMUM,
+            "warm_completed_minimum": WARM_COMPLETED_MINIMUM,
             "cold_minimum": COLD_MINIMUM,
             "scope": "build/environment/surface/confidence/method/profile/branch/trigger/selection",
-            "counts_all_terminal_outcomes": true
+            "n_includes_all_terminal_outcomes": true,
+            "sufficient_requires_completed_warm": true,
+            "sufficient_requires_no_destructive_outcomes": true
         },
         "ignored_lines": {
             "non_performance_events": ignored_non_performance,
@@ -396,7 +426,7 @@ fn parse_record(value: &Value, line: usize) -> Result<Record, SnapshotError> {
             format!("unsupported terminal outcome {outcome:?}"),
         ));
     }
-    let method = MethodKey {
+    let series = BaselineSeriesKey {
         build_version,
         environment_label,
         surface_kind: field("surface_kind")?,
@@ -441,7 +471,7 @@ fn parse_record(value: &Value, line: usize) -> Result<Record, SnapshotError> {
         .collect::<Result<Vec<_>, SnapshotError>>()?;
 
     Ok(Record {
-        key: GroupKey { method, cold_warm },
+        key: BaselineGroupKey { series, cold_warm },
         outcome,
         duration_ms: required_u64(value, "duration_ms", line)?,
         retry_count: required_u64(value, "retry_count", line)?,
@@ -472,7 +502,7 @@ fn invalid_event(line: usize, error: impl Into<String>) -> SnapshotError {
     }
 }
 
-fn method_key_json(key: &MethodKey) -> Value {
+fn baseline_series_key_json(key: &BaselineSeriesKey) -> Value {
     json!({
         "build_version": key.build_version,
         "environment_label": key.environment_label,
@@ -671,6 +701,123 @@ mod tests {
 
         let error = build_snapshot(&source).expect_err("unknown outcomes must be rejected");
         assert!(error.to_string().contains("unsupported terminal outcome"));
+    }
+
+    #[test]
+    fn sample_sufficiency_requires_completed_warm_events() {
+        let insufficient = (0..30)
+            .map(|_| {
+                event(
+                    "1.0.test",
+                    "home-win11",
+                    "warm",
+                    10,
+                    "RolledBackOrFailed",
+                    0,
+                    &[],
+                )
+            })
+            .chain((0..5).map(|_| event("1.0.test", "home-win11", "cold", 10, "Completed", 0, &[])))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let insufficient_snapshot = build_snapshot(&insufficient).unwrap();
+        let insufficient_assessment = insufficient_snapshot["sample_assessments"][0].clone();
+        assert_eq!(insufficient_assessment["warm_n"], 30);
+        assert_eq!(insufficient_assessment["warm_completed_n"], 0);
+        assert_eq!(insufficient_assessment["cold_n"], 5);
+        assert_eq!(insufficient_assessment["status"], "insufficient_sample");
+
+        let sufficient = (0..30)
+            .map(|_| event("1.0.test", "home-win11", "warm", 10, "Completed", 0, &[]))
+            .chain((0..5).map(|_| event("1.0.test", "home-win11", "cold", 10, "Completed", 0, &[])))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let sufficient_snapshot = build_snapshot(&sufficient).unwrap();
+        let sufficient_assessment = sufficient_snapshot["sample_assessments"][0].clone();
+        assert_eq!(sufficient_assessment["warm_completed_n"], 30);
+        assert_eq!(sufficient_assessment["status"], "sufficient");
+    }
+
+    #[test]
+    fn destructive_outcome_blocks_an_otherwise_sufficient_assessment() {
+        let source = (0..30)
+            .map(|_| event("1.0.test", "home-win11", "warm", 10, "Completed", 0, &[]))
+            .chain((0..5).map(|_| event("1.0.test", "home-win11", "cold", 10, "Completed", 0, &[])))
+            .chain(std::iter::once(event(
+                "1.0.test",
+                "home-win11",
+                "warm",
+                10,
+                "RolledBackOrFailed",
+                0,
+                &[],
+            )))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let snapshot = build_snapshot(&source).unwrap();
+        let assessment = snapshot["sample_assessments"][0].clone();
+        assert_eq!(assessment["warm_completed_n"], 30);
+        assert_eq!(assessment["destructive_outcome_n"], 1);
+        assert_eq!(assessment["status"], "blocked_by_destructive_outcomes");
+    }
+
+    #[test]
+    fn snapshot_keeps_surface_confidence_in_separate_groups() {
+        let source = [
+            event("1.0.test", "home-win11", "warm", 10, "Completed", 0, &[]),
+            event("1.0.test", "home-win11", "warm", 10, "Completed", 0, &[])
+                .replace("\"surface_confidence\":100", "\"surface_confidence\":80"),
+        ]
+        .join("\n");
+
+        let snapshot = build_snapshot(&source).unwrap();
+        assert_eq!(snapshot["groups"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn snapshot_rejects_invalid_environment_and_empty_phase() {
+        let invalid_environment = event("1.0.test", "lab-win11", "warm", 10, "Completed", 0, &[]);
+        let error =
+            build_snapshot(&invalid_environment).expect_err("invalid environment must fail");
+        assert!(error
+            .to_string()
+            .contains("environment_label must be home-win11 or work-win11"));
+
+        let empty_phase = event(
+            "1.0.test",
+            "home-win11",
+            "warm",
+            10,
+            "Completed",
+            0,
+            &[("capture", 10)],
+        )
+        .replace("\"phase\":\"capture\"", "\"phase\":\"\"");
+        let error = build_snapshot(&empty_phase).expect_err("empty phase must fail");
+        assert!(error
+            .to_string()
+            .contains("timings_ms.phase must not be empty"));
+    }
+
+    #[test]
+    fn output_without_explicit_parent_is_a_valid_distinct_path() {
+        let directory = std::env::temp_dir().join(format!(
+            "stepler-performance-snapshot-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let input = directory.join("input.jsonl");
+        std::fs::write(&input, "{}").unwrap();
+
+        assert!(ensure_distinct_paths(&input, Path::new("snapshot.json")).is_ok());
+
+        std::fs::remove_file(&input).unwrap();
+        std::fs::remove_dir(&directory).unwrap();
     }
 
     #[test]

@@ -265,7 +265,11 @@ stepler-cli.exe performance-snapshot `
 max, failure rate, retry rate, outcome counts и вкладом фаз; `bottleneck_phase`
 указывает фазу с наибольшим суммарным временем. В `sample_assessments` для
 каждого method/surface/branch/trigger/selection набора указано, достаточно ли
-30 warm и 5 cold наблюдений, либо перечислены недостающие минимумы.
+30 успешных warm и 5 cold наблюдений, либо перечислены недостающие минимумы.
+`warm_n` отражает все warm events, а `warm_completed_n` - только `Completed`;
+именно второй счётчик участвует в статусе `sufficient`. Любой
+`RolledBackOrFailed` показывается как `destructive_outcome_n` и переводит
+assessment в `blocked_by_destructive_outcomes`.
 Проверяются только environment labels `home-win11` и `work-win11`, а также
 терминальные outcomes текущей telemetry-схемы.
 

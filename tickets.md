@@ -76,7 +76,7 @@ schema and rejects mixed build versions.
 - [x] Для каждой группы выводятся N, p50, p90, p95, max, failure rate и retry rate.
 - [x] Cold и warm результаты не объединяются.
 - [x] Snapshot отклоняет вход с несколькими `build_version`, поэтому разные сборки нельзя смешать.
-- [x] Для каждого набора method/surface/branch/trigger/selection на environment явно выводится `sufficient` или `insufficient_sample` с фактическими warm/cold N.
+- [x] Для каждого набора method/surface/branch/trigger/selection на environment явно выводится `sufficient`, `insufficient_sample` или `blocked_by_destructive_outcomes` с фактическими total warm, completed warm и cold N.
 - [x] Отчет включает phase contribution и выделяет фазу-bottleneck.
 - [x] Рабочий и домашний ПК представлены разными обезличенными environment labels.
 - [x] Snapshot сохраняется отдельно от накопительного runtime log через обязательный `--output`.
@@ -84,8 +84,10 @@ schema and rejects mixed build versions.
 Snapshot принимает только актуальный формат `timings_ms[].phase`; старые строки
 с `timings_ms[].state` требуют нового запуска runner и не используются молча.
 `failure_rate` считает только `RolledBackOrFailed`, а `retry_rate` - операции с
-`retry_count > 0`; `N` и sample sufficiency считают все четыре terminal outcomes,
-а остальные исходы доступны в `outcome_counts`.
+`retry_count > 0`; общий `N` включает все четыре terminal outcomes, но
+`sufficient` требует 30 `Completed` warm и 5 cold операций. Остальные исходы
+доступны в `outcome_counts`; `RolledBackOrFailed` дополнительно переводит
+assessment в `blocked_by_destructive_outcomes`.
 
 ## T04. Ускорение WebKeyboard для FastBrowserEditor
 

@@ -1,7 +1,6 @@
 target/
 target-*/
 dist/
-SetupOutput/
 .dotnet-cli-home/
 .dotnet-sdk/
 .dotnet-install.ps1

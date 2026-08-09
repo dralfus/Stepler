@@ -62,20 +62,30 @@ not included in the primary PSReadLine operation duration.
 
 ## T03. Воспроизводимый baseline-отчет
 
+**Status:** implemented on 2026-08-09. `stepler-cli performance-snapshot` builds
+one deterministic snapshot from the current `performance_operation_v1` JSONL
+schema and rejects mixed build versions.
+
 **What to build:** разработчик получает фиксированный performance snapshot для
 конкретной сборки и окружения, пригодный для сравнения до и после каждой
 оптимизации.
 
 **Blocked by:** T01. Единая performance-телеметрия OperationRunner; T02. Performance-телеметрия bridge paths.
 
-- [ ] Отчет группирует операции по build, environment, surface, method, profile, branch, P/CP и selection state.
-- [ ] Для каждой группы выводятся N, p50, p90, p95, max, failure rate и retry rate.
-- [ ] Cold и warm результаты не объединяются.
-- [ ] Snapshot не смешивает несколько сборок Stepler.
-- [ ] Для активного slow method собрано не меньше 30 warm и 5 cold операций на environment либо явно указан недостаток выборки.
-- [ ] Отчет включает phase contribution и выделяет фазу-bottleneck.
-- [ ] Рабочий и домашний ПК представлены разными обезличенными environment labels.
-- [ ] Snapshot сохраняется отдельно от накопительного runtime log.
+- [x] Отчет группирует операции по build, environment, surface, method, profile, branch, P/CP и selection state.
+- [x] Для каждой группы выводятся N, p50, p90, p95, max, failure rate и retry rate.
+- [x] Cold и warm результаты не объединяются.
+- [x] Snapshot отклоняет вход с несколькими `build_version`, поэтому разные сборки нельзя смешать.
+- [x] Для каждого набора method/surface/branch/trigger/selection на environment явно выводится `sufficient` или `insufficient_sample` с фактическими warm/cold N.
+- [x] Отчет включает phase contribution и выделяет фазу-bottleneck.
+- [x] Рабочий и домашний ПК представлены разными обезличенными environment labels.
+- [x] Snapshot сохраняется отдельно от накопительного runtime log через обязательный `--output`.
+
+Snapshot принимает только актуальный формат `timings_ms[].phase`; старые строки
+с `timings_ms[].state` требуют нового запуска runner и не используются молча.
+`failure_rate` считает только `RolledBackOrFailed`, а `retry_rate` - операции с
+`retry_count > 0`; `N` и sample sufficiency считают все четыре terminal outcomes,
+а остальные исходы доступны в `outcome_counts`.
 
 ## T04. Ускорение WebKeyboard для FastBrowserEditor
 

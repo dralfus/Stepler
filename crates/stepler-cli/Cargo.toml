@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+serde_json = "1"
 stepler-app = { path = "../stepler-app" }
 stepler-core = { path = "../stepler-core" }
 stepler-platform = { path = "../stepler-platform" }

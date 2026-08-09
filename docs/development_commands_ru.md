@@ -245,7 +245,33 @@ cold/warm, retry, ranges, lengths, outcome и phase timings. Существую�
 а SSH forwarding получает отдельные `SshRemote` surface и
 `ssh-remote-forwarded` branch. Его `duration_ms` и фаза `apply` измеряют только
 локальную передачу shortcut, а не сетевую задержку SSH.
-а обычный PowerShell `PowerShell` surface.
+Обычный PowerShell получает `PowerShell` surface.
+
+### Воспроизводимый performance snapshot
+
+После сбора данных текущей release-сборкой создай отдельный snapshot, не
+перезаписывая накопительный JSONL:
+
+```powershell
+stepler-cli.exe performance-snapshot `
+  --input "$env:LOCALAPPDATA\Stepler\logs\stepler_hotkey_log.jsonl" `
+  --output ".\docs\performance_snapshot_home_1.0.20260809.json"
+```
+
+Команда обрабатывает только строки `event=performance_operation_v1`, исключает
+`environment_label=unlabeled` и требует один `build_version` на snapshot. При
+нескольких сборках команда завершается ошибкой, чтобы baseline нельзя было
+смешать. В `groups` cold и warm идут отдельными записями с `N`, p50/p90/p95,
+max, failure rate, retry rate, outcome counts и вкладом фаз; `bottleneck_phase`
+указывает фазу с наибольшим суммарным временем. В `sample_assessments` для
+каждого method/surface/branch/trigger/selection набора указано, достаточно ли
+30 warm и 5 cold наблюдений, либо перечислены недостающие минимумы.
+Проверяются только environment labels `home-win11` и `work-win11`, а также
+терминальные outcomes текущей telemetry-схемы.
+
+Вход должен быть записан текущей telemetry-схемой, где timings имеют вид
+`timings_ms[].phase`. Старый накопительный лог с `timings_ms[].state` не является
+воспроизводимым T03 baseline: сначала собери новый лог после T02.
 
 Остановить runner можно через `Ctrl+C` в его консоли.
 

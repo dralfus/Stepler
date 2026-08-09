@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::io::Write;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+mod performance_snapshot;
 mod psreadline;
 
 use psreadline::{PsReadLineMethod, PsReadLineRequest};
@@ -41,6 +42,10 @@ fn main() {
         psreadline_self_test();
         return;
     }
+    if args.first().map(String::as_str) == Some("performance-snapshot") {
+        performance_snapshot::run(&args);
+        return;
+    }
     if args.first().map(String::as_str) == Some("qwen-submit") {
         qwen_submit(&args);
         return;
@@ -63,7 +68,7 @@ fn main() {
         Some("scrolllock") | Some("ScrollLock") => CorrectionMode::ScrollLock,
         _ => {
             eprintln!(
-                "usage: stepler-cli <pause|scrolllock|diagnose-focus|run-hotkeys|uia-fixture> [--apply] [--delay seconds]"
+                "usage: stepler-cli <pause|scrolllock|diagnose-focus|run-hotkeys|uia-fixture> [--apply] [--delay seconds]\n       stepler-cli performance-snapshot --input <performance.jsonl> --output <snapshot.json>"
             );
             std::process::exit(2);
         }

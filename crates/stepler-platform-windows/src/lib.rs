@@ -614,12 +614,22 @@ fn text_context() -> Result<TextContext, PlatformError> {
         ) {
             Ok(mut context) => {
                 let surface = decision.surface;
-                let profile = matches!(
+                let profile = if matches!(
                     decision.context_method,
                     MethodId::WebKeyboardSelection | MethodId::XtermKeyboardSelection
-                )
-                .then(|| web_keyboard_profile_for_surface(surface.kind).as_str())
-                .unwrap_or("none");
+                ) {
+                    let profile = web_keyboard_effective_profile_for_title(
+                        web_keyboard_profile_for_surface(surface.kind),
+                        &target.title,
+                    );
+                    if web_keyboard_profile_is_fast(profile) {
+                        profile.as_str()
+                    } else {
+                        WebKeyboardProfile::Standard.as_str()
+                    }
+                } else {
+                    "none"
+                };
                 let branch = context
                     .control_id
                     .split(':')

@@ -363,9 +363,11 @@ impl WebKeyboardSelectionMethod {
             app_class,
             focused_class,
         ));
-        let timing = web_keyboard_timing_profile(profile);
-        let fast_profile = web_keyboard_profile_is_fast(profile);
-        let rocket_fast = web_keyboard_profile_is_rocket(profile);
+        let effective_profile =
+            web_keyboard_effective_profile_for_title(profile, &foreground_title);
+        let timing = web_keyboard_timing_profile(effective_profile);
+        let fast_profile = web_keyboard_profile_is_fast(effective_profile);
+        let rocket_fast = web_keyboard_profile_is_rocket(effective_profile);
         let allow_captured_left = web_keyboard_allows_captured_left_for_title(&foreground_title);
 
         for attempt in 0..2 {
@@ -521,7 +523,10 @@ impl WebKeyboardSelectionMethod {
                         focused_class,
                         foreground,
                         focused,
-                        web_keyboard_control_prefix("web-keyboard-line-selection", profile),
+                        web_keyboard_control_prefix(
+                            "web-keyboard-line-selection",
+                            effective_profile,
+                        ),
                         text,
                         false,
                     ));
@@ -561,7 +566,10 @@ impl WebKeyboardSelectionMethod {
                     if rocket_fast {
                         "web-keyboard-rocket-active-line-selection"
                     } else {
-                        web_keyboard_control_prefix("web-keyboard-line-selection", profile)
+                        web_keyboard_control_prefix(
+                            "web-keyboard-line-selection",
+                            effective_profile,
+                        )
                     },
                     text,
                     false,
@@ -1443,7 +1451,24 @@ pub(super) fn web_keyboard_allows_fast_line_apply_for_title(title: &str) -> bool
 
 #[cfg(windows)]
 pub(super) fn web_keyboard_allows_relaxed_line_preflight_for_title(title: &str) -> bool {
-    !web_keyboard_is_confluence_like_title(title)
+    !web_keyboard_is_confluence_like_title(title) && !web_keyboard_is_jira_like_title(title)
+}
+
+#[cfg(windows)]
+pub(super) fn web_keyboard_effective_profile_for_title(
+    profile: WebKeyboardProfile,
+    title: &str,
+) -> WebKeyboardProfile {
+    if profile == WebKeyboardProfile::Fast && web_keyboard_is_jira_like_title(title) {
+        WebKeyboardProfile::Standard
+    } else {
+        profile
+    }
+}
+
+#[cfg(windows)]
+fn web_keyboard_is_jira_like_title(title: &str) -> bool {
+    title.to_ascii_lowercase().contains("jira")
 }
 
 #[cfg(windows)]

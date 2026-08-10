@@ -74,8 +74,9 @@ pub(super) fn web_keyboard_fast_profile_title_matches(title: &str) -> bool {
         window_id: String::new(),
         control_id: String::new(),
     };
-    web_keyboard_profile_is_fast(web_keyboard_profile_for_surface(
-        classify_surface(&target).kind,
+    web_keyboard_profile_is_fast(web_keyboard_effective_profile_for_title(
+        web_keyboard_profile_for_surface(classify_surface(&target).kind),
+        title,
     ))
 }
 

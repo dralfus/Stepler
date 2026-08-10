@@ -861,7 +861,7 @@ fn web_keyboard_captured_left_context_uses_dedicated_apply_path() {
 
 #[cfg(windows)]
 #[test]
-fn web_keyboard_captured_left_title_policy_blocks_confluence_wiki() {
+fn web_keyboard_captured_left_title_policy_blocks_unverified_wiki_and_jira_apply() {
     assert!(!web_keyboard_allows_captured_left_for_title(
         "Security features - Chips - GS-Labs Wiki — Mozilla Firefox"
     ));
@@ -891,7 +891,7 @@ fn web_keyboard_captured_left_title_policy_blocks_confluence_wiki() {
     assert!(web_keyboard_allows_fast_line_apply_for_title(
         "ABC-123 - Jira - Google Chrome"
     ));
-    assert!(web_keyboard_allows_relaxed_line_preflight_for_title(
+    assert!(!web_keyboard_allows_relaxed_line_preflight_for_title(
         "ABC-123 - Jira - Google Chrome"
     ));
 }
@@ -1252,8 +1252,8 @@ fn rocket_active_line_context_does_not_mark_technical_selection_as_user_selectio
 
 #[cfg(windows)]
 #[test]
-fn web_keyboard_fast_profile_matches_checked_web_apps() {
-    assert!(web_keyboard_fast_profile_title_matches(
+fn web_keyboard_fast_profile_excludes_jira_until_its_contract_is_verified() {
+    assert!(!web_keyboard_fast_profile_title_matches(
         "[CTP-11796] GS-Labs JIRA - Mozilla Firefox"
     ));
     assert!(web_keyboard_fast_profile_title_matches(
@@ -1269,6 +1269,30 @@ fn web_keyboard_fast_profile_matches_checked_web_apps() {
         "2 unread messages - general - GS.Chat"
     ));
     assert!(web_keyboard_fast_profile_title_matches("Codex"));
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_effective_profile_reports_jira_as_standard() {
+    assert_eq!(
+        web_keyboard_effective_profile_for_title(
+            WebKeyboardProfile::Fast,
+            "ABC-123 - JIRA - Google Chrome"
+        ),
+        WebKeyboardProfile::Standard
+    );
+    assert_eq!(
+        web_keyboard_effective_profile_for_title(WebKeyboardProfile::Fast, "Codex"),
+        WebKeyboardProfile::Fast
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_relaxed_line_preflight_rejects_jira() {
+    assert!(!web_keyboard_allows_relaxed_line_preflight_for_title(
+        "ABC-123 - JIRA - Google Chrome"
+    ));
 }
 
 #[cfg(windows)]

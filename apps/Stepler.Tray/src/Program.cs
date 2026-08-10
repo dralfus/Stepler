@@ -912,9 +912,15 @@ internal sealed class SteplerTrayForm : Form
                 return false;
             }
 
-            var state = root.TryGetProperty("state", out var stateElement)
-                ? stateElement.GetString()
-                : null;
+            // Performance records share the trigger field but use "outcome", not "state".
+            // The timing overlay must only render OperationLogEvent records.
+            if (!root.TryGetProperty("state", out var stateElement)
+                || stateElement.ValueKind != JsonValueKind.String)
+            {
+                return false;
+            }
+
+            var state = stateElement.GetString();
             if (string.Equals(state, "HotkeyReceived", StringComparison.Ordinal))
             {
                 failed = false;

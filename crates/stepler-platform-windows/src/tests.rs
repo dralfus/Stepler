@@ -898,6 +898,19 @@ fn web_keyboard_captured_left_title_policy_blocks_unverified_wiki_and_jira_apply
 
 #[cfg(windows)]
 #[test]
+fn embedded_terminal_forwarding_uses_psreadline_chords() {
+    assert_eq!(
+        embedded_terminal_psreadline_forward_key(CorrectionMode::Pause),
+        VK_F11
+    );
+    assert_eq!(
+        embedded_terminal_psreadline_forward_key(CorrectionMode::ScrollLock),
+        VK_F12
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn web_keyboard_captured_left_text_policy_blocks_multiline_browser_selection() {
     assert!(web_keyboard_allows_captured_left_text_for_surface(
         "Chrome_WidgetWin_1",

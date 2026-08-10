@@ -143,16 +143,11 @@ pub fn try_forward_embedded_terminal_hotkey(
 
     release_modifier_keys();
     std::thread::sleep(Duration::from_millis(20));
-    match mode {
-        stepler_core::CorrectionMode::Pause => {
-            append_hotkey_signal_log("embedded_terminal_psreadline_forward chord=Ctrl+F11");
-            send_key_chord_virtual(&[VK_CONTROL], VK_F11);
-        }
-        stepler_core::CorrectionMode::ScrollLock => {
-            append_hotkey_signal_log("embedded_terminal_psreadline_forward chord=Ctrl+F12");
-            send_key_chord_virtual(&[VK_CONTROL], VK_F12);
-        }
-    }
+    let key = embedded_terminal_psreadline_forward_key(mode);
+    append_hotkey_signal_log(&format!(
+        "embedded_terminal_psreadline_forward chord=Ctrl+vk:{key}"
+    ));
+    send_key_chord(&[VK_CONTROL], key);
     release_modifier_keys();
     Ok(true)
 }
@@ -162,6 +157,14 @@ pub fn try_forward_embedded_terminal_hotkey(
     _mode: stepler_core::CorrectionMode,
 ) -> Result<bool, PlatformError> {
     Err(PlatformError::Unsupported)
+}
+
+#[cfg(windows)]
+fn embedded_terminal_psreadline_forward_key(mode: stepler_core::CorrectionMode) -> u32 {
+    match mode {
+        stepler_core::CorrectionMode::Pause => VK_F11,
+        stepler_core::CorrectionMode::ScrollLock => VK_F12,
+    }
 }
 
 fn is_embedded_terminal_uia_focus(focus: &WindowsUiaFocusDiagnostics) -> bool {

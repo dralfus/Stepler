@@ -575,8 +575,14 @@ internal sealed class SteplerTrayForm : Form
                 return;
             }
 
-            PowerShellProfileManager.EnsureInstalled(adapterPath, ResolveCliPath());
-            Program.SafeLog($"psreadline profile installed adapter={adapterPath} cli={ResolveCliPath()}");
+            var ensuredProfiles = PowerShellProfileManager.EnsureInstalled(adapterPath, ResolveCliPath());
+            if (ensuredProfiles == 0)
+            {
+                Program.SafeLog("psreadline profile unavailable: no writable profile path");
+                return;
+            }
+
+            Program.SafeLog($"psreadline profile ensured paths={ensuredProfiles} adapter={adapterPath} cli={ResolveCliPath()}");
         }
         catch (Exception error)
         {
@@ -1266,19 +1272,23 @@ internal static class PowerShellProfileManager
     private const string BeginMarker = "# >>> Stepler PSReadLine adapter >>>";
     private const string EndMarker = "# <<< Stepler PSReadLine adapter <<<";
 
-    public static void EnsureInstalled(string adapterPath, string cliPath)
+    public static int EnsureInstalled(string adapterPath, string cliPath)
     {
+        var ensuredProfiles = 0;
         foreach (var profilePath in ProfilePaths())
         {
             try
             {
                 EnsureProfileBlock(profilePath, adapterPath, cliPath);
+                ensuredProfiles++;
             }
             catch (Exception error)
             {
                 Program.SafeLog($"psreadline profile path skipped path={profilePath} error={error.GetType().Name}: {error.Message}");
             }
         }
+
+        return ensuredProfiles;
     }
 
     private static IEnumerable<string> ProfilePaths()

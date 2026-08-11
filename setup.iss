@@ -45,6 +45,129 @@ Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\Stepler
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\Stepler.exe"; ValueType: string; ValueName: "Path"; ValueData: "{app}"
 
 [Code]
+const
+  SteplerProfileBeginMarker = '# >>> Stepler PSReadLine adapter >>>';
+  SteplerProfileEndMarker = '# <<< Stepler PSReadLine adapter <<<';
+
+function EscapePowerShellSingleQuotedString(Value: string): string;
+begin
+  Result := Value;
+  StringChangeEx(Result, '''', '''''', True);
+end;
+
+procedure AppendPowerShellProfileLine(var Lines: TArrayOfString; Value: string);
+var
+  LineCount: Integer;
+begin
+  LineCount := GetArrayLength(Lines);
+  SetArrayLength(Lines, LineCount + 1);
+  Lines[LineCount] := Value;
+end;
+
+procedure AppendSteplerPowerShellProfileBlock(var Lines: TArrayOfString);
+var
+  AdapterPath: string;
+  CliPath: string;
+begin
+  AdapterPath := EscapePowerShellSingleQuotedString(ExpandConstant('{app}\scripts\Stepler.PSReadLine.ps1'));
+  CliPath := EscapePowerShellSingleQuotedString(ExpandConstant('{app}\stepler-cli.exe'));
+  AppendPowerShellProfileLine(Lines, SteplerProfileBeginMarker);
+  AppendPowerShellProfileLine(Lines, 'try {');
+  AppendPowerShellProfileLine(Lines, '    $steplerPsReadLine = ''' + AdapterPath + '''');
+  AppendPowerShellProfileLine(Lines, '    $steplerCli = ''' + CliPath + '''');
+  AppendPowerShellProfileLine(Lines, '    if (Test-Path -LiteralPath $steplerPsReadLine) {');
+  AppendPowerShellProfileLine(Lines, '        Import-Module PSReadLine -ErrorAction SilentlyContinue');
+  AppendPowerShellProfileLine(Lines, '        . $steplerPsReadLine -SteplerCli $steplerCli -Quiet');
+  AppendPowerShellProfileLine(Lines, '    }');
+  AppendPowerShellProfileLine(Lines, '} catch {');
+  AppendPowerShellProfileLine(Lines, '}');
+  AppendPowerShellProfileLine(Lines, SteplerProfileEndMarker);
+end;
+
+function FindPowerShellProfileMarker(const Lines: TArrayOfString; StartIndex: Integer; Marker: string): Integer;
+var
+  Index: Integer;
+begin
+  Result := -1;
+  for Index := StartIndex to GetArrayLength(Lines) - 1 do
+  begin
+    if Lines[Index] = Marker then
+    begin
+      Result := Index;
+      exit;
+    end;
+  end;
+end;
+
+procedure EnsureSteplerPowerShellProfile(ProfilePath: string);
+var
+  Existing: TArrayOfString;
+  Next: TArrayOfString;
+  Index: Integer;
+  EndIndex: Integer;
+begin
+  if not ForceDirectories(ExtractFileDir(ProfilePath)) then
+  begin
+    Log('Stepler PowerShell profile directory unavailable: ' + ProfilePath);
+    exit;
+  end;
+
+  if FileExists(ProfilePath) then
+  begin
+    if not LoadStringsFromFile(ProfilePath, Existing) then
+    begin
+      Log('Stepler PowerShell profile read failed: ' + ProfilePath);
+      exit;
+    end;
+  end;
+
+  SetArrayLength(Next, 0);
+  Index := 0;
+  while Index < GetArrayLength(Existing) do
+  begin
+    if Existing[Index] = SteplerProfileBeginMarker then
+    begin
+      EndIndex := FindPowerShellProfileMarker(Existing, Index + 1, SteplerProfileEndMarker);
+      if EndIndex >= 0 then
+      begin
+        Index := EndIndex + 1;
+        continue;
+      end;
+    end;
+
+    AppendPowerShellProfileLine(Next, Existing[Index]);
+    Index := Index + 1;
+  end;
+
+  while (GetArrayLength(Next) > 0) and (Trim(Next[GetArrayLength(Next) - 1]) = '') do
+    SetArrayLength(Next, GetArrayLength(Next) - 1);
+  if GetArrayLength(Next) > 0 then
+    AppendPowerShellProfileLine(Next, '');
+  AppendSteplerPowerShellProfileBlock(Next);
+
+  if not SaveStringsToUTF8File(ProfilePath, Next, False) then
+    Log('Stepler PowerShell profile write failed: ' + ProfilePath)
+  else
+    Log('Stepler PowerShell profile ensured: ' + ProfilePath);
+end;
+
+procedure EnsureSteplerPowerShellProfiles();
+var
+  DocumentsPath: string;
+begin
+  DocumentsPath := ExpandConstant('{userdocs}');
+  EnsureSteplerPowerShellProfile(AddBackslash(DocumentsPath) + 'PowerShell\profile.ps1');
+  EnsureSteplerPowerShellProfile(AddBackslash(DocumentsPath) + 'PowerShell\Microsoft.PowerShell_profile.ps1');
+  EnsureSteplerPowerShellProfile(AddBackslash(DocumentsPath) + 'WindowsPowerShell\profile.ps1');
+  EnsureSteplerPowerShellProfile(AddBackslash(DocumentsPath) + 'WindowsPowerShell\Microsoft.PowerShell_profile.ps1');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    EnsureSteplerPowerShellProfiles();
+end;
+
 function ExtractExecutablePath(CommandLine: string): string;
 var
   QuotePos: Integer;

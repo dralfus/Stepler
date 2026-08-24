@@ -2,7 +2,14 @@
 
 Задачи реализуют поэтапное снижение задержки P/CP до целевых
 `p50 <= 300 ms` и `p95 <= 600 ms` без ослабления проверок корректности.
-Источник требований: `docs/pcp_latency_optimization_spec_ru.md`.
+Источник требований и единственный актуальный статус: `docs/pcp_latency_optimization_spec_ru.md`.
+
+## Текущий frontier
+
+T01-T03 реализованы. Перед запуском любой runtime-оптимизации T04-T13 нужно
+собрать labeled snapshot для конкретной release-сборки и target surface.
+Неполные либо `unlabeled` данные не являются основанием менять timeout, retry
+или порядок adapter methods.
 
 Работать следует по **frontier**: можно начинать только задачу, все blockers
 которой уже завершены. Из-за чувствительности adapter layer рекомендуется
@@ -91,11 +98,15 @@ assessment в `blocked_by_destructive_outcomes`.
 
 ## T04. Ускорение WebKeyboard для FastBrowserEditor
 
+**Status:** profiles/contracts частично реализованы, но performance acceptance
+не подтвержден: нужен baseline текущей release-сборки.
+
 **What to build:** P/CP в Codex, JIRA и Confluence выполняются быстро на
 разрешенных FastBrowserEditor surfaces, при этом сохраняются clipboard, caret,
 focus, переносы строк, таблицы и точный replacement range.
 
-**Blocked by:** T03. Воспроизводимый baseline-отчет.
+**Blocked by:** labeled baseline текущей release-сборки для целевой
+FastBrowserEditor branch.
 
 - [ ] Из baseline выбрана конкретная FastBrowserEditor branch с подтвержденным bottleneck.
 - [ ] Retry запускается после наблюдаемого отрицательного результата, а не только после фиксированной паузы.
@@ -130,7 +141,8 @@ WhatsApp и обычных browser-like surfaces без переноса FastBro
 изолированный STA worker без запуска нового PowerShell process на каждую
 операцию, а результат совпадает с существующим проверенным capture path.
 
-**Blocked by:** T03. Воспроизводимый baseline-отчет.
+**Blocked by:** labeled baseline текущей release-сборки для целевой UIA
+surface.
 
 - [ ] Worker имеет request id, bounded deadline, health check и restart после crash/timeout.
 - [ ] Worker не выполняется на tray UI thread.
@@ -178,11 +190,15 @@ surfaces выполняют capture и replacement через изолирова
 
 ## T09. Ускорение PSReadLine bridge
 
+**Status:** telemetry готова; runtime-оптимизация не начата и ожидает
+отдельные labeled baseline для standalone и embedded PowerShell.
+
 **What to build:** локальный PowerShell и PowerShell внутри Codex быстро
 исправляют строку и переключают раскладку, не блокируя ввод повторными
 control-plane process calls.
 
-**Blocked by:** T03. Воспроизводимый baseline-отчет.
+**Blocked by:** labeled baseline текущей release-сборки для standalone и
+embedded PowerShell.
 
 - [ ] Correction plan, PSReadLine replacement и primary layout switch измеряются раздельно.
 - [ ] Повторные синхронные CLI-запуски удалены из critical path либо объединены в один persistent request.
@@ -234,7 +250,7 @@ control-plane process calls.
 **What to build:** Qwen Terminal получает отдельную достоверную оценку
 задержки, не смешанную с Stepler Qwen Input и Qwen Workspace.
 
-**Blocked by:** T03. Воспроизводимый baseline-отчет.
+**Blocked by:** labeled baseline текущей release-сборки для Qwen Terminal.
 
 - [ ] Qwen Terminal, Qwen Input и Qwen Workspace имеют разные surface/control-plane labels.
 - [ ] Собрано не меньше 30 warm и 5 cold Xterm операций.
@@ -266,7 +282,7 @@ control-plane process calls.
 задержки на всех затронутых surfaces, а команда получает единый отчет о
 скорости, корректности и известных platform floors.
 
-**Blocked by:** T05. Ускорение WebKeyboard для Telegram и standard browser surfaces; T08. UIA worker: DocumentText replacement; T09. Ускорение PSReadLine bridge; T11. WordCom worker: replacement и защита от зависаний; T13. Ускорение XtermKeyboardSelection.
+**Blocked by:** T05. Ускорение WebKeyboard для Telegram и standard browser surfaces; T08. UIA worker: DocumentText replacement; T09. Ускорение PSReadLine bridge; T11. WordCom worker: replacement и защита от зависаний; T13. Ускорение XtermKeyboardSelection; T15. Outlook-only безопасное переключение раскладки; T16. Глобальный concurrent layout coordinator.
 
 - [ ] Для каждого method/surface приведены before/after N, p50, p95, failure rate и retry rate.
 - [ ] Все resolver, probe, policy, replacement и clipboard contracts зелены.
@@ -276,4 +292,48 @@ control-plane process calls.
 - [ ] Не достигшие 300/600 ms methods имеют измеренный и объясненный безопасный platform floor.
 - [ ] Performance snapshot привязан к release build version.
 - [ ] Release checklist содержит результаты и оставшиеся ограничения.
+
+## T15. Outlook-only безопасное переключение раскладки
+
+**Status:** реализация готова к ручному Outlook smoke; автоматические контракты
+должны оставаться зелеными до закрытия задачи.
+
+**What to build:** Outlook 2016 с Zimbra Connector сохраняет left/right `Ctrl`
+как единый пользовательский механизм Stepler, но не получает прямой
+`WM_INPUTLANGCHANGEREQUEST`. Для `P/CP` системный layout dispatch начинается
+перед replacement, а verification идет параллельно с текстовой операцией.
+
+**Source:** `outlookhaging.md`, раздел «Актуальная спецификация: Outlook-only
+переключение раскладки» и dump
+`F:\distr\system\outlook_diag\OUTLOOK_hang_19712_20260824_105915.dmp`.
+
+- [x] Outlook классифицируется в отдельный system-hotkey transport.
+- [x] Outlook transport не имеет fallback к прямому window message.
+- [x] Non-Outlook applications сохраняют прежний layout transport.
+- [x] `P/CP` вызывает layout dispatch между preflight и replacement apply.
+- [x] Foreground, focus и Outlook process identity проверяются до dispatch и verification.
+- [x] Layout failure не отменяет успешную текстовую замену и имеет отдельный overlay result.
+- [ ] Перезапущен зависший Outlook после сохранения dump.
+- [ ] Outlook compose (`_WwG`): 30 повторов P, CP, left Ctrl и right Ctrl без hang.
+- [ ] Outlook search (`RICHEDIT60W`): 30 повторов P, CP, left Ctrl и right Ctrl без hang.
+- [ ] После P/CP target layout подтверждается без заметной задержки.
+- [ ] В `hotkey_signal.log` нет Outlook `layout_post ... WM_INPUTLANGCHANGEREQUEST` path.
+- [ ] При искусственной смене focus текст сохраняется, layout branch завершается fail-closed.
+
+## T16. Глобальный concurrent layout coordinator
+
+**Status:** реализация и автоматические контракты готовы; требуется ручной
+cross-surface smoke.
+
+**What to build:** после P/CP смена раскладки не выполняется отдельной
+последовательной операцией. Layout dispatch начинается после preflight, а
+verification идет параллельно replacement для всех поддерживаемых surfaces.
+
+- [x] Outlook сохраняет `system_hotkey`, остальные surfaces - `window_message`.
+- [x] После dispatch foreground повторно проверяется до replacement apply.
+- [x] Layout worker проверяет исходные foreground/focus/PID перед verify и retry.
+- [x] Layout failure не откатывает успешную текстовую замену и виден в overlay.
+- [x] Старый hotkey path `control action -> sleep -> window -> foreground` не вызывается после replacement.
+- [ ] Smoke: Notepad, Codex/ChatGPT, JIRA/Confluence, Sticky Notes, Word/Outlook.
+- [ ] Для каждой поверхности layout подтверждается не позже завершения операции либо возвращается явный partial result.
 

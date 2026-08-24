@@ -398,6 +398,7 @@ mod tests {
             range: Some(TextRange::new(10, 16)),
             expected_before_text: Some(String::from("k.,jdm")),
             replacement_text: Some(String::from("любовь")),
+            layout_result: Some(String::from("layout_switched")),
             resolver_trace: Some(String::from(
                 "surface=EditControl; final=operation_failed:x",
             )),
@@ -413,6 +414,7 @@ mod tests {
 
         assert!(json.contains("\"operation_id\":\"op-1\""));
         assert!(json.contains("\"timestamp_unix_ms\":1718000000123"));
+        assert!(json.contains("\"layout_result\":\"layout_switched\""));
         assert!(json.contains("\"trigger\":\"Pause\""));
         assert!(json.contains("\"range\":[10,16]"));
         assert!(
@@ -435,6 +437,7 @@ mod tests {
             range: None,
             expected_before_text: Some(String::from("Correction(NoTextToReplace)")),
             replacement_text: None,
+            layout_result: None,
             resolver_trace: None,
             clipboard_used: false,
             duration_ms: 42,
@@ -461,6 +464,7 @@ mod tests {
             range: None,
             expected_before_text: Some(String::from("unsupported_surface")),
             replacement_text: None,
+            layout_result: None,
             resolver_trace: None,
             clipboard_used: false,
             duration_ms: 0,

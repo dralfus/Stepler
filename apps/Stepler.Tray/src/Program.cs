@@ -957,6 +957,13 @@ internal sealed class SteplerTrayForm : Form
                 && durationElement.TryGetInt64(out var value)
                     ? value
                     : 0;
+            if (root.TryGetProperty("layout_result", out var layoutElement)
+                && layoutElement.ValueKind == JsonValueKind.String
+                && layoutElement.GetString()?.Contains("layout_failed_", StringComparison.Ordinal) == true)
+            {
+                text = $"{label} {duration} ms, язык не переключён";
+                return true;
+            }
             text = $"{label} {duration} ms";
             return true;
         }

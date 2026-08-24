@@ -2,7 +2,145 @@
 
 Рабочая заметка по расследованию зависаний Outlook UI после нажатий Stepler `P` / `CP`.
 
-Дата фиксации заметки: 2026-06-19.
+Дата фиксации заметки: 2026-06-19. Последнее обновление: 2026-08-24.
+
+## Актуальная спецификация: Outlook-only переключение раскладки
+
+### Problem Statement
+
+Outlook 2016 с Zimbra Connector периодически полностью зависает после `P`, `CP`
+или одиночного `Ctrl`. Последний случай `2026-08-24` локализован точнее прежних:
+две текстовые операции `Pause` через `word_com` завершились успешно, а Outlook
+завис позднее при обработке отдельной команды смены раскладки.
+
+Полный дамп зависшего процесса:
+
+```text
+F:\distr\system\outlook_diag\OUTLOOK_hang_19712_20260824_105915.dmp
+```
+
+Связанные отчеты CDB:
+
+```text
+F:\distr\system\outlook_diag\OUTLOOK_hang_19712_20260824_ui_thread.txt
+F:\distr\system\outlook_diag\OUTLOOK_hang_19712_20260824_all_threads.txt
+```
+
+В `10:59:15` Stepler отправил в focused Outlook Word editor `_WwG` с HWND
+`0x20D78` асинхронное `WM_INPUTLANGCHANGEREQUEST` (`0x0050`) с HKL
+`0x04190419`. Stepler записал `result=ok`, потому что `PostMessageW` принял
+сообщение. Дамп показывает, что UI thread Outlook `4168` затем завис в
+`win32u!NtUserMessageCall` при обработке именно этого сообщения:
+
+```text
+rcx/r10 = 0x20D78
+rdx     = 0x50
+r9      = 0x04190419
+```
+
+Следовательно, успешный `PostMessageW` означает только доставку в очередь и не
+является подтверждением безопасной смены раскладки. Текущий Outlook-specific
+`post_outlook_layout_change` не устраняет зависание, а лишь отделяет его по
+времени от операции Stepler.
+
+### Solution
+
+Для Outlook вводится отдельный транспорт смены раскладки. Он обязан:
+
+- распознаваться только для процесса `OUTLOOK`/класса `rctrl_renwnd32`;
+- работать только при editable focus (`_WwG`, `Edit`, `RichEdit*`);
+- не вызывать `SendMessageTimeoutW`, `PostMessageW` или иной прямой transport
+  `WM_INPUTLANGCHANGEREQUEST` в Outlook HWND;
+- не иметь fallback к общему `switch_window_layout` для Outlook;
+- перед действием и перед подтверждением проверять неизменность foreground HWND,
+  focused HWND и process identity;
+- считать успехом только наблюдаемую целевую раскладку focused thread, а не факт
+  отправки input/message;
+- иметь жесткий короткий deadline и завершаться fail-closed;
+- писать отдельные события `outlook_layout_*` с transport, target layout,
+  elapsed time и результатом проверки.
+
+Общий transport смены раскладки для остальных приложений не меняется.
+
+Пользовательский механизм остается единым во всем Stepler: левый `Ctrl`
+переключает на русский, правый `Ctrl` - на английский. Для Outlook меняется
+только внутренний transport: Stepler передает переключение системному механизму
+выбора языка через `SendInput`, не посылая layout message непосредственно в
+Outlook HWND.
+
+Для `P`/`CP` layout dispatch во всех поддерживаемых приложениях начинается
+после построения correction plan и preflight, непосредственно перед apply.
+Проверка целевой HKL идет параллельно с replacement. Обе ветки используют один
+snapshot process/foreground/focus; изменение snapshot прекращает layout-ветку и
+повторная проверка foreground перед apply запрещает замену в другом контроле.
+Операция считается полностью завершенной только после окончания текстовой
+ветки и проверки layout-ветки.
+
+Глобальным является только порядок `dispatch -> apply || verify`. Transport
+остается surface-specific: Outlook использует системный hotkey, остальные
+приложения сохраняют свой window-message transport.
+
+### User Stories
+
+- Как пользователь Outlook, я хочу после `P`/`CP` сразу продолжать ввод в
+  раскладке исправленного текста.
+- Как пользователь Outlook с Zimbra Connector, я не хочу, чтобы смена раскладки
+  Stepler блокировала UI thread Outlook.
+- Как пользователь остальных приложений, я хочу сохранить прежний способ и
+  скорость переключения раскладки без Outlook-specific изменений.
+- Как диагност, я хочу отличать принятую команду от подтвержденной смены
+  раскладки и видеть точную причину fail-closed результата.
+
+### Implementation Decisions
+
+- Outlook определяется до выбора transport, а не внутри общего fallback.
+- Прямой `WM_INPUTLANGCHANGEREQUEST` для Outlook запрещен контрактом.
+- Текстовый `WordCom`/`Win32EditMessages` transport не смешивается с transport
+  смены раскладки.
+- Outlook layout transport не должен жить в COM worker: зависание связано с
+  UI message loop, а не с временем жизни COM worker.
+- Zimbra Connector не обновляется и не удаляется в рамках решения.
+- Пользователь не получает новую hotkey: остаются только left/right `Ctrl`.
+- Outlook-only transport использует системное переключение языка через
+  `SendInput`; другие приложения сохраняют прежний message-based transport.
+- Если target layout не подтвержден до deadline, текстовая замена сохраняется,
+  повторный опасный fallback не запускается, а overlay показывает
+  `текст исправлен, язык не переключён`.
+- Layout dispatch и apply во всех поддерживаемых приложениях запускаются как
+  две координированные ветки: dispatch происходит перед apply, verification
+  продолжается параллельно.
+
+### Testing Decisions
+
+- Unit: Outlook classification выбирает только Outlook transport.
+- Unit: Outlook transport никогда не вызывает общий direct-message fallback.
+- Unit: non-editable Outlook focus завершается fail-closed без input/message.
+- Unit: foreground/focus change до подтверждения отменяет операцию.
+- Contract: Word, Notepad, браузеры, PowerShell и другие non-Outlook surfaces
+  сохраняют прежний layout transport.
+- Manual smoke: Outlook search (`RICHEDIT60W`) и compose (`_WwG`), отдельно
+  `P`, `CP`, одиночные left/right `Ctrl`, минимум 30 повторов для каждого пути.
+- Acceptance: ни одного `OUTLOOK.EXE (Не отвечает)`; target layout подтвержден
+  не позже завершения P/CP; соседний текст, caret и focus сохранены.
+- Hang diagnostics: при повторении сначала снимается full dump, затем Outlook
+  можно перезапустить; `PostMessageW result=ok` не принимается за verification.
+
+### Out of Scope
+
+- Обновление или замена Zimbra Connector.
+- Изменение layout transport для приложений, не относящихся к Outlook.
+- Полный перенос `WordCom` в worker в рамках этого узкого исправления.
+- Постоянный демон, автоматически создающий большие full dump без явного
+  диагностического режима и лимитов хранения.
+
+### Further Notes
+
+- Загруженные Zimbra DLL присутствуют в дампе, но просмотренные Zimbra threads
+  находились в ожидании. Дамп не доказывает, что блокировку создал Zimbra.
+- Непосредственный триггер последнего зависания доказан: обработка Outlook UI
+  thread сообщения смены раскладки, отправленного Stepler.
+- Исторические гипотезы и предыдущие эксперименты сохранены ниже; при конфликте
+  эта спецификация имеет приоритет.
 
 ## Краткий вывод
 

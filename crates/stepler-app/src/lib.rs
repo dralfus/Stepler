@@ -106,6 +106,17 @@ where
         &mut self,
         mode: CorrectionMode,
     ) -> Result<OperationOutcome, OperationError> {
+        self.handle_hotkey_with_pre_apply(mode, |_, _| {})
+    }
+
+    pub fn handle_hotkey_with_pre_apply<P>(
+        &mut self,
+        mode: CorrectionMode,
+        pre_apply: P,
+    ) -> Result<OperationOutcome, OperationError>
+    where
+        P: FnOnce(&TextContext, &ReplacementPlan),
+    {
         self.next_operation_number += 1;
         let operation_id = format!("op-{}", self.next_operation_number);
         let mut transaction = Transaction::new(operation_id.clone(), mode);
@@ -123,18 +134,26 @@ where
             .try_acquire(control_key.clone())
             .map_err(OperationError::Transaction)?;
 
-        let result =
-            self.handle_acquired_operation(&mut transaction, mode, &foreground_before.key());
+        let result = self.handle_acquired_operation(
+            &mut transaction,
+            mode,
+            &foreground_before.key(),
+            pre_apply,
+        );
         self.gate.release(&control_key);
         result
     }
 
-    fn handle_acquired_operation(
+    fn handle_acquired_operation<P>(
         &self,
         transaction: &mut Transaction,
         mode: CorrectionMode,
         expected_control_key: &str,
-    ) -> Result<OperationOutcome, OperationError> {
+        pre_apply: P,
+    ) -> Result<OperationOutcome, OperationError>
+    where
+        P: FnOnce(&TextContext, &ReplacementPlan),
+    {
         let context = self
             .context_provider
             .text_context()
@@ -169,6 +188,15 @@ where
                     .and_then(|clipboard| clipboard.capture().ok())
             })
             .flatten();
+        pre_apply(&context, &plan);
+        let foreground_after_pre_apply = self
+            .foreground
+            .foreground_control()
+            .map_err(OperationError::Platform)?;
+        if foreground_after_pre_apply.key() != expected_control_key {
+            transaction.fail();
+            return Err(OperationError::ForegroundChanged);
+        }
         let apply_result = match self.replacer.apply_replacement(&context, &plan) {
             Ok(result) => result,
             Err(error) => {
@@ -577,5 +605,78 @@ mod tests {
         let err = runner.handle_hotkey(CorrectionMode::Pause).unwrap_err();
 
         assert_eq!(err, OperationError::ForegroundChanged);
+    }
+
+    #[test]
+    fn runner_calls_pre_apply_after_preflight_and_before_replacement() {
+        struct OrderedReplacer<'a> {
+            order: &'a RefCell<Vec<&'static str>>,
+        }
+
+        impl TextReplacer for OrderedReplacer<'_> {
+            fn apply_replacement(
+                &self,
+                _context: &TextContext,
+                plan: &ReplacementPlan,
+            ) -> Result<ApplyReplacementResult, PlatformError> {
+                self.order.borrow_mut().push("apply");
+                Ok(ApplyReplacementResult {
+                    applied: true,
+                    actual_before_text: Some(plan.expected_before_text.clone()),
+                    actual_after_text: Some(plan.replacement_text.clone()),
+                    method: String::from("ordered"),
+                    retry_count: 0,
+                    timings: Vec::new(),
+                })
+            }
+        }
+
+        let order = RefCell::new(Vec::new());
+        let foreground = FakeForeground {
+            controls: vec![control()],
+        };
+        let context_provider = FakeContextProvider;
+        let replacer = OrderedReplacer { order: &order };
+        let mut runner = OperationRunner::new(&foreground, &context_provider, &replacer);
+
+        runner
+            .handle_hotkey_with_pre_apply(CorrectionMode::Pause, |_, _| {
+                order.borrow_mut().push("pre_apply");
+            })
+            .unwrap();
+
+        assert_eq!(&*order.borrow(), &["pre_apply", "apply"]);
+    }
+
+    #[test]
+    fn runner_does_not_apply_if_pre_apply_changes_foreground() {
+        struct ForegroundSequence {
+            calls: RefCell<usize>,
+        }
+
+        impl ForegroundProvider for ForegroundSequence {
+            fn foreground_control(&self) -> Result<ForegroundControl, PlatformError> {
+                let mut calls = self.calls.borrow_mut();
+                *calls += 1;
+                let mut value = control();
+                if *calls >= 3 {
+                    value.window_id = String::from("changed-window");
+                }
+                Ok(value)
+            }
+        }
+
+        let foreground = ForegroundSequence {
+            calls: RefCell::new(0),
+        };
+        let context_provider = FakeContextProvider;
+        let replacer = FakeReplacer;
+        let mut runner = OperationRunner::new(&foreground, &context_provider, &replacer);
+
+        let error = runner
+            .handle_hotkey_with_pre_apply(CorrectionMode::Pause, |_, _| {})
+            .unwrap_err();
+
+        assert_eq!(error, OperationError::ForegroundChanged);
     }
 }

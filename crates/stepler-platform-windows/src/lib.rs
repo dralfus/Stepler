@@ -1817,7 +1817,7 @@ impl KeyboardControlHookState {
 
     fn layout_control_debounce_allows(last_at: Option<Instant>) -> bool {
         last_at
-            .map(|last_at| last_at.elapsed() >= Duration::from_millis(650))
+            .map(|last_at| last_at.elapsed() >= Duration::from_millis(250))
             .unwrap_or(true)
     }
 

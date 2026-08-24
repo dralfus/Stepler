@@ -38,6 +38,20 @@ pub(super) fn send_stepler_control_key(vk: u32) -> Result<(), PlatformError> {
 }
 
 #[cfg(windows)]
+pub(super) fn send_system_layout_next() -> Result<(), PlatformError> {
+    release_modifier_keys();
+    let events = [
+        KeyboardInputEvent::new(VK_LWIN, false, KeyboardInputMode::VirtualKey),
+        KeyboardInputEvent::new(VK_SPACE, false, KeyboardInputMode::VirtualKey),
+        KeyboardInputEvent::new(VK_SPACE, true, KeyboardInputMode::VirtualKey),
+        KeyboardInputEvent::new(VK_LWIN, true, KeyboardInputMode::VirtualKey),
+    ];
+    send_keyboard_input(&events)
+        .then_some(())
+        .ok_or(PlatformError::Unsupported)
+}
+
+#[cfg(windows)]
 pub(super) fn send_key_chord(modifiers: &[u32], key: u32) {
     send_key_chord_with_mode(modifiers, key, KeyboardInputMode::ScanCode);
 }

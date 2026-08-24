@@ -709,18 +709,38 @@ fn handle_hotkey_event<F, C, R, B>(
     let started = Instant::now();
     set_active_correction_mode(mode);
     release_modifier_keys();
-    let result = runner.handle_hotkey(mode);
+    let pending_layout = RefCell::new(None);
+    let pre_apply_layout_result = RefCell::new(None);
+    let result = runner.handle_hotkey_with_pre_apply(mode, |context, plan| {
+        let Some(layout) =
+            desired_layout_after_replacement(&plan.expected_before_text, &plan.replacement_text)
+        else {
+            return;
+        };
+        let action = keyboard_action_for_layout(layout);
+        let hwnd_hint = layout_hwnd_hint(&context.window_id, &context.control_id);
+        match layout_switcher.begin_layout_action(action, hwnd_hint) {
+            Ok(pending) => {
+                *pending_layout.borrow_mut() = Some(std::thread::spawn(move || pending.complete()));
+            }
+            Err(error) => {
+                *pre_apply_layout_result.borrow_mut() = Some(format!("layout_failed_{error:?}"));
+            }
+        }
+    });
     release_modifier_keys();
 
     match &result {
         Ok(outcome) => {
-            let layout_result = switch_layout_after_replacement(
-                layout_switcher,
-                &outcome.plan.expected_before_text,
-                &outcome.plan.replacement_text,
-                &outcome.context,
-                layout_hwnd_hint(&outcome.context.window_id, &outcome.context.control_id),
-            );
+            let layout_result = if let Some(layout_thread) = pending_layout.borrow_mut().take() {
+                Some(match layout_thread.join() {
+                    Ok(Ok(())) => String::from("layout_switched"),
+                    Ok(Err(error)) => format!("layout_failed_{error:?}"),
+                    Err(_) => String::from("layout_failed_worker_panicked"),
+                })
+            } else {
+                pre_apply_layout_result.borrow_mut().take()
+            };
             if let Some(layout_result) = &layout_result {
                 eprintln!("layout after correction: {layout_result}");
             }
@@ -740,6 +760,14 @@ fn handle_hotkey_event<F, C, R, B>(
                     );
                 }
             }
+            let operation_metrics = if layout_result.is_some() {
+                OperationMetrics {
+                    duration_ms: started.elapsed().as_millis(),
+                    timings: outcome.metrics.timings.clone(),
+                }
+            } else {
+                outcome.metrics.clone()
+            };
             let event = OperationLogEvent {
                 operation_id: outcome.operation_id.clone(),
                 timestamp_unix_ms: timestamp_unix_ms(),
@@ -751,10 +779,11 @@ fn handle_hotkey_event<F, C, R, B>(
                 range: Some(outcome.plan.range),
                 expected_before_text: Some(log_preview(&outcome.plan.expected_before_text, 80)),
                 replacement_text: Some(log_preview(&outcome.plan.replacement_text, 80)),
+                layout_result: layout_result.clone(),
                 resolver_trace: None,
                 clipboard_used: false,
-                duration_ms: outcome.metrics.duration_ms,
-                timings: outcome.metrics.timings.clone(),
+                duration_ms: operation_metrics.duration_ms,
+                timings: operation_metrics.timings.clone(),
             };
             append_log(log_path, &event.to_json_line());
             append_performance_event(
@@ -768,12 +797,15 @@ fn handle_hotkey_event<F, C, R, B>(
                 Some(outcome.apply_result.method.as_str()),
                 outcome.apply_result.retry_count,
                 &outcome.apply_result.timings,
-                Some(&outcome.metrics),
+                Some(&operation_metrics),
                 outcome.clipboard_guard.is_some(),
             );
-            eprintln!("{mode:?}: applied in {}ms", outcome.metrics.duration_ms);
+            eprintln!("{mode:?}: applied in {}ms", operation_metrics.duration_ms);
         }
         Err(error) => {
+            if let Some(layout_thread) = pending_layout.borrow_mut().take() {
+                let _ = layout_thread.join();
+            }
             if matches!(try_forward_embedded_terminal_hotkey(mode), Ok(true)) {
                 eprintln!("{mode:?}: forwarded to embedded terminal PSReadLine");
                 let event = OperationLogEvent {
@@ -789,6 +821,7 @@ fn handle_hotkey_event<F, C, R, B>(
                         "forwarded_to_embedded_terminal_psreadline",
                     )),
                     replacement_text: None,
+                    layout_result: None,
                     resolver_trace: None,
                     clipboard_used: false,
                     duration_ms: started.elapsed().as_millis(),
@@ -820,6 +853,7 @@ fn handle_hotkey_event<F, C, R, B>(
                 range: None,
                 expected_before_text: Some(error_text),
                 replacement_text: None,
+                layout_result: None,
                 resolver_trace,
                 clipboard_used: false,
                 duration_ms: started.elapsed().as_millis(),
@@ -871,6 +905,7 @@ fn log_hotkey_received(log_path: &std::path::Path, mode: CorrectionMode) {
         range: None,
         expected_before_text: Some(String::from("hotkey_received")),
         replacement_text: None,
+        layout_result: None,
         resolver_trace: None,
         clipboard_used: false,
         duration_ms: 0,
@@ -896,6 +931,7 @@ fn log_hotkey_unsupported(
         range: None,
         expected_before_text: Some(String::from(reason)),
         replacement_text: None,
+        layout_result: None,
         resolver_trace: None,
         clipboard_used: false,
         duration_ms: 0,
@@ -1173,10 +1209,7 @@ fn switch_layout_after_replacement(
         return Some(format!("skipped_for_{}", context.app_id));
     }
 
-    let action = match layout {
-        DesiredLayout::Russian => KeyboardControlAction::SwitchToRussian,
-        DesiredLayout::English => KeyboardControlAction::SwitchToEnglish,
-    };
+    let action = keyboard_action_for_layout(layout);
     let control_result = request_keyboard_control_action(action);
     std::thread::sleep(Duration::from_millis(20));
 
@@ -1207,6 +1240,13 @@ fn switch_layout_after_replacement(
         return Some(format!("switch_failed_{error:?}"));
     }
     Some(format!("switch_failed_{layout:?}"))
+}
+
+fn keyboard_action_for_layout(layout: DesiredLayout) -> KeyboardControlAction {
+    match layout {
+        DesiredLayout::Russian => KeyboardControlAction::SwitchToRussian,
+        DesiredLayout::English => KeyboardControlAction::SwitchToEnglish,
+    }
 }
 
 fn should_skip_layout_after_replacement(context: &stepler_core::TextContext) -> bool {

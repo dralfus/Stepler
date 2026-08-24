@@ -1931,6 +1931,18 @@ fn keyboard_control_state_ignores_orphan_ctrl_up() {
 }
 
 #[test]
+fn keyboard_control_state_accepts_plain_ctrl_after_short_human_pause() {
+    let mut state = KeyboardControlHookState::default();
+    state.last_layout_control_action_at = Some(Instant::now() - Duration::from_millis(300));
+
+    assert_eq!(state.handle_key(VK_LCONTROL, true, false), None);
+    assert_eq!(
+        state.handle_key(VK_LCONTROL, false, true),
+        Some(KeyboardControlAction::SwitchToRussian)
+    );
+}
+
+#[test]
 fn keyboard_control_state_ignores_layout_controls_during_win_combo() {
     let mut state = KeyboardControlHookState::default();
 

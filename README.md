@@ -131,20 +131,23 @@ Risky/fallback методы по умолчанию не должны включ
 
 Это информационный список ручных проверок, а не обещание полной поддержки всех версий приложений.
 
-| Приложение/поверхность | Проверенный сценарий | Method adapter | Наблюдаемое время |
-| --- | --- | --- | --- |
-| Notepad | `P`, `CP`, сохранение clipboard | `Win32EditMessages` | p50 ~18 ms, avg ~22 ms |
-| PowerShell / Windows Terminal, локальная сессия | `P`, `CP`, selection, переключение раскладки после конвертации | `PSReadLine` | обычно быстрее web/Word; отдельные hotkey-forward события ~426 ms |
-| PowerShell / Windows Terminal, внутри запущен SSH | `P`/`CP` работают только после установки remote helper на Linux host и opt-in на Windows клиенте | `SshTerminal` / Bash readline helper | зависит от SSH latency; обычно сравнимо с локальным readline |
-| Qwen CLI / terminal TUI в Windows Terminal | безопасное подавление `P`/`CP`; side-channel submit через `--input-file`; уже набранный prompt buffer не читается | `TerminalApp` policy + Qwen `--input-file` | `TerminalClipboardShortcut` и `Ctrl+Shift+C` запрещены, потому что Qwen воспринимает их как interrupt |
-| Microsoft Word desktop | `P`, `CP`, выделение, диапазон слева от курсора | `WordCom` | p50 ~2266 ms, avg ~2188 ms |
-| Microsoft Outlook desktop compose | WordEditor в письме, ожидаемый путь поддержки | `WordCom` через Outlook WordEditor | p50 ~2266 ms, avg ~2188 ms |
-| Windows Settings / Feedback Hub / WPF TextBox fixture | caret-aware замена в editable UIA поле | `UIAutomationEditableText` / `UIAutomationText` | p50 ~1304 ms, avg ~1324 ms |
-| Confluence / JIRA в Chrome/Firefox | выделенный текст в web editor; no-selection только если UIA проходит strict caret preflight | `UIAutomationDocumentText` / `WebKeyboardSelection` | `UIAutomationDocumentText`: p50 ~1114 ms, avg ~1653 ms; `WebKeyboardSelection`: p50 ~603 ms, avg ~842 ms |
-| Codex / browser-like / Electron-like поля ввода | `P`, `CP` через keyboard selection path, если поле допускает безопасное выделение/проверку | `WebKeyboardSelection` | p50 ~603 ms, avg ~842 ms |
-| classic `cmd.exe` / `conhost.exe` | `P` частично работает; `CP` нестабилен, может очищать/портить текущую строку | `ConsoleBuffer` | p50 ~108 ms, avg ~285 ms, но нестабильно |
-| `cmd.exe` внутри Windows Terminal | основной безопасный adapter пока не реализован; terminal clipboard shortcut остается diagnostic/fallback | `TerminalClipboardShortcut` / policy | не считается поддержанным |
-| Browser-like / Electron-like окна без безопасного text API | fail-closed, risky методы только явно | policy + diagnostics | не применяется |
+| Приложение/поверхность | Проверенный сценарий | Method adapter |
+| --- | --- | --- |
+| Notepad | `P`, `CP`, сохранение clipboard | `Win32EditMessages` |
+| PowerShell / Windows Terminal, локальная сессия | `P`, `CP`, selection, переключение раскладки после конвертации | `PSReadLine` |
+| PowerShell / Windows Terminal, внутри запущен SSH | `P`/`CP` работают только после установки remote helper на Linux host и opt-in на Windows клиенте | `SshTerminal` / Bash readline helper |
+| Qwen CLI / terminal TUI в Windows Terminal | безопасное подавление `P`/`CP`; side-channel submit через `--input-file`; уже набранный prompt buffer не читается | `TerminalApp` policy + Qwen `--input-file` |
+| Microsoft Word desktop | `P`, `CP`, выделение, диапазон слева от курсора | `WordCom` |
+| Microsoft Outlook desktop compose | WordEditor в письме, ожидаемый путь поддержки | `WordCom` через Outlook WordEditor |
+| Windows Settings / Feedback Hub / WPF TextBox fixture | caret-aware замена в editable UIA поле | `UIAutomationEditableText` / `UIAutomationText` |
+| Confluence / JIRA в Chrome/Firefox | выделенный текст в web editor; no-selection только если UIA проходит strict caret preflight | `UIAutomationDocumentText` / `WebKeyboardSelection` |
+| Codex / browser-like / Electron-like поля ввода | `P`, `CP` через keyboard selection path, если поле допускает безопасное выделение/проверку | `WebKeyboardSelection` |
+| classic `cmd.exe` / `conhost.exe` | `P` частично работает; `CP` нестабилен, может очищать/портить текущую строку | `ConsoleBuffer` |
+| `cmd.exe` внутри Windows Terminal | основной безопасный adapter пока не реализован; terminal clipboard shortcut остается diagnostic/fallback | `TerminalClipboardShortcut` / policy |
+| Browser-like / Electron-like окна без безопасного text API | fail-closed, risky методы только явно | policy + diagnostics |
+
+Актуальный статус задержек, историческое сравнение и следующий безопасный шаг
+находятся в [`docs/pcp_latency_optimization_spec_ru.md`](docs/pcp_latency_optimization_spec_ru.md).
 
 Для web/document editor-ов no-selection режим включается только через `UIAutomationDocumentText` caret preflight: UIA должен вернуть стабильный collapsed range, Stepler выделяет ровно рассчитанный диапазон слева от caret и перед вводом проверяет совпадение текста.
 

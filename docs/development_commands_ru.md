@@ -215,6 +215,19 @@ $env:STEPLER_PERF_ENV = "home-win11"
 cargo run -p stepler-cli -- run-hotkeys
 ```
 
+Для обычного tray release переменная должна быть задана **до** его запуска.
+Ниже команда останавливает только Stepler из текущего `dist` и запускает его в
+той же PowerShell-сессии с нужной меткой:
+
+```powershell
+$env:STEPLER_PERF_ENV = "work-win11" # либо home-win11
+$dist = "F:\distr\system\Stepler\dist\Stepler"
+Get-Process Stepler, stepler-cli -ErrorAction SilentlyContinue |
+  Where-Object { $_.Path -like "$dist\\*" } |
+  Stop-Process -Force
+Start-Process "$dist\Stepler.exe" -WorkingDirectory $dist -WindowStyle Hidden
+```
+
 Если переменная не задана, event получает явную метку `unlabeled` и не должен
 попадать в сравнительный snapshot. Release build version читается из
 `BUILD_INFO.txt` рядом с `stepler-cli.exe`; для debug-запуска допускается
@@ -250,12 +263,26 @@ cold/warm, retry, ranges, lengths, outcome и phase timings. Существую�
 ### Воспроизводимый performance snapshot
 
 После сбора данных текущей release-сборкой создай отдельный snapshot, не
-перезаписывая накопительный JSONL:
+перезаписывая накопительный JSONL. Лог обычно содержит несколько сборок,
+поэтому сначала отфильтруй только текущую build/environment пару:
 
 ```powershell
-stepler-cli.exe performance-snapshot `
-  --input "$env:LOCALAPPDATA\Stepler\logs\stepler_hotkey_log.jsonl" `
-  --output ".\docs\performance_snapshot_home_1.0.20260809.json"
+$build = (Get-Content .\dist\Stepler\BUILD_INFO.txt |
+  Where-Object { $_ -like "BuildVersion:*" }).Split(":", 2)[1].Trim()
+$environment = "work-win11" # либо home-win11
+$source = "$env:LOCALAPPDATA\Stepler\logs\stepler_hotkey_log.jsonl"
+$input = Join-Path $env:TEMP "stepler-perf-$environment-$build.jsonl"
+$output = Join-Path $env:TEMP "stepler-perf-$environment-$build.snapshot.json"
+
+Get-Content $source | Where-Object {
+  $_ -match '"event":"performance_operation_v1"' -and
+  $_ -match ('"build_version":"' + [regex]::Escape($build) + '"') -and
+  $_ -match ('"environment_label":"' + [regex]::Escape($environment) + '"')
+} | Set-Content $input -Encoding utf8
+
+& .\dist\Stepler\stepler-cli.exe performance-snapshot `
+  --input $input `
+  --output $output
 ```
 
 Команда обрабатывает только строки `event=performance_operation_v1`, исключает
@@ -303,28 +330,30 @@ assessment в `blocked_by_destructive_outcomes`.
 }
 ```
 
-Расширенные поля для операций замены:
+Диагностические события могут содержать пользовательский текст и нужны только
+для расследования ошибки. Для сравнения скорости используй исключительно
+отдельные `performance_operation_v1` события: они не содержат текста.
+
+Минимальная форма performance-события:
 
 ```json
 {
+  "event": "performance_operation_v1",
   "operation_id": "...",
   "trigger": "Pause",
-  "app": "Notepad",
-  "provider": "Win32EditProvider",
-  "replacer": "Win32EditReplacer",
-  "state": "ReplacementApplied",
-  "range": [10, 16],
-  "expected_before_text": "k.,jdm",
-  "replacement_text": "любовь",
+  "outcome": "Completed",
+  "build_version": "1.0.20260821.t2216",
+  "environment_label": "work-win11",
+  "surface_kind": "BrowserEditor",
+  "context_method": "web_keyboard_selection",
+  "replacement_method": "web_keyboard_selection",
+  "algorithm_branch": "web-keyboard-line-selection",
   "clipboard_used": false,
-  "duration_ms": 24,
-  "timings_ms": {
-    "context": 4,
-    "plan": 1,
-    "preflight": 2,
-    "replace": 12,
-    "verify": 3,
-    "clipboard_restore": 0
-  }
+  "duration_ms": 264,
+  "timings_ms": [
+    {"phase":"ContextCaptured","elapsed_ms":80},
+    {"phase":"ReplacementApplied","elapsed_ms":64},
+    {"phase":"Verified","elapsed_ms":120}
+  ]
 }
 ```

@@ -607,7 +607,7 @@ fn post_layout_change_to_foreground_controls(
 mod tests {
     use super::{
         find_layout_by_language, find_layout_by_primary_language, is_outlook_editable_focus_class,
-        layout_transport_for_surface, LayoutTransport,
+        layout_transport_for_surface, LayoutTransport, PlatformError, WindowsLayoutSwitcher,
     };
 
     #[test]
@@ -634,6 +634,16 @@ mod tests {
     fn primary_language_match_does_not_treat_russian_as_english() {
         assert_eq!(find_layout_by_primary_language(&[0x0419], 0x0009), None);
         assert_eq!(find_layout_by_language(&[0x0419], 0x0419), Some(0x0419));
+    }
+
+    #[test]
+    fn missing_english_layout_fails_closed() {
+        let switcher = WindowsLayoutSwitcher::default();
+
+        assert!(matches!(
+            switcher.switch_to_english(),
+            Err(PlatformError::Unsupported)
+        ));
     }
 
     #[test]

@@ -64,7 +64,9 @@ pub(super) fn send_key_chord_virtual(modifiers: &[u32], key: u32) {
 #[cfg(windows)]
 pub(super) fn send_terminal_shortcut_with_english_layout(modifiers: &[u32], key: u32) {
     let original_layout = foreground_keyboard_layout().ok();
-    if let Some(english_layout) = find_layout_by_language(&keyboard_layouts(), LANG_ENGLISH) {
+    if let Some(english_layout) =
+        find_layout_by_primary_language(&keyboard_layouts(), LANG_ENGLISH_PRIMARY)
+    {
         let _ = switch_foreground_layout(english_layout);
         std::thread::sleep(Duration::from_millis(40));
     }

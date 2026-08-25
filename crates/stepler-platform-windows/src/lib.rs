@@ -41,7 +41,9 @@ use keyboard_input::*;
 
 mod layout_switcher;
 pub use layout_switcher::WindowsLayoutSwitcher;
-use layout_switcher::{find_layout_by_language, keyboard_layouts, switch_foreground_layout};
+use layout_switcher::{
+    find_layout_by_primary_language, keyboard_layouts, switch_foreground_layout,
+};
 
 #[cfg(windows)]
 mod powershell_scripts;
@@ -2702,7 +2704,7 @@ const VK_RWIN: u32 = 0x5C;
 const HOTKEY_ID_PAUSE: i32 = 1;
 #[cfg(windows)]
 const HOTKEY_ID_SCROLL_LOCK: i32 = 2;
-const LANG_ENGLISH: u16 = 0x0409;
+const LANG_ENGLISH_PRIMARY: u16 = 0x0009;
 const LANG_RUSSIAN: u16 = 0x0419;
 const VK_LCONTROL: u32 = 0xA2;
 const VK_RCONTROL: u32 = 0xA3;

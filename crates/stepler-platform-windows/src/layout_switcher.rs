@@ -69,7 +69,7 @@ impl WindowsLayoutSwitcher {
     pub fn reload_layouts(&mut self) {
         self.layouts = keyboard_layouts();
         self.russian_layout = find_layout_by_language(&self.layouts, LANG_RUSSIAN);
-        self.english_layout = find_layout_by_language(&self.layouts, LANG_ENGLISH);
+        self.english_layout = find_layout_by_primary_language(&self.layouts, LANG_ENGLISH_PRIMARY);
         self.ordered_layouts.clear();
         if let Some(layout) = self.russian_layout {
             self.ordered_layouts.push(layout);
@@ -192,6 +192,16 @@ pub(super) fn find_layout_by_language(layouts: &[isize], language_id: u16) -> Op
         .iter()
         .copied()
         .find(|layout| ((*layout as u32) & 0xFFFF) as u16 == language_id)
+}
+
+pub(super) fn find_layout_by_primary_language(
+    layouts: &[isize],
+    primary_language_id: u16,
+) -> Option<isize> {
+    layouts.iter().copied().find(|layout| {
+        let language_id = ((*layout as u32) & 0xFFFF) as u16;
+        language_id & 0x03FF == primary_language_id
+    })
 }
 
 #[cfg(windows)]
@@ -595,7 +605,36 @@ fn post_layout_change_to_foreground_controls(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_outlook_editable_focus_class, layout_transport_for_surface, LayoutTransport};
+    use super::{
+        find_layout_by_language, find_layout_by_primary_language, is_outlook_editable_focus_class,
+        layout_transport_for_surface, LayoutTransport,
+    };
+
+    #[test]
+    fn english_primary_language_matches_us_and_uk_variants() {
+        assert_eq!(
+            find_layout_by_primary_language(&[0x0419, 0x0809], 0x0009),
+            Some(0x0809)
+        );
+        assert_eq!(
+            find_layout_by_primary_language(&[0x0409, 0x0419], 0x0009),
+            Some(0x0409)
+        );
+    }
+
+    #[test]
+    fn primary_language_match_preserves_windows_order_for_multiple_english_variants() {
+        assert_eq!(
+            find_layout_by_primary_language(&[0x0C09, 0x0809, 0x0409], 0x0009),
+            Some(0x0C09)
+        );
+    }
+
+    #[test]
+    fn primary_language_match_does_not_treat_russian_as_english() {
+        assert_eq!(find_layout_by_primary_language(&[0x0419], 0x0009), None);
+        assert_eq!(find_layout_by_language(&[0x0419], 0x0419), Some(0x0419));
+    }
 
     #[test]
     fn outlook_layout_surface_is_recognized() {

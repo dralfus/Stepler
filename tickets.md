@@ -337,3 +337,27 @@ verification идет параллельно replacement для всех под�
 - [ ] Smoke: Notepad, Codex/ChatGPT, JIRA/Confluence, Sticky Notes, Word/Outlook.
 - [ ] Для каждой поверхности layout подтверждается не позже завершения операции либо возвращается явный partial result.
 
+## T17. Поддержка вариантов английской раскладки `en-*`
+
+**Status:** ready-for-agent. Спецификация: `docs/english_layout_variants_spec_ru.md`.
+
+**What to build:** Stepler находит установленную английскую раскладку по
+семейству `en-*`, включая `en-US` и `en-GB`, и одинаково использует её для
+обычного переключения раскладки и terminal clipboard fallback. При отсутствии
+английской раскладки операция завершается безопасным `Unsupported`.
+
+**Blocked by:** None — can start immediately.
+
+- [ ] `en-US` (`0x0409`) продолжает распознаваться.
+- [ ] `en-GB` (`0x0809`) распознаётся как английская целевая раскладка.
+- [ ] Другие варианты `en-*` распознаются по primary language bits Windows
+  LANGID.
+- [ ] Русская раскладка (`0x0419`) не выбирается как английская.
+- [ ] При нескольких английских раскладках выбор детерминирован и следует
+  порядку Windows.
+- [ ] Обычный layout switcher и terminal clipboard fallback используют общий
+  resolver.
+- [ ] При отсутствии `en-*` сохраняется `Unsupported` без выбора другой
+  раскладки.
+- [ ] Добавлены unit-тесты и выполнен ручной smoke с установленной `en-GB`.
+

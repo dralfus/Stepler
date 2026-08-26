@@ -400,7 +400,10 @@ impl WebKeyboardSelectionMethod {
             }
 
             if scrolllock_mode {
-                if allow_captured_left {
+                let prefer_line_context = web_keyboard_prefers_line_context_for_scrolllock(
+                    foreground_surface_kind(foreground, app_class, focused_class),
+                );
+                if !prefer_line_context && allow_captured_left {
                     select_web_left_context();
                     let copied_raw = copy_web_keyboard_selected_text(
                         &snapshot,
@@ -451,13 +454,17 @@ impl WebKeyboardSelectionMethod {
                             "web_keyboard_capture branch=scrolllock_left skipped=no_plan",
                         );
                     }
-                } else {
+                } else if !prefer_line_context {
                     append_hotkey_signal_log(
                         "web_keyboard_capture branch=scrolllock_left skipped=title_policy",
                     );
+                } else {
+                    append_hotkey_signal_log(
+                        "web_keyboard_capture branch=scrolllock_left skipped=surface_line_contract",
+                    );
                 }
 
-                if web_ctrl_a_fallback_enabled() {
+                if !prefer_line_context && web_ctrl_a_fallback_enabled() {
                     let snapshot =
                         capture_web_keyboard_clipboard(fast_profile, timing.clipboard_timeout)?;
                     select_web_all_context();
@@ -1689,6 +1696,11 @@ fn is_sticky_notes_context(context: &TextContext) -> bool {
     context
         .app_id
         .starts_with("ApplicationFrameWindow/Windows.UI.Input.InputSite.WindowClass")
+}
+
+#[cfg(windows)]
+pub(super) fn web_keyboard_prefers_line_context_for_scrolllock(surface_kind: SurfaceKind) -> bool {
+    surface_kind == SurfaceKind::StickyNotes
 }
 
 #[cfg(windows)]

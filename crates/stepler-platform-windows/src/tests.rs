@@ -990,6 +990,17 @@ fn web_keyboard_captured_left_apply_allows_wrapped_list_tail_selection() {
 
 #[cfg(windows)]
 #[test]
+fn sticky_notes_scrolllock_prefers_current_line_selection() {
+    assert!(web_keyboard_prefers_line_context_for_scrolllock(
+        SurfaceKind::StickyNotes
+    ));
+    assert!(!web_keyboard_prefers_line_context_for_scrolllock(
+        SurfaceKind::BrowserEditor
+    ));
+}
+
+#[cfg(windows)]
+#[test]
 fn web_keyboard_precise_range_apply_is_confluence_line_only() {
     assert!(web_keyboard_uses_precise_range_apply(
         "Security features - Chips - GS-Labs Wiki — Mozilla Firefox",
@@ -1234,6 +1245,31 @@ fn web_keyboard_sticky_line_replans_expanded_selection() {
             "Когда зависнет сноваб главное не перезапускать Outlook сразу.  "
         )
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_sticky_line_replacement_preserves_following_line_break() {
+    let context = TextContext {
+        app_id: String::from("ApplicationFrameWindow/Windows.UI.Input.InputSite.WindowClass"),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("web-keyboard-line-selection:hwnd:2"),
+        text_snapshot: String::from("Ddtltybt d  gigachat"),
+        caret_range: TextRange::caret("Ddtltybt d  gigachat".len()),
+        selection_range: None,
+        capabilities: Capabilities::default(),
+        telemetry: Default::default(),
+    };
+    let plan =
+        stepler_core::build_replacement_plan(&context, stepler_core::CorrectionMode::ScrollLock)
+            .unwrap();
+
+    let (replacement_text, actual_before_text) =
+        web_keyboard_sticky_line_replacement_text(&context, &plan, "Ddtltybt d  gigachat\r\n")
+            .unwrap();
+
+    assert_eq!(actual_before_text, "Ddtltybt d");
+    assert_eq!(replacement_text, "Введение в  gigachat\r\n");
 }
 
 #[cfg(windows)]

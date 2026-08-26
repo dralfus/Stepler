@@ -71,6 +71,21 @@ mod tests {
     }
 
     #[test]
+    fn pause_targets_mixed_layout_suffix_after_ascii_assignment() {
+        let text = "export NEXUS_FQDN=туч";
+        let context = TextContext::new(text).with_caret(TextRange::caret(text.len()));
+
+        let plan = build_replacement_plan(&context, CorrectionMode::Pause).unwrap();
+
+        assert_eq!(plan.expected_before_text, "туч");
+        assert_eq!(
+            plan.range,
+            TextRange::new("export NEXUS_FQDN=".len(), text.len())
+        );
+        assert_eq!(plan.replacement_text, "nex");
+    }
+
+    #[test]
     fn pause_does_not_cross_line_break_for_trailing_space_lookup() {
         let context = TextContext::new("k.,jdm\n").with_caret(TextRange::caret(7));
 

@@ -861,6 +861,56 @@ fn web_keyboard_captured_left_context_uses_dedicated_apply_path() {
 
 #[cfg(windows)]
 #[test]
+fn web_keyboard_selection_guard_is_scoped_to_chatgpt_chrome_surface() {
+    assert_eq!(
+        web_keyboard_selection_guard_result(
+            "ChatGPT",
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND",
+            Some(false),
+        ),
+        WebKeyboardSelectionGuardResult::RejectAsImplicit
+    );
+    assert_eq!(
+        web_keyboard_selection_guard_result(
+            "ChatGPT",
+            "Chrome_WidgetWin_1",
+            "Chrome_WidgetWin_1",
+            Some(true),
+        ),
+        WebKeyboardSelectionGuardResult::Accept
+    );
+    assert_eq!(
+        web_keyboard_selection_guard_result(
+            "ChatGPT",
+            "Chrome_WidgetWin_1",
+            "Chrome_WidgetWin_1",
+            None,
+        ),
+        WebKeyboardSelectionGuardResult::Accept
+    );
+    assert_eq!(
+        web_keyboard_selection_guard_result(
+            "ChatGPT",
+            "MozillaWindowClass",
+            "MozillaWindowClass",
+            Some(false),
+        ),
+        WebKeyboardSelectionGuardResult::Accept
+    );
+    assert_eq!(
+        web_keyboard_selection_guard_result(
+            "Codex",
+            "Chrome_WidgetWin_1",
+            "Chrome_WidgetWin_1",
+            Some(false),
+        ),
+        WebKeyboardSelectionGuardResult::Accept
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn web_keyboard_captured_left_title_policy_blocks_unverified_wiki_and_jira_apply() {
     assert!(!web_keyboard_allows_captured_left_for_title(
         "Security features - Chips - GS-Labs Wiki — Mozilla Firefox"
@@ -1078,6 +1128,29 @@ fn web_keyboard_captured_left_replans_expanded_preflight_selection() {
 
     assert_eq!(actual_before_text, "hf,jnftn");
     assert_eq!(replacement_text, "ну теперь то работает");
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_captured_left_pause_preserves_ascii_assignment_prefix() {
+    let text = "export NEXUS_FQDN=туч";
+    let context = TextContext {
+        app_id: String::from("Chrome_WidgetWin_1/Chrome_WidgetWin_1"),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("web-keyboard-captured-left-selection:hwnd:2"),
+        text_snapshot: text.to_owned(),
+        caret_range: TextRange::caret(text.len()),
+        selection_range: None,
+        capabilities: Capabilities::default(),
+        telemetry: Default::default(),
+    };
+    let plan = stepler_core::build_replacement_plan(&context, CorrectionMode::Pause).unwrap();
+
+    let (replacement_text, actual_before_text) =
+        web_keyboard_captured_left_replacement_text(&context, &plan, text).unwrap();
+
+    assert_eq!(actual_before_text, "туч");
+    assert_eq!(replacement_text, "export NEXUS_FQDN=nex");
 }
 
 #[cfg(windows)]

@@ -212,7 +212,36 @@ fn word_range_before_or_around_caret(text: &str, caret: usize) -> TextRange {
         }
     }
 
-    TextRange::new(start, end)
+    let range = TextRange::new(start, end);
+    mixed_layout_assignment_suffix_range(text, range).unwrap_or(range)
+}
+
+fn mixed_layout_assignment_suffix_range(text: &str, range: TextRange) -> Option<TextRange> {
+    let token = &text[range.start..range.end];
+    let mut suffix_start = token.len();
+
+    for (index, ch) in token.char_indices().rev() {
+        if is_russian_layout_letter(ch) {
+            suffix_start = index;
+        } else {
+            break;
+        }
+    }
+
+    if suffix_start == token.len() {
+        return None;
+    }
+
+    let prefix = &token[..suffix_start];
+    if !prefix.contains('=') || !prefix.chars().any(|ch| ch.is_ascii_alphabetic()) {
+        return None;
+    }
+
+    Some(TextRange::new(range.start + suffix_start, range.end))
+}
+
+fn is_russian_layout_letter(ch: char) -> bool {
+    matches!(ch, 'а'..='я' | 'А'..='Я' | 'ё' | 'Ё')
 }
 
 fn token_end_at_or_after_caret(text: &str, caret: usize) -> usize {

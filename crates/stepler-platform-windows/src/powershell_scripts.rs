@@ -975,3 +975,46 @@ try {
 'ok=0'
 'error=verify_failed'
 "#;
+
+#[cfg(windows)]
+pub(super) const UIA_SELECTION_STATE_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+
+function Get-Pattern($Element, $Pattern) {
+    try { return $Element.GetCurrentPattern($Pattern) } catch { return $null }
+}
+
+$element = [System.Windows.Automation.AutomationElement]::FocusedElement
+if ($null -eq $element) {
+    'ok=0'
+    'error=no_focused_element'
+    exit 0
+}
+
+$textPattern = Get-Pattern $element ([System.Windows.Automation.TextPattern]::Pattern)
+if ($null -eq $textPattern) {
+    'ok=0'
+    'error=no_text_pattern'
+    exit 0
+}
+
+try {
+    $selection = $textPattern.GetSelection()
+    $hasSelection = $false
+    if ($null -ne $selection) {
+        foreach ($range in $selection) {
+            if (-not [string]::IsNullOrEmpty([string]$range.GetText(-1))) {
+                $hasSelection = $true
+                break
+            }
+        }
+    }
+    'ok=1'
+    'selected=' + [int]$hasSelection
+} catch {
+    'ok=0'
+    'error=selection_read_failed'
+}
+"#;

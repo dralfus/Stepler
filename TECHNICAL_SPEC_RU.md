@@ -163,7 +163,11 @@ text, reason/confidence и `expected_before_text`.
 Для P приоритет имеет explicit selection. Без selection выбирается ближайший
 поддерживаемый layout-aware token перед caret; для некоторых filename/path-like
 сценариев разрешен sparse fallback только при наличии безопасного источника.
-P не выполняет широкую языковую реконструкцию всей строки.
+P не выполняет широкую языковую реконструкцию всей строки. Для смешанного
+токена присваивания вида `ASCII_NAME=русский_хвост` core сужает диапазон P до
+русского хвоста, если перед ним есть ASCII-префикс с `=`. Это сохраняет
+префикс переменной и исправляет только значение, например
+`export NEXUS_FQDN=туч` превращается в `export NEXUS_FQDN=nex`.
 
 Для CP:
 
@@ -233,6 +237,16 @@ adapter”. Method adapter отвечает только за способ ра�
 range before caret, замена selection, использование clipboard и risky status.
 Resolver не вызывает метод, если его capabilities не покрывают план.
 
+Для ChatGPT-поверхности в `Chrome_WidgetWin_1` перед попыткой прочитать
+clipboard-selected текст дополнительно проверяется состояние UIA
+`TextPattern` у focused element. Если UIA подтверждает отсутствие явного
+выделения, clipboard-selected ветка пропускается, чтобы случайное выделение,
+созданное Ctrl+Insert или самим web-контролом, не превратило P в замену всей
+строки. Подтвержденное явное выделение сохраняет обычный selected-path. Если
+UIA не может сообщить состояние выделения, сохраняется совместимый fallback
+web-пути; это ограничение диагностируется логами и не является доказательством
+явного выделения.
+
 ### 6. Фактическое сопоставление поверхностей
 
 | SurfaceKind | Предпочтительный путь | Ограничение |
@@ -274,6 +288,11 @@ fail-closed.
 Focus/caret restore является частью adapter contract. Нельзя считать операцию
 успешной только потому, что текст визуально изменился: target, expected text и
 итоговое состояние должны соответствовать контракту.
+
+В web keyboard captured-left ветке перед вставкой повторно выделяется ровно
+захваченный левый диапазон, replacement вводится через временный clipboard paste,
+а исходный clipboard snapshot восстанавливается после операции. Это не меняет
+семантику диапазона CP и не разрешает включать текст справа от caret.
 
 ### 8. Раскладка клавиатуры
 
@@ -387,7 +406,8 @@ punctuation и filename-like input; CP с mixed line, несколькими п�
 токенами, корректным prefix, caret внутри слова, selection и no-selection;
 границы `CR`, `LF`, `CRLF`, пустой строки и предыдущей строки; отсутствие
 изменений справа от caret; layout conversion и английские `en-*` варианты;
-CP dictionary exceptions; transaction state machine и operation gate.
+CP dictionary exceptions; смешанный ASCII assignment prefix; transaction state
+machine и operation gate.
 
 ### Resolver и policy contract tests
 
@@ -407,7 +427,11 @@ classification и resolver используют один target snapshot.
 verify, clipboard guard, focus/caret restore и no-partial-mutation. В Windows
 integration smoke используются реальные или fixture controls для Win32 edit,
 UIA editable/document, classic console, Windows Terminal, Word/Outlook,
-browser-like editor, Sticky Notes и Qwen input.
+browser-like editor, Sticky Notes и Qwen input. Для ChatGPT в
+`Chrome_WidgetWin_1` отдельно проверяются no-selection, explicit-selection и
+UIA-unavailable сценарии: первый не должен принимать ложный selected clipboard,
+второй должен сохранять selected-path, третий должен оставаться совместимым и
+диагностируемым.
 
 Для Outlook тесты включают Word editor, Outlook search и shell surfaces, а
 также проверку, что text replacement остается доступным при подавлении

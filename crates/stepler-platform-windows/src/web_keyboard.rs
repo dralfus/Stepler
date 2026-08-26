@@ -374,14 +374,36 @@ impl WebKeyboardSelectionMethod {
             let snapshot = capture_web_keyboard_clipboard(fast_profile, timing.clipboard_timeout)?;
             let scrolllock_mode = active_correction_mode_is_scrolllock();
 
-            let selected = copy_web_keyboard_selected_text(
-                &snapshot,
-                timing.selected_timeout,
-                fast_profile,
-                timing.clipboard_timeout,
-            )
-            .filter(|text| is_plausible_web_selected_text(text))
-            .filter(|text| !looks_like_hotkeyhandler_marker(text));
+            let selection_state = if web_keyboard_selection_guard_applies(
+                &foreground_title,
+                app_class,
+                focused_class,
+            ) {
+                uia_focused_element_has_selection()
+            } else {
+                None
+            };
+            let selected = if web_keyboard_selection_guard_result(
+                &foreground_title,
+                app_class,
+                focused_class,
+                selection_state,
+            ) == WebKeyboardSelectionGuardResult::RejectAsImplicit
+            {
+                append_hotkey_signal_log(
+                    "web_keyboard_capture selected_skipped reason=uia_no_selection",
+                );
+                None
+            } else {
+                copy_web_keyboard_selected_text(
+                    &snapshot,
+                    timing.selected_timeout,
+                    fast_profile,
+                    timing.clipboard_timeout,
+                )
+                .filter(|text| is_plausible_web_selected_text(text))
+                .filter(|text| !looks_like_hotkeyhandler_marker(text))
+            };
             if let Some(text) = selected {
                 append_hotkey_signal_log(&format!(
                     "web_keyboard_capture branch=selected len={}",
@@ -826,10 +848,14 @@ impl WebKeyboardSelectionMethod {
             };
 
             let _ = restore_clipboard_text_only(&snapshot);
-            std::thread::sleep(Duration::from_millis(20));
-            send_unicode_text(&replacement_text)?;
+            select_web_left_context();
+            std::thread::sleep(Duration::from_millis(25));
+            restore_clipboard(clipboard_snapshot_from_text(&replacement_text))?;
+            send_key_chord_virtual(&[VK_CONTROL], VK_V);
+            std::thread::sleep(Duration::from_millis(40));
+            let _ = restore_clipboard_text_only(&snapshot);
             append_hotkey_signal_log(&format!(
-                "web_keyboard_captured_left_sendinput expected_len={} replacement_len={}",
+                "web_keyboard_captured_left_paste expected_len={} replacement_len={}",
                 context.text_snapshot.len(),
                 replacement_text.len()
             ));
@@ -1423,6 +1449,39 @@ pub(super) fn web_keyboard_rocket_active_line_context(control_id: &str) -> bool 
 #[cfg(windows)]
 pub(super) fn web_keyboard_captured_left_context(control_id: &str) -> bool {
     control_id.starts_with("web-keyboard-captured-left-selection:")
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WebKeyboardSelectionGuardResult {
+    Accept,
+    RejectAsImplicit,
+}
+
+#[cfg(windows)]
+pub(super) fn web_keyboard_selection_guard_applies(
+    title: &str,
+    app_class: &str,
+    _focused_class: &str,
+) -> bool {
+    app_class.eq_ignore_ascii_case("Chrome_WidgetWin_1")
+        && title.to_ascii_lowercase().contains("chatgpt")
+}
+
+#[cfg(windows)]
+pub(super) fn web_keyboard_selection_guard_result(
+    title: &str,
+    app_class: &str,
+    focused_class: &str,
+    uia_selection: Option<bool>,
+) -> WebKeyboardSelectionGuardResult {
+    if web_keyboard_selection_guard_applies(title, app_class, focused_class)
+        && uia_selection == Some(false)
+    {
+        WebKeyboardSelectionGuardResult::RejectAsImplicit
+    } else {
+        WebKeyboardSelectionGuardResult::Accept
+    }
 }
 
 #[cfg(windows)]

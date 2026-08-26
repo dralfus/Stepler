@@ -463,6 +463,20 @@ fn capture_uia_text_context(
 }
 
 #[cfg(windows)]
+pub(super) fn uia_focused_element_has_selection() -> Option<bool> {
+    let output = run_powershell_script(UIA_SELECTION_STATE_SCRIPT, &[]).ok()?;
+    let fields = parse_key_value_lines(&output);
+    if fields.get("ok").map(String::as_str) != Some("1") {
+        return None;
+    }
+    match fields.get("selected").map(String::as_str) {
+        Some("1") => Some(true),
+        Some("0") => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
 fn apply_uia_text_replacement(
     context: &TextContext,
     plan: &ReplacementPlan,

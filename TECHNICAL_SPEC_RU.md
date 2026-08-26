@@ -1,301 +1,473 @@
-# Техническое задание на разработку HotkeyHandler
+# Stepler: спецификация текущей реализации
 
-## 1. Назначение
+Статус документа: as-built specification, то есть описание фактически
+реализованного поведения, архитектуры и ограничений.
 
-Разработать Windows-приложение HotkeyHandler для ускорения работы с текстом и раскладками клавиатуры.
+Дата сверки: 2026-08-26.
 
-Приложение должно работать в фоне, перехватывать заданные горячие клавиши, переключать раскладку, исправлять текст, набранный в неверной раскладке, и минимально вмешиваться в пользовательский буфер обмена.
+Эта спецификация описывает текущий Stepler по исходному коду, контрактным тестам и пользовательским
+сценариям, которые закреплены в проекте. Требование, которого нет в этой
+спецификации и нет в коде или тестах, не следует считать реализованным.
 
-## 2. Целевая платформа
+## Problem Statement
 
-- ОС: Windows 10/11.
-- Платформа разработки: любая технология, позволяющая реализовать стабильную работу с глобальными горячими клавишами, активным окном, раскладками клавиатуры и безопасной заменой текста в Windows.
-- UI: любой удобный desktop UI. Windows Forms допустим, но не является обязательным требованием.
-- Тип приложения: desktop utility, запускаемая в фоне и доступная из системного трея.
+Пользователь набирает текст в Windows-приложениях, иногда находясь в
+неправильной раскладке клавиатуры. У разных приложений разные модели текста:
+обычный Win32 edit control, Word object model, UI Automation, браузерный
+document surface, терминальный буфер или PSReadLine. Одна универсальная
+операция выделения и вставки приводит к потере фокуса, повреждению буфера
+обмена, удалению переносов строк, записи в соседний контрол или зависанию
+Office.
 
-## 3. Пользовательские сценарии
+Stepler должен:
 
-### 3.1 Исправление последнего слова
+- перехватывать P/CP и выбирать способ работы по фактам активной поверхности;
+- исправлять текст, набранный в неверной раскладке;
+- сохранять корректный текст, форматирование строки и положение каретки,
+  насколько это позволяет конкретный адаптер;
+- переключать раскладку независимо от текстовой операции;
+- отказываться от небезопасной операции, если поверхность не распознана или
+  предварительная проверка не подтверждает ожидаемый текст;
+- показывать раннюю индикацию нажатия и понятный результат операции;
+- не использовать Ctrl+C/Ctrl+Shift+C в терминальных TUI, где эти клавиши
+  могут завершить приложение;
+- оставаться диагностируемым при задержках, потере фокуса, несовместимом
+  контроле и частично поддержанном приложении.
 
-Пользователь набрал слово в неправильной раскладке, например:
+## Solution
+
+Stepler состоит из фонового Windows tray-приложения, hotkey runner, общего
+Rust-ядра коррекции, platform/resolver слоя, набора method adapters и
+отдельных PowerShell/Qwen/SSH мостов.
+
+Вход операции проходит через общий транзакционный pipeline:
 
 ```text
-k.,jdm
+HotkeyReceived
+  -> ContextCaptured
+  -> PlanBuilt
+  -> PreflightChecked
+  -> ReplacementApplied
+  -> Verified
+  -> Completed
 ```
 
-После нажатия `Pause` приложение должно заменить слово на:
+При ошибке операция завершается без подтвержденной замены. В логах сохраняются
+причина отказа и фактическая стадия. Текстовая операция и переключение
+раскладки являются связанными действиями одной операции, но транспорт текста
+и policy выбора адаптера остаются surface-specific.
 
-```text
-любовь
-```
+### Пользовательские режимы
 
-Если текст выделен, должна конвертироваться выделенная область.
+- `P` — `Pause`: прямое исправление выделения или слова/фрагмента перед
+  кареткой. Это режим с минимальным языковым анализом.
+- `CP` — `Ctrl+Pause`: `CorrectionMode::ScrollLock` во внутреннем API.
+  Внутреннее имя режима — `ScrollLock`; пользовательская клавиша — `Ctrl+Pause`.
+  При явном выделении преобразуется ровно выделение. Без выделения анализируется
+  текущая логическая строка от последнего `CR/LF` до каретки. Текст справа от
+  каретки и предыдущие строки не входят в диапазон.
+- `Left Ctrl` — явное переключение активного окна на русскую раскладку.
+- `Right Ctrl` — явное переключение активного окна на английскую раскладку.
+- `Menu` или разрешенный `Caps Lock` — переход на следующую раскладку.
+- `Insert` может быть переназначен в режим Backspace.
 
-### 3.2 Исправление ошибочного хвоста строки
+### Принцип выбора адаптера
 
-Пользователь набрал фразу, где часть слов введена в неверной раскладке:
+Классификатор возвращает `SurfaceKind`, confidence и evidence. Resolver по
+этому результату применяет `SurfacePolicy`, `ProbePlan` и контракт метода.
+Адаптер не определяет, является ли окно Rocket.Chat, JIRA или Confluence:
+адаптер предоставляет одну технику чтения/замены текста, а policy определяет,
+где техника разрешена.
 
-```text
-вальс поле long ghbdtn vbh
-```
+Для risky и clipboard-based методов используется явный allowlist поверхностей.
+Неизвестная поверхность обрабатывается консервативно: безопасные UIA методы
+могут быть проверены, а risky fallback не включается по умолчанию.
 
-После нажатия `Ctrl+Pause` приложение должно исправить ошибочные слова, не повреждая корректную часть строки.
+## User Stories
 
-### 3.3 Быстрое переключение раскладки
+1. Как пользователь Windows, я хочу нажать P на выделенном тексте, чтобы преобразовать ровно выделенную область.
+2. Как пользователь Windows, я хочу нажать P без выделения, чтобы исправить слово или layout-aware фрагмент непосредственно перед кареткой.
+3. Как пользователь Windows, я хочу нажать CP на выделении, чтобы получить преобразование именно выделения без расширения диапазона.
+4. Как пользователь Windows, я хочу нажать CP без выделения, чтобы Stepler рассмотрел текущую логическую строку слева от каретки и не изменил текст правее каретки.
+5. Как пользователь, я хочу преобразовывать несколько ошибочных слов одной строкой, сохраняя корректный русский, английский, технический и числовой текст между ними.
+6. Как пользователь, я хочу, чтобы CP не удалял `CR`, `LF`, `CRLF`, пробелы и границу строки при замене текста.
+7. Как пользователь, я хочу, чтобы текст до и после заменяемого диапазона оставался на своем месте.
+8. Как пользователь, я хочу, чтобы каретка после операции возвращалась в логически соответствующее место, если используемый адаптер умеет надежно восстановить ее.
+9. Как пользователь, я хочу, чтобы выделение после операции сохранялось или снималось предсказуемо согласно поведению конкретной поверхности.
+10. Как пользователь, я хочу сохранить буфер обмена, включая нетекстовые форматы, после clipboard-based операции.
+11. Как пользователь, я хочу получить отказ без изменения текста, если preflight не подтвердил ожидаемую строку, контрол потерял фокус или поверхность изменилась.
+12. Как пользователь, я хочу видеть индикацию нажатия P/CP независимо от того, поддерживает ли активное приложение текстовую замену.
+13. Как пользователь, я хочу видеть успешную замену, отказ, причину и время операции.
+14. Как пользователь Notepad, я хочу быстро исправлять P/CP через Win32 edit messages.
+15. Как пользователь Word, я хочу работать с выделением и диапазоном перед кареткой через Word object model.
+16. Как пользователь Outlook, я хочу исправлять текст в письме и поле поиска через разные безопасные пути, не подвешивая Outlook.
+17. Как пользователь Outlook, я хочу, чтобы layout switching не запускал опасный для Word/Zimbra сценарий до подтверждения контекста.
+18. Как пользователь PowerShell, я хочу исправлять текущий PSReadLine buffer без clipboard fallback и разрушительных терминальных команд.
+19. Как пользователь PowerShell с SSH, я хочу работать через установленный на удаленном Linux host `stepler-remote`.
+20. Как пользователь Qwen CLI, я хочу, чтобы P/CP не посылали Ctrl+C или Ctrl+Shift+C и не закрывали Qwen.
+21. Как пользователь Qwen, я хочу безопасно отправить готовый текст через side-channel input file.
+22. Как пользователь Qwen Input, я хочу исправить текст, сохранить фокус и отправить результат в запущенный Qwen.
+23. Как пользователь Qwen Workspace, я хочу иметь terminal/Qwen и Stepler input в одном окне, сохраняя terminal session при перезапуске Stepler.
+24. Как пользователь браузерного редактора, я хочу работать в Confluence, JIRA, ChatGPT/Codex, Rocket.Chat, Telegram и похожих полях через policy, учитывающую реальный control и caret.
+25. Как пользователь Sticky Notes, я хочу исправлять текст в Note Editor и сохранять переносы строк.
+26. Как пользователь неизвестного UIA поля, я хочу получить только безопасный пробный путь или понятный отказ вместо случайной вставки буфера.
+27. Как пользователь Windows Terminal, я хочу, чтобы PowerShell, cmd, Qwen и SSH различались как разные поверхности, даже если у них одинаковый hosting window class.
+28. Как пользователь, я хочу включать и выключать P, CP, layout controls, Caps Lock, Insert-as-Backspace, risky fallbacks и автозапуск из tray.
+29. Как пользователь, я хочу переключать светлую и темную тему tray и Qwen Input и настраивать длительность timing overlay.
+30. Как разработчик, я хочу видеть structured JSONL с методом, surface, confidence, стадиями, retry и временем.
+31. Как разработчик, я хочу иметь contract tests для классификаторов, policy, resolver и проверенных поверхностей.
+32. Как разработчик, я хочу измерять P50/P95 только для одной сборки, окружения, surface, режима и ветки алгоритма.
+33. Как сопровождающий, я хочу собрать release win-x64 с tray, CLI, scripts, Qwen-компонентами и remote helper отдельно.
+34. Как сопровождающий, я хочу запускать ровно один tray и один hotkey runner от той же distribution build.
 
-Пользователь нажимает:
+## Implementation Decisions
 
-- `Left Ctrl` отдельно - приложение переключает на русскую раскладку.
-- `Right Ctrl` отдельно - приложение переключает на английскую раскладку.
-- `Menu` - приложение переключает раскладку на следующую.
-- `Caps Lock` при включенной настройке - приложение блокирует стандартный Caps Lock и использует клавишу для переключения раскладки.
+### 1. Границы компонентов
 
-### 3.4 Скриншот активного окна в Paint
+- `stepler-core` не знает о Windows controls и приложениях. Он содержит
+  `CorrectionMode`, `TextContext`, `ReplacementPlan`, layout conversion,
+  языковую оценку, транзакционные типы и pure logic.
+- `stepler-platform` содержит общие идентификаторы методов, capabilities,
+  `SurfaceKind`, классификацию, policy, probe plan и resolver contracts.
+- `stepler-platform-windows` содержит Windows-specific capture/replace,
+  UI Automation, Win32, Word COM, keyboard input, clipboard, console,
+  terminal, layout и window helpers.
+- `stepler-app` оркестрирует операцию: gate, foreground checks, preflight,
+  clipboard guard, apply, verify, telemetry и результат.
+- `stepler-cli` является runtime/diagnostic entry point: hotkey loop,
+  PowerShell bridge, CLI-команды, диагностика focus и performance snapshot.
+- `Stepler.Tray` является .NET tray host и settings UI. Он не реализует
+  текстовую коррекцию и не выбирает адаптер.
+- `Stepler.Shared` содержит общую логику Qwen Input/Workspace UI.
+- `Stepler.QwenWorkspace` объединяет terminal session и Stepler input, но не
+  заменяет общий resolver для обычных приложений.
+- `stepler-remote` является малым Linux helper для Bash/readline по SSH, а не
+  полной Linux desktop-версией Stepler.
 
-Пользователь нажимает `Ctrl+Shift+U`.
+### 2. Core-контракт текста
 
-Приложение должно сделать скриншот именно активного окна, а не всего экрана, и открыть результат в Paint.
+`TextContext` содержит snapshot текста, caret range, optional selection,
+capabilities и telemetry. `ReplacementPlan` содержит exact range, replacement
+text, reason/confidence и `expected_before_text`.
 
-### 3.5 Автозапуск
+Перед записью адаптер обязан подтвердить, что target и expected text все еще
+совпадают. План не является разрешением на запись в любое окно: он применяется
+только через выбранный method adapter и его contract.
 
-Пользователь включает пункт `Запускать с Windows`.
+Ошибки `NoTextToReplace`, `ReplacementUnavailable`, `PreflightFailed`,
+`ClipboardUnavailable`, `UnsupportedControl` и аналогичные являются обычными
+результатами операции. Они не должны приводить к частичной замене.
 
-Приложение должно добавить запись автозапуска в реестр текущего пользователя.
+### 3. Семантика P и CP
 
-## 4. Функциональные требования
+Для P приоритет имеет explicit selection. Без selection выбирается ближайший
+поддерживаемый layout-aware token перед caret; для некоторых filename/path-like
+сценариев разрешен sparse fallback только при наличии безопасного источника.
+P не выполняет широкую языковую реконструкцию всей строки.
 
-### 4.1 Запуск и UI
+Для CP:
 
-Основной пользовательский UI для первой версии - tray-only Windows app:
+- selection имеет приоритет и заменяется целиком;
+- без selection вычисляется граница текущей логической строки по `CR`/`LF`;
+- правой границей является caret, а не конец всего snapshot;
+- анализируются кандидаты внутри `[line_start, caret]`;
+- корректный префикс сохраняется;
+- преобразуются только подозрительные слова/диапазоны;
+- если safe capture не может подтвердить range, операция отклоняется;
+- trailing `CRLF` не входит в replacement range;
+- общая семантика принадлежит core/resolver pipeline и не дублируется в отдельных приложениях.
 
-- отдельный tray-only host `apps/Stepler.Tray`;
-- без основного окна и без обязательной диагностической панели;
-- tray menu содержит минимум: статус и выход;
-- log viewer не является релизной функцией, structured logs пишутся в файл для отладки и тестов;
-- UI не содержит логики исправления текста и не участвует в hotkey pipeline.
+Языковая оценка использует layout conversion, словарные и n-gram/score
+сигналы, confidence и исключения CP. Словарь исключений является только
+дополнительным сигналом для неоднозначных коротких слов; P не обязан
+использовать CP-словарь.
 
-- Приложение должно запускаться как фоновая desktop-утилита Windows.
-- При старте приложение должно сворачиваться в системный трей.
-- Главное окно должно содержать лог и меню настроек.
-- Меню должно позволять включать и отключать:
-  - обработку `Pause`;
-  - обработку `Ctrl+Pause` как пользовательскую клавишу умного режима строки;
-  - блокировку/обработку `Caps Lock`;
-  - автозапуск с Windows.
-- Настройки должны сохраняться между запусками.
+### 4. Surface classification и policy
 
-### 4.2 Глобальные клавиши
+`SurfaceKind` представляет тип поверхности, а не название продукта. В текущем
+наборе есть Win32 edit, Notepad-like, classic console, Windows Terminal cmd и
+PowerShell, Qwen terminal, browser/editor, fast browser/editor, Rocket.Chat,
+Yandex browser editor, Telegram, Sticky Notes, Outlook search/editor/shell,
+Word editor, Excel cell editor и Unknown.
 
-- Приложение должно устанавливать keyboard hook для обработки клавиш.
-- Приложение должно регистрировать `Ctrl+Shift+U` как hotkey для скриншота.
-- Нажатие служебных клавиш не должно ломать стандартные сочетания пользователя, например `Ctrl+C`, `Ctrl+V`, `Ctrl+колесо мыши`.
-- Если `Ctrl` используется вместе с другой клавишей или колесом мыши, одиночное переключение раскладки по отпусканию `Ctrl` выполняться не должно.
+Classification возвращает `kind`, `confidence`, `evidence` (факты окна,
+focused control, title, process и UIA) и, при необходимости, web keyboard
+profile.
 
-### 4.3 Обработка Pause
+`SurfacePolicy` отдельно задает предпочтения P и CP, запрещенные методы и
+`allow_risky_methods`. `ProbePlan` ограничивает набор probe разрешенными для
+surface методами и умеет fast probe. Resolver фильтрует unsupported, forbidden
+и risky методы до выбора контекста/замены и оставляет trace выбора.
 
-- При включенной настройке `Pause` должно исправлять выделенный текст или последнее слово рядом с курсором.
-- Преобразование должно работать в обе стороны: русская раскладка в английскую и английская в русскую.
-- Для приложений, где доступен прямой и надежный API замены текста, обработка должна использовать этот API вместо служебной вставки через буфер обмена.
-- Для приложений, где прямой доступ к тексту невозможен, допускается fallback через выделение, копирование и восстановление буфера обмена.
+Классификатор не должен возвращать имя “Rocket.Chat adapter” или “JIRA
+adapter”. Method adapter отвечает только за способ работы, а не за знание
+бизнес-приложения.
 
-### 4.4 Обработка Ctrl+Pause / ScrollLock mode
+### 5. Реестр method adapters
 
-- При включенной настройке умного режима строки `Ctrl+Pause` должно искать слова, похожие на ввод в неверной раскладке.
-- Внутренний режим в коде может называться `ScrollLock` для совместимости с историческим `CorrectionMode`, но пользовательская глобальная клавиша релиза - `Ctrl+Pause`.
-- Распознавание текста, набранного в неверной раскладке, должно опираться прежде всего на статистический анализ русского и английского языка: n-граммы, частотные модели, языковой скоринг или другой сопоставимый вероятностный метод.
-- Словари могут использоваться как вспомогательный сигнал, источник тестовых данных или дополнительная проверка, но не должны быть единственным и главным механизмом принятия решения.
-- Алгоритм должен уметь работать с неизвестными словами, именами, техническими терминами и фрагментами кода без обязательного наличия этих слов в словаре.
-- Короткие слова и токены, например `git`, `на`, `in`, должны распознаваться и учитываться алгоритмом. Из-за малой длины они должны оцениваться преимущественно по контексту соседних слов, языковому score всей фразы и confidence threshold, а не конвертироваться агрессивно по одному токену.
-- Приложение должно исправлять только подозрительные слова, не меняя корректный русский или английский текст.
-- В смешанной строке корректный префикс должен сохраняться.
-- Без явного пользовательского выделения область анализа `Ctrl+Pause` - вся текущая логическая строка от последнего `CR` или `LF` до позиции курсора. Текст справа от курсора, включая оставшуюся часть того же визуального слова, не входит в область операции.
-- При явном пользовательском выделении область анализа и замены - ровно выделенный диапазон; она не расширяется до границ строки.
-- Замена должна выполняться по точному диапазону текста, который был выбран алгоритмом для исправления. Приложение не должно затрагивать соседний корректный текст.
-- Если адаптер не может безопасно прочитать и заменить весь требуемый диапазон текущей строки, `Ctrl+Pause` должен завершиться без изменения текста. Ему запрещено молча заменять только последнее слово как fallback.
-- Для Word и PowerShell должны использоваться отдельные безопасные сценарии, учитывающие особенности этих приложений.
+Текущий реестр методов:
 
-### 4.5 Буфер обмена
+- `Win32EditMessages` — `WM_GETTEXT`, selection/caret messages и безопасная
+  замена обычного Win32 edit control.
+- `TerminalClipboardShortcut` — risky terminal clipboard fallback; не является
+  общим способом для PowerShell и запрещен для Qwen.
+- `SshTerminal` — Windows-side SSH bridge к remote readline helper.
+- `ConsoleBuffer` — classic console buffer; функциональность CP для classic
+  cmd остается ограниченной и нестабильной.
+- `PsReadLine` — чтение и изменение текущего PowerShell buffer через
+  PSReadLine commands, без общего clipboard fallback.
+- `WordCom` — Word object model, включая WordEditor в Outlook.
+- `UiAutomationEditableText` — writable focused UIA edit/value surface.
+- `UiAutomationDocumentText` — UIA document/text pattern с caret/selection
+  preflight.
+- `UiAutomationText` — совместимый общий UIA text/value путь.
+- `XtermKeyboardSelection` — keyboard selection path для textarea/xterm-like
+  terminal controls.
+- `WebKeyboardSelection` — browser/editor keyboard selection с clipboard
+  preflight, expected-text preflight и verify.
+- `ClipboardSelection` — risky copy/paste для выделенного текста с обязательным
+  восстановлением clipboard.
+- `SendInput` — risky write-only Unicode input в текущее выделение.
 
-- Пользовательский буфер обмена должен сохраняться до служебных операций и восстанавливаться после них.
-- Внутренние маркеры приложения не должны попадать в пользовательский текст или оставаться в буфере обмена.
-- Вставка результата не должна выполняться через буфер обмена там, где доступен более детерминированный способ.
-- В случае ошибки приложение должно завершать обработку без порчи текста и без необратимой подмены буфера.
+Каждый method adapter описывает capabilities: чтение selection и caret,
+range before caret, замена selection, использование clipboard и risky status.
+Resolver не вызывает метод, если его capabilities не покрывают план.
 
-### 4.6 Поддержка разных приложений
+### 6. Фактическое сопоставление поверхностей
 
-Основной подход - не создавать отдельный большой адаптер для каждого приложения, а использовать ограниченный набор method adapters: способов чтения контекста и способов замены текста.
+| SurfaceKind | Предпочтительный путь | Ограничение |
+| --- | --- | --- |
+| Win32Edit | `Win32EditMessages` | Нужен совместимый Win32 edit control |
+| NotepadLike | `Win32EditMessages` | Fallback только по явному safe contract |
+| ClassicConsole | `ConsoleBuffer` | CP в classic cmd ограничен и не считается стабильной поддержкой |
+| WindowsTerminalCmd | `TerminalClipboardShortcut` | Risky allowlist surface, не общий cmd contract |
+| WindowsTerminalPowerShell | `PsReadLine` | Нужны PSReadLine и profile bridge |
+| QwenTerminal | `XtermKeyboardSelection`/Qwen policy | Ctrl+C и Ctrl+Shift+C запрещены; live TUI prompt снаружи не читается |
+| BrowserEditor/FastBrowserEditor | `WebKeyboardSelection` и разрешенный UIA путь | Зависит от strict caret/clipboard preflight |
+| RocketChatEditor | UIA editable, затем web keyboard fast profile | Поиск и поле сообщений — разные UIA surfaces |
+| TelegramDesktop | Web keyboard/UIA | Это surface contract, а не универсальный Telegram adapter |
+| StickyNotes | UIA document, затем web/UIA fallback | Текущий CP сохраняет логические переносы строк |
+| OutlookSearch | `Win32EditMessages` | Отдельная политика для поиска |
+| OutlookWordEditor | `WordCom` | Office/Zimbra hang-safety важнее latency |
+| OutlookShell | Win32, затем разрешенный WordCom | UIA/risky fallback запрещены |
+| WordEditor | WordCom, затем разрешенный UIA | Win32/clipboard fallback запрещены |
+| ExcelCellEditor | `WebKeyboardSelection` | Зависит от режима ячейки и версии Excel |
+| Unknown | безопасные UIA probes | Risky fallback закрыт по умолчанию |
 
-Приложение должно состоять из трех слоев:
+Этот список является текущим поведением, а не обещанием поддержки всех версий
+указанных продуктов. Поверхности с ограничениями должны оставаться
+fail-closed.
 
-1. Method adapters:
-   - `Win32EditMessages`;
-   - `UIAutomationEditableText` - строгий adapter для focused `ControlType.Edit` с writable `ValuePattern` и `TextPattern`;
-   - `UIAutomationDocumentText` - строгий adapter для web/document `TextPattern`: выделенный текст и caret-range fallback при стабильном collapsed UIA range;
-   - `UIAutomationText`;
-   - `ClipboardSelection` - risky fallback для уже выделенного текста через copy/paste с обязательным восстановлением буфера;
-   - `SendInput` - risky write-only fallback для ввода Unicode-текста в текущее выделение, не используется как context provider;
-   - `WordCom`;
-   - `PSReadLine`;
-   - `ConsoleBuffer`;
-   - другие методы, если они добавлены осознанно.
-2. App policies:
-   - небольшие правила для конкретных приложений, классов окон или процессов;
-   - порядок предпочтения методов;
-   - явно запрещенные методы;
-   - разрешение или запрет risky/fallback методов.
-3. Runtime resolver:
-   - определяет foreground target;
-   - не включает risky/fallback методы без явного разрешения policy или диагностического режима (`STEPLER_ALLOW_RISKY_FALLBACKS=1`);
-   - запускает capability probes;
-   - применяет app policy;
-   - выбирает безопасную пару context method + replacement method;
-   - выполняет preflight, замену и verification.
+### 7. Capture, preflight, apply и verify
 
-`TextContextProvider` должен возвращать не только текст, cursor, selection и идентификаторы окна/контрола, но и сведения о методе получения контекста и допустимых методах замены. Нельзя читать текст одним методом и заменять другим несовместимым методом без явного разрешения resolver-а.
+Операция проверяет стабильность foreground/focused target и не выполняется,
+если окно или control сменились. Перед apply проверяется expected text и
+диапазон. После apply выполняется verify, если его поддерживает метод.
 
-App-specific код допускается только как policy или тонкий wrapper вокруг method adapter. Исключение - среды со специальным безопасным API, например PowerShell через PSReadLine или Word через COM; даже в этих случаях реализация должна называться и использоваться как method adapter (`PSReadLine`, `WordCom`), а не как разрастающийся монолитный адаптер приложения.
+`OperationGate` запрещает конфликтующие параллельные операции для одного
+контрола. Clipboard guard сохраняет clipboard snapshot для методов, которые
+могут временно использовать clipboard, отслеживает marker/stabilization и
+восстанавливает текстовые и нетекстовые форматы. Невозможность безопасно
+восстановить или подтвердить clipboard превращает операцию в отказ, а не в
+частичную запись.
 
-Для приложений, где безопасная обработка не подтверждена, опасные операции должны отключаться. В лог необходимо писать выбранный method id, policy decision и причину отказа.
+Focus/caret restore является частью adapter contract. Нельзя считать операцию
+успешной только потому, что текст визуально изменился: target, expected text и
+итоговое состояние должны соответствовать контракту.
 
-### 4.7 Логирование
+### 8. Раскладка клавиатуры
 
-- Tray-приложение должно писать человекочитаемый лог в `%LOCALAPPDATA%\Stepler\logs\Stepler.Tray.log`.
-- Hotkey runner должен писать структурированный JSONL-лог в `%LOCALAPPDATA%\Stepler\logs\stepler_hotkey_log.jsonl` при запуске из tray.
-- При ручном CLI-запуске допускается относительный fallback `stepler_hotkey_log.jsonl` в текущей рабочей папке.
-- Лог должен содержать:
-  - запуск приложения;
-  - состояние включенных функций;
-  - нажатие hotkey;
-  - распознанный тип активного приложения;
-  - результат обработки;
-  - время операции от получения `Pause`/`Ctrl+Pause` до полного завершения действия приложения;
-  - по возможности разбиение времени по этапам: получение контекста, построение плана, применение замены, проверка результата, восстановление буфера;
-  - ошибки чтения, вставки и восстановления буфера.
-- Если вывод времени операции в UI можно реализовать без замедления обработки hotkey, приложение должно показывать последнюю длительность операции в диагностической области UI.
-- Вывод метрик в UI не должен выполняться на критическом пути обработки hotkey и не должен увеличивать задержку конвертации.
+Layout control отделен от text method selection. Глобальный механизм принимает
+левый/правый Ctrl и Menu/Caps policy; text replacement не должен подменять
+этот механизм app-specific shortcut-ом.
 
-## 5. Нефункциональные требования
+После успешной текстовой операции layout action может выполняться в том же
+operation pipeline и не должен задерживать подтвержденную замену сверх
+необходимого. Для Outlook/Zimbra предусмотрены narrow safety restrictions:
+если контекст может привести к зависанию Word/Outlook, опасный post-replacement
+layout path подавляется. Это не отключает текстовую коррекцию в Outlook.
 
-- Обработка hotkey должна быть быстрой и не должна заметно блокировать ввод пользователя.
-- Время обработки `Pause` и `Ctrl+Pause` должно измеряться монотонным таймером от момента получения hotkey до момента, когда приложение завершило замену/отказ и восстановило служебное состояние.
-- Нельзя полагаться только на фиксированные задержки, если можно дождаться реального события: изменения clipboard sequence number, завершения ввода, доступности окна или явного результата API.
-- Приложение не должно оставлять систему в состоянии с зажатым модификатором или измененным Caps Lock.
-- Сбой обработки hotkey не должен завершать приложение.
-- При изменении существующей реализации нужно избегать широких переписываний без отдельного решения. Если выбран другой язык, UI-фреймворк или механизм сборки, он должен сохранять или улучшать стабильность ключевых сценариев.
+Английская раскладка определяется по culture prefix `en-*`, а не только по
+одному фиксированному HKL или `en-US`; это поддерживает `en-GB` и другие
+английские варианты. Фактический набор раскладок и право Windows на их
+переключение остаются внешними условиями машины.
 
-## 6. Требования к сборке
+### 9. Hotkey runtime и PowerShell
 
-Debug-сборка tray:
+CLI hotkey runner обслуживает глобальные сообщения, keyboard hook, callbacks
+индикации, text operation и layout control. Tray запускает runner с текущими
+settings. Для уже работающих PowerShell-сессий загрузка profile bridge требует
+перезапуска сессии или явного dot-source profile.
 
-```powershell
-dotnet build .\apps\Stepler.Tray\Stepler.Tray.csproj -nologo -c Debug
-```
+PSReadLine adapter использует `GetBufferState`, строит план через общий core и
+применяет его через `RevertLine`/`Insert`. Общий terminal clipboard fallback
+для PowerShell не является штатным контрактом.
 
-Rust-проверки:
+В SSH-сценарии Windows Stepler распознает отмеченную SSH terminal surface и
+форвардит протокол только если remote helper доступен. Если helper не найден,
+операция должна завершиться безопасным отказом; удаленный host не должен
+получать произвольные команды из clipboard fallback.
+
+### 10. Qwen Input и Qwen Workspace
+
+Qwen CLI запускается через wrapper/marker и использует `--input-file` для
+безопасной отправки подготовленного текста. Нельзя получать текущий TUI
+prompt через Ctrl+Shift+C: Qwen может трактовать это как interrupt.
+
+Qwen Input является отдельным .NET окном с общим P/CP поведением, ранней
+индикацией, timing overlay, восстановлением фокуса/caret, отправкой и
+переключением языка по результату.
+
+Qwen Workspace содержит terminal/Qwen session и Stepler input в одном рабочем
+окне. Рабочий каталог задается настройкой/окружением, поддерживается запуск с
+`--continue`, а перезапуск Stepler не должен сам по себе завершать внешнюю
+PowerShell/Qwen session. Реальное взаимодействие с Qwen terminal остается
+ограниченным его TUI и отдельной policy.
+
+### 11. Tray, настройки и индикация
+
+Tray-only UI предоставляет статус, запуск/перезапуск runner, выход, открытие
+Qwen Input/Workspace, логи и настройки. Настройки сохраняются в пользовательском
+профиле Windows и включают как минимум:
+
+- `PauseEnabled` и `ScrollLockEnabled`;
+- `CtrlLayoutSwitchEnabled` и `MenuCapsSwitchEnabled`;
+- `DisableCapsLock`;
+- `InsertAsBackspaceEnabled`;
+- `RiskyFallbacksEnabled`;
+- `DarkTheme`;
+- `ShowTimingOverlay` и `TimingOverlayDurationMs`;
+- `QwenWorkspaceDirectory`.
+
+Индикация P/CP создается на уровне hotkey runtime как можно раньше и не
+зависит от того, найден ли подходящий адаптер. Затем она обновляется результатом
+операции: success, fail, no text, unsupported и elapsed time. Отсутствие
+поддержанного метода не должно выглядеть как потерянное нажатие.
+
+### 12. Логи, диагностика и производительность
+
+Основные диагностические каналы: tray log, structured JSONL hotkey log, hook
+signal log и performance events с surface kind/confidence, method,
+profile/branch, cold/warm, retry, длинами и фазами.
+
+CLI предоставляет диагностику focus/methods, PSReadLine self-test/plan,
+performance snapshot, Qwen submit, layout commands и UIA fixture.
+
+P50/P95 сравниваются только внутри одной build, environment, surface kind,
+mode, selection/no-selection и algorithm branch. Целевой ориентир для локальных
+операций — P50 до 300 ms и P95 до 600 ms, но это не оправдывает отключение
+preflight, clipboard restore, expected-text check, verify или focus restore.
+Office, SSH, cold start и network latency рассматриваются отдельно.
+
+### 13. Сборка и распространение
+
+Release собирается для `win-x64` и включает tray, CLI, runtime scripts,
+Qwen-компоненты и соответствующие ресурсы. Linux remote helper собирается
+отдельно, обычно через WSL, и копируется на Linux host вручную или скриптом.
+
+Версия сборки должна присутствовать в имени/метаданных release и отображаться
+в tray. После rebuild запускать Stepler следует из distribution directory вне
+sandbox; приемка требует проверить, что остаются живы ровно один tray process
+и один hotkey runner от той же distribution build.
+
+## Testing Decisions
+
+### Что считается хорошим тестом
+
+Тесты проверяют внешнее поведение и контракты: выбранный surface/method,
+диапазон, replacement text, отсутствие правой части строки, сохранение
+переносов, clipboard/focus safety, failure reason и состояние транзакции.
+Тест не должен закреплять внутреннюю последовательность вызовов, если она не
+является частью safety contract.
+
+### Unit и pure-core tests
+
+Обязательно проверяются P с selection и без selection, trailing space,
+punctuation и filename-like input; CP с mixed line, несколькими подозрительными
+токенами, корректным prefix, caret внутри слова, selection и no-selection;
+границы `CR`, `LF`, `CRLF`, пустой строки и предыдущей строки; отсутствие
+изменений справа от caret; layout conversion и английские `en-*` варианты;
+CP dictionary exceptions; transaction state machine и operation gate.
+
+### Resolver и policy contract tests
+
+Для каждой проверенной поверхности контракт закрепляет ожидаемый `SurfaceKind`,
+минимальный confidence/evidence, первый разрешенный method для P и CP,
+запрещенные методы, допустимый fallback, risky allowlist и поведение при
+unsupported control/failed preflight.
+
+Отдельно проверяются invariants: forbidden method никогда не выбирается,
+risky method не появляется на Unknown, Qwen никогда не получает terminal
+clipboard shortcut, Outlook policy не получает generic risky fallback,
+classification и resolver используют один target snapshot.
+
+### Adapter и operation tests
+
+На уровне adapter contracts проверяются capabilities, exact range, preflight,
+verify, clipboard guard, focus/caret restore и no-partial-mutation. В Windows
+integration smoke используются реальные или fixture controls для Win32 edit,
+UIA editable/document, classic console, Windows Terminal, Word/Outlook,
+browser-like editor, Sticky Notes и Qwen input.
+
+Для Outlook тесты включают Word editor, Outlook search и shell surfaces, а
+также проверку, что text replacement остается доступным при подавлении
+опасного layout path. Отсутствие зависания в synthetic test не доказывает
+безопасность Office: нужен ручной smoke и лог foreground/target/phase.
+
+### Runtime, release и ручная приемка
+
+Перед release выполняются:
 
 ```powershell
 cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-Релизная папка собирается командой:
+Для Windows-specific paths дополнительно выполняются release build,
+`diagnose-focus --delay 3 --methods`, PSReadLine self-test, UIA fixture,
+performance snapshot и ручная матрица приложений. В snapshot нельзя смешивать
+домашний и рабочий ПК, разные сборки, cold/warm и разные surface kinds.
 
-```powershell
-.\scripts\build-release.ps1
-```
+Ручная матрица текущего состояния:
 
-Сборка должна создавать runnable Windows-артефакты:
+| Поверхность | Текущий статус |
+| --- | --- |
+| Notepad / обычный Win32 edit | поддерживается через `Win32EditMessages` |
+| Word 2016 | поддерживается через `WordCom`; нужен smoke после сборки |
+| Outlook 2016 search | отдельный Win32 contract; проверять отдельно |
+| Outlook 2016 письмо | `WordCom`; text path поддерживается, layout safety ограничен |
+| PowerShell / Windows Terminal | поддерживается через `PSReadLine` при корректном profile |
+| PowerShell с SSH | поддерживается только с remote helper |
+| Qwen CLI | безопасный wrapper/side-channel; live prompt ограничен |
+| Qwen Input/Workspace | поддерживается отдельным UI/runtime path |
+| Confluence/JIRA/ChatGPT/Codex web/editor | зависит от UIA/WebKeyboard preflight |
+| Rocket.Chat | отдельные editor/search surface contracts |
+| Sticky Notes | UIA document path, CP сохраняет line breaks |
+| classic cmd/conhost | ограниченная поддержка; CP не считается стабильным |
+| cmd внутри Windows Terminal | risky/diagnostic path, не общий safe contract |
+| Excel cell editor | отдельный web keyboard contract, зависит от режима ячейки |
 
-```text
-dist\Stepler\Stepler.exe
-dist\Stepler\stepler-cli.exe
-```
+## Further Notes
 
-Инсталлятор собирается командой:
-
-```powershell
-.\scripts\build-installer.ps1
-```
-
-Результат:
-
-```text
-SetupOutput\SteplerSetup-<version>.exe
-```
-
-После успешной сборки и исправления багов опубликованный `Stepler.exe` должен быть запущен из `dist\Stepler` или из установленной папки `Program Files\Stepler`.
-
-## 7. Требования к тестированию
-
-### 7.1 Unit-тесты
-
-Команда:
-
-```powershell
-dotnet test HotkeyHandler.Tests\HotkeyHandler.Tests.csproj -nologo -p:UseAppHost=false -v minimal
-```
-
-Unit-тестами должны покрываться:
-
-- преобразование символов между раскладками;
-- определение ошибочно набранных слов через n-граммный/частотный языковой скоринг;
-- случаи, где словарь не содержит слова, но частотная модель все равно должна принять корректное решение;
-- выбор хвостовой фразы для исправления;
-- сохранение корректных английских и русских слов без ложной конвертации.
-
-### 7.2 UI-тесты
-
-Команда:
-
-```powershell
-$env:RUN_UI_TESTS='1'
-dotnet test HotkeyHandler.UiTests\HotkeyHandler.UiTests.csproj -nologo -p:UseAppHost=false -v minimal
-```
-
-UI-тесты должны проверять реальные окна:
-
-- Notepad;
-- Microsoft Word при наличии;
-- PowerShell/Windows Terminal при наличии.
-
-UI-тесты должны закрывать созданные окна без зависания на диалогах сохранения.
-
-При тестировании hotkey обязательно читать `%LOCALAPPDATA%\Stepler\logs\stepler_hotkey_log.jsonl`, потому что он показывает активный путь обработки и ошибки буфера обмена.
-
-### 7.3 Минимальный ручной smoke-test
-
-- В Notepad: `k.,jdm` + `Pause` -> `любовь`.
-- В Notepad: `k.,jdm` + `Ctrl+Pause` -> исправленное слово без обрезания.
-- В Notepad: `вальс поле long ghbdtn vbh` + `Ctrl+Pause` -> корректный префикс сохраняется, ошибочный хвост исправляется.
-- В Word: проверить `Pause` и `Ctrl+Pause` на одном слове и на строке из нескольких слов.
-- В PowerShell: проверить, что `Pause`/`Ctrl+Pause` не вставляют случайный буфер и не ломают командную строку.
-- До и после каждого сценария проверить, что пользовательский clipboard сохранен.
-
-## 8. Критерии приемки
-
-Изменение считается готовым, если:
-
-- проект собирается без ошибок;
-- unit-тесты проходят;
-- опубликован runnable `Stepler.exe` в `dist\Stepler`;
-- собран `SetupOutput\SteplerSetup-<version>.exe`;
-- опубликованный exe запущен;
-- ручные сценарии Notepad проходят;
-- для Word и PowerShell либо сценарии проходят, либо ограничение явно зафиксировано в `known_bugs.txt`;
-- `%LOCALAPPDATA%\Stepler\logs\stepler_hotkey_log.jsonl` не содержит ошибок восстановления буфера после успешных сценариев;
-- пользовательский буфер обмена не меняется после обработки `Pause` и `Ctrl+Pause`.
-
-## 9. Известные риски
-
-- Разные приложения по-разному обрабатывают выделение, clipboard и Unicode-ввод.
-- PowerShell использует `Ctrl+C` как прерывание команды, поэтому требует отдельных сочетаний копирования/вставки.
-- Word может менять диапазон выделения через собственную модель документа.
-- UI-тесты нестабильны без надежного foreground/focus control.
-- Глобальные hooks требуют аккуратной обработки модификаторов, иначе можно сломать пользовательские сочетания клавиш.
-
-## 10. Документация и сопровождение
-
-- Основная инструкция проекта: `README.md`.
-- Инструкция по установке: `INSTALL_README.md`.
-- Известные баги: `known_bugs.txt`.
-- При исправлении багов необходимо обновлять `known_bugs.txt`, если меняется статус известной проблемы.
+1. `README.md` остается пользовательским руководством: команды запуска,
+   profile setup и краткая таблица приложений могут быть подробнее, чем здесь.
+   Этот документ является источником архитектурных и поведенческих контрактов.
+2. `docs/pcp_latency_optimization_spec_ru.md` остается рабочим документом по
+   измерению задержек. Он не переопределяет semantics P/CP или surface policy.
+3. `docs/release_smoke_checklist_ru.md` является приемочным checklist, а не
+   альтернативной спецификацией.
+4. При изменении одного адаптера сначала меняется его method contract и
+   resolver/policy contract tests. Поверхностные правила нельзя прятать в
+   adapter implementation.
+5. При добавлении новой поверхности сначала фиксируются target evidence,
+   SurfaceKind, разрешенные методы, forbidden methods и fallback. Только после
+   этого добавляется adapter code.
+6. При изменении общего CP-контракта обязательны regression tests для
+   no-selection current-line-to-caret, selection, line breaks и минимум одной
+   web/UIA, одной Win32 и одной terminal-like поверхности.
+7. При оптимизации запрещено удалять safety phases ради цифры latency. Сначала
+   нужен labeled baseline и phase contribution, затем узкое изменение одного
+   transport/worker branch с rollback при регрессии.
+8. Текущая спецификация намеренно различает “реализовано”, “ограничено” и
+   “требует ручного smoke”. Это предотвращает превращение единичного успешного
+   запуска в обещание поддержки всей категории приложений.

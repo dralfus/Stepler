@@ -260,7 +260,7 @@ pub fn guard_clipboard_from_snapshot<B: ClipboardBackend>(
     let after_before_restore = clipboard.capture().ok();
     let clipboard_changed = after_before_restore
         .as_ref()
-        .map(|after| after != &before)
+        .map(|after| !clipboard_contents_equal(after, &before))
         .unwrap_or(true);
     let donor_marker_seen = after_before_restore
         .as_ref()
@@ -301,7 +301,7 @@ fn restore_clipboard_until_stable<B: ClipboardBackend>(
 
     while started.elapsed() < timeout {
         match clipboard.capture() {
-            Ok(snapshot) if snapshot == before => {
+            Ok(snapshot) if clipboard_contents_equal(&snapshot, &before) => {
                 final_snapshot = Some(snapshot);
                 if restored_at
                     .map(|time: Instant| time.elapsed() >= stable_for)
@@ -348,7 +348,9 @@ fn restore_clipboard_until_stable<B: ClipboardBackend>(
         std::thread::sleep(Duration::from_millis(40));
     }
 
-    let restore_ok = final_snapshot.as_ref() == Some(&before);
+    let restore_ok = final_snapshot
+        .as_ref()
+        .is_some_and(|snapshot| clipboard_contents_equal(snapshot, &before));
     ClipboardGuardReport {
         before,
         after_before_restore: initial_after,
@@ -361,6 +363,10 @@ fn restore_clipboard_until_stable<B: ClipboardBackend>(
     }
 }
 
+fn clipboard_contents_equal(left: &ClipboardSnapshot, right: &ClipboardSnapshot) -> bool {
+    left.text == right.text && left.formats == right.formats
+}
+
 fn contains_hotkeyhandler_marker(snapshot: &ClipboardSnapshot) -> bool {
     snapshot
         .text
@@ -371,7 +377,7 @@ fn contains_hotkeyhandler_marker(snapshot: &ClipboardSnapshot) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use stepler_core::{ReplacementPlan, TextContext};
     use stepler_platform::{ClipboardFormatSnapshot, ForegroundControl, PlatformError};
 
@@ -494,6 +500,35 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct SequenceAdvancingClipboard {
+        snapshot: RefCell<ClipboardSnapshot>,
+        restore_calls: Cell<usize>,
+    }
+
+    impl SequenceAdvancingClipboard {
+        fn new(snapshot: ClipboardSnapshot) -> Self {
+            Self {
+                snapshot: RefCell::new(snapshot),
+                restore_calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl ClipboardBackend for SequenceAdvancingClipboard {
+        fn capture(&self) -> Result<ClipboardSnapshot, PlatformError> {
+            Ok(self.snapshot.borrow().clone())
+        }
+
+        fn restore(&self, mut snapshot: ClipboardSnapshot) -> Result<(), PlatformError> {
+            self.restore_calls.set(self.restore_calls.get() + 1);
+            snapshot.sequence_number =
+                Some(self.snapshot.borrow().sequence_number.unwrap_or_default() + 1);
+            *self.snapshot.borrow_mut() = snapshot;
+            Ok(())
+        }
+    }
+
     fn clipboard_snapshot(text: &str, sequence_number: u32) -> ClipboardSnapshot {
         ClipboardSnapshot {
             text: Some(String::from(text)),
@@ -503,6 +538,66 @@ mod tests {
                 bytes: text.as_bytes().to_vec(),
             }],
         }
+    }
+
+    #[test]
+    fn clipboard_guard_accepts_restored_contents_with_a_new_sequence_number() {
+        let mut before = clipboard_snapshot("original clipboard", 1);
+        before.formats.push(ClipboardFormatSnapshot {
+            format: 8,
+            bytes: vec![1, 2, 3, 4],
+        });
+        let clipboard = SequenceAdvancingClipboard::new(clipboard_snapshot("temporary text", 2));
+        let started = Instant::now();
+
+        let report = guard_clipboard_from_snapshot(&clipboard, before.clone());
+
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "restored clipboard content should not wait for the guard timeout"
+        );
+        assert_eq!(report.restore_attempts, 1);
+        assert_eq!(clipboard.restore_calls.get(), 1);
+        assert!(report.restore_ok);
+        let restored = clipboard.capture().unwrap();
+        assert_eq!(restored.text, before.text);
+        assert_eq!(restored.formats, before.formats);
+        assert_ne!(restored.sequence_number, before.sequence_number);
+    }
+
+    #[test]
+    fn clipboard_guard_ignores_a_sequence_only_change() {
+        let before = clipboard_snapshot("original clipboard", 1);
+        let mut same_contents = before.clone();
+        same_contents.sequence_number = Some(2);
+        let clipboard = SequenceAdvancingClipboard::new(same_contents);
+
+        let report = guard_clipboard_from_snapshot(&clipboard, before);
+
+        assert!(!report.clipboard_changed);
+        assert!(report.restore_ok);
+        assert_eq!(report.restore_attempts, 0);
+        assert_eq!(clipboard.restore_calls.get(), 0);
+    }
+
+    #[test]
+    fn clipboard_guard_restores_changed_format_bytes() {
+        let mut before = clipboard_snapshot("original clipboard", 1);
+        before.formats.push(ClipboardFormatSnapshot {
+            format: 8,
+            bytes: vec![1, 2, 3, 4],
+        });
+        let mut changed = before.clone();
+        changed.sequence_number = Some(2);
+        changed.formats[1].bytes = vec![4, 3, 2, 1];
+        let clipboard = SequenceAdvancingClipboard::new(changed);
+
+        let report = guard_clipboard_from_snapshot(&clipboard, before.clone());
+
+        assert!(report.clipboard_changed);
+        assert!(report.restore_ok);
+        assert_eq!(report.restore_attempts, 1);
+        assert_eq!(clipboard.capture().unwrap().formats, before.formats);
     }
 
     fn control() -> ForegroundControl {

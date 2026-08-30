@@ -1,0 +1,319 @@
+{
+  "build_version": "1.0.20260828.t1708",
+  "environment_labels": [
+    "work-win11"
+  ],
+  "groups": [
+    {
+      "algorithm_branch": "web-keyboard-captured-left-selection",
+      "bottleneck_phase": "Verified",
+      "build_version": "1.0.20260828.t1708",
+      "cold_warm": "warm",
+      "context_method": "web_keyboard_selection",
+      "environment_label": "work-win11",
+      "failure_rate": 0.0,
+      "max_ms": 2864,
+      "n": 2,
+      "outcome_counts": {
+        "Completed": 2
+      },
+      "p50_ms": 2837,
+      "p90_ms": 2864,
+      "p95_ms": 2864,
+      "phase_contribution": [
+        {
+          "phase": "Completed",
+          "share_of_operation_duration": 0.0,
+          "total_ms": 0
+        },
+        {
+          "phase": "ContextCaptured",
+          "share_of_operation_duration": 0.1371689177337309,
+          "total_ms": 782
+        },
+        {
+          "phase": "HotkeyReceived",
+          "share_of_operation_duration": 0.0,
+          "total_ms": 0
+        },
+        {
+          "phase": "PlanBuilt",
+          "share_of_operation_duration": 0.0,
+          "total_ms": 0
+        },
+        {
+          "phase": "PreflightChecked",
+          "share_of_operation_duration": 0.0,
+          "total_ms": 0
+        },
+        {
+          "phase": "ReplacementApplied",
+          "share_of_operation_duration": 0.11436590071917208,
+          "total_ms": 652
+        },
+        {
+          "phase": "Verified",
+          "share_of_operation_duration": 0.7432029468514296,
+          "total_ms": 4237
+        }
+      ],
+      "profile": "Standard",
+      "replacement_method": "web_keyboard_selection",
+      "retry_rate": 0.0,
+      "selection_state": "none",
+      "surface_confidence": 90,
+      "surface_kind": "BrowserEditor",
+      "trigger": "ScrollLock"
+    },
+    {
+      "algorithm_branch": "web-keyboard-line-selection",
+      "bottleneck_phase": "Verified",
+      "build_version": "1.0.20260828.t1708",
+      "cold_warm": "cold",
+      "context_method": "web_keyboard_selection",
+      "environment_label": "work-win11",
+      "failure_rate": 0.0,
+      "max_ms": 2826,
+      "n": 1,
+      "outcome_counts": {
+        "Completed": 1
+      },
+      "p50_ms": 2826,
+      "p90_ms": 2826,
+      "p95_ms": 2826,
+      "phase_contribution": [
+        {
+          "phase": "Completed",
+          "share_of_operation_duration": 0.0,
+          "total_ms": 0
+        },
+        {
+          "phase": "ContextCaptured",
+          "share_of_operation_duration": 0.17480537862703469,
+          "total_ms": 494
+        },
+        {
+          "phase": "HotkeyReceived",
+          "share_of_operation_duration": 0.0,
+          "total_ms": 0
+        },
+        {
+          "phase": "PlanBuilt",
+          "share_of_operation_duration": 0.0,
+          "total_ms": 0
+        },
+        {
+          "phase": "PreflightChecked",
+          "share_of_operation_duration": 0.0,
+          "total_ms": 0
+        },
+        {
+          "phase": "ReplacementApplied",
+          "share_of_operation_duration": 0.0697098372257608,
+          "total_ms": 197
+        },
+        {
+          "phase": "Verified",
+          "share_of_operation_duration": 0.7484076433121019,
+          "total_ms": 2115
+        }
+      ],
+      "profile": "Standard",
+      "replacement_method": "web_keyboard_selection",
+      "retry_rate": 0.0,
+      "selection_state": "none",
+      "surface_confidence": 90,
+      "surface_kind": "BrowserEditor",
+      "trigger": "Pause"
+    },
+    {
+      "algorithm_branch": "web-keyboard-line-selection",
+      "bottleneck_phase": "Verified",
+      "build_version": "1.0.20260828.t1708",
+      "cold_warm": "warm",
+      "context_method": "web_keyboard_selection",
+      "environment_label": "work-win11",
+      "failure_rate": 0.0,
+      "max_ms": 2801,
+      "n": 30,
+      "outcome_counts": {
+        "Completed": 30
+      },
+      "p50_ms": 2753,
+      "p90_ms": 2776,
+      "p95_ms": 2782,
+      "phase_contribution": [
+        {
+          "phase": "Completed",
+          "share_of_operation_duration": 0.0,
+          "total_ms": 0
+        },
+        {
+          "phase": "ContextCaptured",
+          "share_of_operation_duration": 0.14389577083131713,
+          "total_ms": 11895
+        },
+        {
+          "phase": "HotkeyReceived",
+          "share_of_operation_duration": 0.0,
+          "total_ms": 0
+        },
+        {
+          "phase": "PlanBuilt",
+          "share_of_operation_duration": 0.0,
+          "total_ms": 0
+        },
+        {
+          "phase": "PreflightChecked",
+          "share_of_operation_duration": 0.0,
+          "total_ms": 0
+        },
+        {
+          "phase": "ReplacementApplied",
+          "share_of_operation_duration": 0.07946627310558405,
+          "total_ms": 6569
+        },
+        {
+          "phase": "Verified",
+          "share_of_operation_duration": 0.7668392528791251,
+          "total_ms": 63390
+        }
+      ],
+      "profile": "Standard",
+      "replacement_method": "web_keyboard_selection",
+      "retry_rate": 0.0,
+      "selection_state": "none",
+      "surface_confidence": 90,
+      "surface_kind": "BrowserEditor",
+      "trigger": "Pause"
+    },
+    {
+      "algorithm_branch": "web-keyboard-line-selection",
+      "bottleneck_phase": null,
+      "build_version": "1.0.20260828.t1708",
+      "cold_warm": "cold",
+      "context_method": "web_keyboard_selection",
+      "environment_label": "work-win11",
+      "failure_rate": 0.0,
+      "max_ms": 525,
+      "n": 1,
+      "outcome_counts": {
+        "NoChange": 1
+      },
+      "p50_ms": 525,
+      "p90_ms": 525,
+      "p95_ms": 525,
+      "phase_contribution": [],
+      "profile": "Standard",
+      "replacement_method": "web_keyboard_selection",
+      "retry_rate": 0.0,
+      "selection_state": "none",
+      "surface_confidence": 90,
+      "surface_kind": "BrowserEditor",
+      "trigger": "ScrollLock"
+    },
+    {
+      "algorithm_branch": "web-keyboard-line-selection",
+      "bottleneck_phase": null,
+      "build_version": "1.0.20260828.t1708",
+      "cold_warm": "warm",
+      "context_method": "web_keyboard_selection",
+      "environment_label": "work-win11",
+      "failure_rate": 0.0,
+      "max_ms": 556,
+      "n": 9,
+      "outcome_counts": {
+        "NoChange": 9
+      },
+      "p50_ms": 527,
+      "p90_ms": 556,
+      "p95_ms": 556,
+      "phase_contribution": [],
+      "profile": "Standard",
+      "replacement_method": "web_keyboard_selection",
+      "retry_rate": 0.0,
+      "selection_state": "none",
+      "surface_confidence": 90,
+      "surface_kind": "BrowserEditor",
+      "trigger": "ScrollLock"
+    }
+  ],
+  "ignored_lines": {
+    "non_performance_events": 0,
+    "unlabeled_environment": 0
+  },
+  "sample_assessments": [
+    {
+      "algorithm_branch": "web-keyboard-captured-left-selection",
+      "build_version": "1.0.20260828.t1708",
+      "cold_n": 0,
+      "context_method": "web_keyboard_selection",
+      "destructive_outcome_n": 0,
+      "environment_label": "work-win11",
+      "missing": [
+        "warm_completed>=30",
+        "cold>=5"
+      ],
+      "profile": "Standard",
+      "replacement_method": "web_keyboard_selection",
+      "selection_state": "none",
+      "status": "insufficient_sample",
+      "surface_confidence": 90,
+      "surface_kind": "BrowserEditor",
+      "trigger": "ScrollLock",
+      "warm_completed_n": 2,
+      "warm_n": 2
+    },
+    {
+      "algorithm_branch": "web-keyboard-line-selection",
+      "build_version": "1.0.20260828.t1708",
+      "cold_n": 1,
+      "context_method": "web_keyboard_selection",
+      "destructive_outcome_n": 0,
+      "environment_label": "work-win11",
+      "missing": [
+        "cold>=5"
+      ],
+      "profile": "Standard",
+      "replacement_method": "web_keyboard_selection",
+      "selection_state": "none",
+      "status": "insufficient_sample",
+      "surface_confidence": 90,
+      "surface_kind": "BrowserEditor",
+      "trigger": "Pause",
+      "warm_completed_n": 30,
+      "warm_n": 30
+    },
+    {
+      "algorithm_branch": "web-keyboard-line-selection",
+      "build_version": "1.0.20260828.t1708",
+      "cold_n": 1,
+      "context_method": "web_keyboard_selection",
+      "destructive_outcome_n": 0,
+      "environment_label": "work-win11",
+      "missing": [
+        "warm_completed>=30",
+        "cold>=5"
+      ],
+      "profile": "Standard",
+      "replacement_method": "web_keyboard_selection",
+      "selection_state": "none",
+      "status": "insufficient_sample",
+      "surface_confidence": 90,
+      "surface_kind": "BrowserEditor",
+      "trigger": "ScrollLock",
+      "warm_completed_n": 0,
+      "warm_n": 9
+    }
+  ],
+  "sample_rule": {
+    "cold_minimum": 5,
+    "n_includes_all_terminal_outcomes": true,
+    "scope": "build/environment/surface/confidence/method/profile/branch/trigger/selection",
+    "sufficient_requires_completed_warm": true,
+    "sufficient_requires_no_destructive_outcomes": true,
+    "warm_completed_minimum": 30
+  },
+  "schema": "performance_snapshot_v1",
+  "source_event": "performance_operation_v1"
+}

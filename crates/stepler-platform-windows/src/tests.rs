@@ -961,6 +961,15 @@ fn embedded_terminal_forwarding_uses_psreadline_chords() {
 
 #[cfg(windows)]
 #[test]
+fn web_keyboard_captured_left_is_disabled_for_chatgpt() {
+    assert!(!web_keyboard_allows_captured_left_for_title("ChatGPT"));
+    assert!(web_keyboard_allows_captured_left_for_title(
+        "New chat - Google Chrome"
+    ));
+}
+
+#[cfg(windows)]
+#[test]
 fn web_keyboard_captured_left_text_policy_blocks_multiline_browser_selection() {
     assert!(web_keyboard_allows_captured_left_text_for_surface(
         "Chrome_WidgetWin_1",

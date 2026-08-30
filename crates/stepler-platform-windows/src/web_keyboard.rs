@@ -1486,7 +1486,7 @@ pub(super) fn web_keyboard_selection_guard_result(
 
 #[cfg(windows)]
 pub(super) fn web_keyboard_allows_captured_left_for_title(title: &str) -> bool {
-    !web_keyboard_is_confluence_like_title(title)
+    !web_keyboard_is_confluence_like_title(title) && !title.to_ascii_lowercase().contains("chatgpt")
 }
 
 #[cfg(windows)]

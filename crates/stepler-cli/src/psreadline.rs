@@ -40,7 +40,8 @@ impl PsReadLineMethod {
             request.selection_start_utf16,
             request.selection_length_utf16,
         )
-        .ok_or(PsReadLineError::InvalidCursor)?;
+        .ok_or(PsReadLineError::InvalidCursor)?
+        .filter(|range| range.start <= cursor_byte && cursor_byte <= range.end);
         let context = self.context(text, cursor_byte, selection_range);
 
         let plan = build_replacement_plan(&context, request.mode)
@@ -374,6 +375,23 @@ mod tests {
         assert!(plan.json.contains("\"expected\":\"ghbdtn vbh\""));
         assert!(plan.json.contains("\"replacement\":\"привет мир\""));
         assert!(plan.json.contains("\"text\":\"echo привет мир\""));
+    }
+
+    #[test]
+    fn psreadline_method_ignores_stale_selection_away_from_cursor() {
+        let text = "OS_Hostname ghjdthbnm";
+        let plan = PsReadLineMethod
+            .plan(PsReadLineRequest {
+                mode: CorrectionMode::ScrollLock,
+                text_b64: encode_utf16le_base64(text),
+                cursor_utf16: text.encode_utf16().count(),
+                selection_start_utf16: Some(0),
+                selection_length_utf16: Some("OS_Hostname".encode_utf16().count()),
+            })
+            .unwrap();
+
+        assert!(plan.json.contains("\"expected\":\"ghjdthbnm\""));
+        assert!(plan.json.contains("\"text\":\"OS_Hostname проверить\""));
     }
 
     #[test]

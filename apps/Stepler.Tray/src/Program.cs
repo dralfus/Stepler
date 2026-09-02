@@ -154,18 +154,22 @@ internal sealed class SteplerTrayForm : Form
     private QwenInputWindow? _qwenInputWindow;
     private HotkeyTimingOverlay? _timingOverlay;
     private FileSystemWatcher? _hotkeyLogWatcher;
+    private readonly System.Windows.Forms.Timer _embeddedTerminalAckTimer;
     private Process? _runner;
     private RunnerJob? _runnerJob;
     private SteplerSettings _settings;
     private long _hotkeyLogPosition;
     private bool _stoppingRunner;
     private bool _closing;
+    private string? _embeddedTerminalPendingLabel;
 
     public SteplerTrayForm()
     {
         _repoRoot = FindRepoRoot();
         _settings = SteplerSettingsStore.Load();
         Program.SafeLog($"settings loaded path={SteplerSettingsStore.SettingsPath()} {JsonSerializer.Serialize(_settings)}");
+        _embeddedTerminalAckTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+        _embeddedTerminalAckTimer.Tick += (_, _) => ShowEmbeddedTerminalAckTimeout();
 
         Text = "Stepler";
         ShowInTaskbar = false;
@@ -347,6 +351,8 @@ internal sealed class SteplerTrayForm : Form
     {
         _closing = true;
         StopHotkeyLogWatcher();
+        _embeddedTerminalAckTimer.Stop();
+        _embeddedTerminalAckTimer.Dispose();
         _timingOverlay?.Close();
         _timingOverlay?.Dispose();
         StopRunner();
@@ -842,6 +848,11 @@ internal sealed class SteplerTrayForm : Form
             string? line;
             while ((line = reader.ReadLine()) is not null)
             {
+                if (TryHandleEmbeddedTerminalTiming(line))
+                {
+                    continue;
+                }
+
                 if (TryFormatHotkeyTiming(line, out var text, out var failed))
                 {
                     ShowTimingOverlay(text, failed);
@@ -879,6 +890,82 @@ internal sealed class SteplerTrayForm : Form
         _timingOverlay.ShowTiming(text, failed, _settings.TimingOverlayDurationMs, _settings.DarkTheme);
     }
 
+    private bool TryHandleEmbeddedTerminalTiming(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            var label = TryGetHotkeyLabel(root);
+            if (label is null)
+            {
+                return false;
+            }
+
+            if (IsEmbeddedTerminalForward(root))
+            {
+                _embeddedTerminalPendingLabel = label;
+                _embeddedTerminalAckTimer.Stop();
+                _embeddedTerminalAckTimer.Start();
+                ShowTimingOverlay($"{label} ожидает обработчик", failed: false);
+                return true;
+            }
+
+            if (!string.Equals(_embeddedTerminalPendingLabel, label, StringComparison.Ordinal)
+                || !root.TryGetProperty("event", out var eventElement)
+                || !string.Equals(eventElement.GetString(), "performance_operation_v1", StringComparison.Ordinal)
+                || !root.TryGetProperty("context_method", out var contextMethod)
+                || !string.Equals(contextMethod.GetString(), "psreadline", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            _embeddedTerminalPendingLabel = null;
+            _embeddedTerminalAckTimer.Stop();
+            var outcome = root.TryGetProperty("outcome", out var outcomeElement)
+                ? outcomeElement.GetString()
+                : null;
+            if (string.Equals(outcome, "Completed", StringComparison.Ordinal))
+            {
+                var duration = root.TryGetProperty("duration_ms", out var durationElement)
+                    && durationElement.TryGetInt64(out var value)
+                        ? value
+                        : 0;
+                ShowTimingOverlay($"{label} {duration} ms", failed: false);
+            }
+            else if (string.Equals(outcome, "NoChange", StringComparison.Ordinal))
+            {
+                ShowTimingOverlay($"{label} нечего менять", failed: false);
+            }
+            else
+            {
+                ShowTimingOverlay($"{label} failed", failed: true);
+            }
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void ShowEmbeddedTerminalAckTimeout()
+    {
+        _embeddedTerminalAckTimer.Stop();
+        var label = _embeddedTerminalPendingLabel;
+        _embeddedTerminalPendingLabel = null;
+        if (label is not null)
+        {
+            ShowTimingOverlay($"{label} обработчик не загружен", failed: true);
+        }
+    }
+
     private void ApplyCurrentTheme()
     {
         var palette = ThemePalette.FromDarkTheme(_settings.DarkTheme);
@@ -906,14 +993,15 @@ internal sealed class SteplerTrayForm : Form
                 return false;
             }
 
-            var trigger = triggerElement.GetString();
-            var label = trigger switch
-            {
-                "Pause" => "P",
-                "ScrollLock" => "CP",
-                _ => null,
-            };
+            var label = TryGetHotkeyLabel(root);
             if (label is null)
+            {
+                return false;
+            }
+
+            // Forwarding Ctrl+F11/F12 to the embedded terminal only means that
+            // the chord was injected. A PSReadLine performance event confirms correction.
+            if (IsEmbeddedTerminalForward(root))
             {
                 return false;
             }
@@ -971,6 +1059,31 @@ internal sealed class SteplerTrayForm : Form
         {
             return false;
         }
+    }
+
+    private static string? TryGetHotkeyLabel(JsonElement root)
+    {
+        if (!root.TryGetProperty("trigger", out var triggerElement))
+        {
+            return null;
+        }
+
+        return triggerElement.GetString() switch
+        {
+            "Pause" => "P",
+            "ScrollLock" => "CP",
+            _ => null,
+        };
+    }
+
+    private static bool IsEmbeddedTerminalForward(JsonElement root)
+    {
+        return root.TryGetProperty("operation_id", out var operationId)
+            && string.Equals(operationId.GetString(), "embedded-terminal", StringComparison.Ordinal)
+            && root.TryGetProperty("app", out var app)
+            && string.Equals(app.GetString(), "embedded_terminal", StringComparison.Ordinal)
+            && root.TryGetProperty("replacer", out var replacer)
+            && string.Equals(replacer.GetString(), "embedded_terminal_psreadline", StringComparison.Ordinal);
     }
 
     private void ShowTimingOverlayDurationDialog()

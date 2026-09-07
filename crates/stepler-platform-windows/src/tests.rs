@@ -878,7 +878,7 @@ fn web_keyboard_selection_guard_is_scoped_to_chatgpt_chrome_surface() {
             "Chrome_WidgetWin_1",
             Some(true),
         ),
-        WebKeyboardSelectionGuardResult::Accept
+        WebKeyboardSelectionGuardResult::RejectAsImplicit
     );
     assert_eq!(
         web_keyboard_selection_guard_result(
@@ -887,7 +887,7 @@ fn web_keyboard_selection_guard_is_scoped_to_chatgpt_chrome_surface() {
             "Chrome_WidgetWin_1",
             None,
         ),
-        WebKeyboardSelectionGuardResult::Accept
+        WebKeyboardSelectionGuardResult::RejectAsImplicit
     );
     assert_eq!(
         web_keyboard_selection_guard_result(

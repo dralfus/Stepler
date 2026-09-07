@@ -383,16 +383,22 @@ impl WebKeyboardSelectionMethod {
             } else {
                 None
             };
-            let selected = if web_keyboard_selection_guard_result(
+            let selection_guard = web_keyboard_selection_guard_result(
                 &foreground_title,
                 app_class,
                 focused_class,
                 selection_state,
-            ) == WebKeyboardSelectionGuardResult::RejectAsImplicit
-            {
+            );
+            if selection_guard == WebKeyboardSelectionGuardResult::RejectAsImplicit {
+                if selection_state == Some(true) {
+                    send_key(VK_RIGHT);
+                    release_modifier_keys();
+                }
                 append_hotkey_signal_log(
-                    "web_keyboard_capture selected_skipped reason=uia_no_selection",
+                    "web_keyboard_capture selected_skipped reason=chatgpt_line_contract",
                 );
+            }
+            let selected = if selection_guard == WebKeyboardSelectionGuardResult::RejectAsImplicit {
                 None
             } else {
                 copy_web_keyboard_selected_text(
@@ -1473,11 +1479,9 @@ pub(super) fn web_keyboard_selection_guard_result(
     title: &str,
     app_class: &str,
     focused_class: &str,
-    uia_selection: Option<bool>,
+    _uia_selection: Option<bool>,
 ) -> WebKeyboardSelectionGuardResult {
-    if web_keyboard_selection_guard_applies(title, app_class, focused_class)
-        && uia_selection == Some(false)
-    {
+    if web_keyboard_selection_guard_applies(title, app_class, focused_class) {
         WebKeyboardSelectionGuardResult::RejectAsImplicit
     } else {
         WebKeyboardSelectionGuardResult::Accept

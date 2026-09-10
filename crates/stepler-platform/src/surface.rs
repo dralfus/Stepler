@@ -652,6 +652,17 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
         );
     }
 
+    if facts.is_word_search_edit {
+        return surface(
+            SurfaceKind::Win32Edit,
+            95,
+            vec![
+                "process=WINWORD or app_class=OpusApp",
+                "focused_class=RichEdit*",
+            ],
+        );
+    }
+
     if facts.is_word_process || facts.is_word_app_class {
         return surface(
             SurfaceKind::WordEditor,

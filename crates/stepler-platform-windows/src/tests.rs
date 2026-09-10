@@ -747,6 +747,24 @@ fn rocket_chat_search_runtime_stack_prefers_uia_editable_before_keyboard() {
 
 #[cfg(windows)]
 #[test]
+fn word_search_rich_edit_uses_win32_messages_not_word_com() {
+    let target = ForegroundTarget {
+        app_class: String::from("OpusApp"),
+        focused_class: String::from("RICHEDIT60W"),
+        title: String::from("Document1 - Word"),
+        process_name: Some(String::from("WINWORD")),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("hwnd:2"),
+    };
+
+    assert_eq!(
+        windows_runtime_probe_methods(&target),
+        vec![MethodId::Win32EditMessages]
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn outlook_runtime_stacks_do_not_include_generic_fallbacks() {
     let cases = [
         (
@@ -849,6 +867,86 @@ fn web_keyboard_fast_context_is_line_compatible() {
 
 #[cfg(windows)]
 #[test]
+fn web_keyboard_word_context_ignores_only_hidden_list_prefixes() {
+    assert!(web_keyboard_context_ignores_hidden_list_prefix(
+        "web-keyboard-word-selection:hwnd:1",
+        "1. четыре",
+        "четыре"
+    ));
+    assert!(!web_keyboard_context_ignores_hidden_list_prefix(
+        "web-keyboard-selection-selected:hwnd:1",
+        "1. четыре",
+        "четыре"
+    ));
+    assert!(!web_keyboard_context_ignores_hidden_list_prefix(
+        "web-keyboard-word-selection:hwnd:1",
+        "prefix четыре",
+        "четыре"
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn chatgpt_scrolllock_line_context_ignores_hidden_list_prefix() {
+    assert!(web_keyboard_context_ignores_hidden_list_prefix(
+        "web-keyboard-chatgpt-line-selection:hwnd:1",
+        "1. осень кило",
+        "осень кило"
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn chatgpt_pause_line_context_ignores_hidden_list_prefix() {
+    assert!(web_keyboard_context_ignores_hidden_list_prefix(
+        "web-keyboard-chatgpt-word-line-selection:hwnd:1",
+        "3. yb;t",
+        "yb;t"
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn chatgpt_multiline_replacement_preserves_each_line_boundary() {
+    assert_eq!(
+        chatgpt_multiline_replacement_lines(
+            "web-keyboard-chatgpt-selection-selected:hwnd:1",
+            "gjkt\r\nrehn\nabrec"
+        ),
+        Some(vec!["gjkt", "rehn", "abrec"])
+    );
+    assert_eq!(
+        chatgpt_multiline_replacement_lines("web-keyboard-selection-selected:hwnd:1", "gjkt\nrehn"),
+        None
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn chatgpt_selected_text_removes_only_hidden_list_markers() {
+    assert_eq!(
+        normalize_chatgpt_selected_text("      3. четыре пиять"),
+        "четыре пиять"
+    );
+    assert_eq!(
+        normalize_chatgpt_selected_text("1. один\n  2) два\n    • три"),
+        "один\nдва\nтри"
+    );
+    assert_eq!(
+        normalize_chatgpt_selected_text("prefix 3. literal"),
+        "prefix 3. literal"
+    );
+    assert_eq!(
+        normalize_chatgpt_selected_text_if_needed(
+            "web-keyboard-selection-selected:hwnd:1",
+            "  3. literal"
+        ),
+        "  3. literal"
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn web_keyboard_captured_left_context_uses_dedicated_apply_path() {
     let control_id = "web-keyboard-captured-left-selection:hwnd:1";
 
@@ -869,7 +967,7 @@ fn web_keyboard_selection_guard_is_scoped_to_chatgpt_chrome_surface() {
             "Chrome_RenderWidgetHostHWND",
             Some(false),
         ),
-        WebKeyboardSelectionGuardResult::RejectAsImplicit
+        WebKeyboardSelectionGuardResult::Accept
     );
     assert_eq!(
         web_keyboard_selection_guard_result(
@@ -878,7 +976,7 @@ fn web_keyboard_selection_guard_is_scoped_to_chatgpt_chrome_surface() {
             "Chrome_WidgetWin_1",
             Some(true),
         ),
-        WebKeyboardSelectionGuardResult::RejectAsImplicit
+        WebKeyboardSelectionGuardResult::Accept
     );
     assert_eq!(
         web_keyboard_selection_guard_result(
@@ -887,7 +985,7 @@ fn web_keyboard_selection_guard_is_scoped_to_chatgpt_chrome_surface() {
             "Chrome_WidgetWin_1",
             None,
         ),
-        WebKeyboardSelectionGuardResult::RejectAsImplicit
+        WebKeyboardSelectionGuardResult::Accept
     );
     assert_eq!(
         web_keyboard_selection_guard_result(

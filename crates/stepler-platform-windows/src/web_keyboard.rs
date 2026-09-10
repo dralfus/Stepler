@@ -374,43 +374,21 @@ impl WebKeyboardSelectionMethod {
             let snapshot = capture_web_keyboard_clipboard(fast_profile, timing.clipboard_timeout)?;
             let scrolllock_mode = active_correction_mode_is_scrolllock();
 
-            let selection_state = if web_keyboard_selection_guard_applies(
-                &foreground_title,
-                app_class,
-                focused_class,
-            ) {
-                uia_focused_element_has_selection()
-            } else {
-                None
-            };
-            let selection_guard = web_keyboard_selection_guard_result(
-                &foreground_title,
-                app_class,
-                focused_class,
-                selection_state,
-            );
-            if selection_guard == WebKeyboardSelectionGuardResult::RejectAsImplicit {
-                if selection_state == Some(true) {
-                    send_key(VK_RIGHT);
-                    release_modifier_keys();
-                }
-                append_hotkey_signal_log(
-                    "web_keyboard_capture selected_skipped reason=chatgpt_line_contract",
-                );
-            }
-            let selected = if selection_guard == WebKeyboardSelectionGuardResult::RejectAsImplicit {
-                None
-            } else {
-                copy_web_keyboard_selected_text(
-                    &snapshot,
-                    timing.selected_timeout,
-                    fast_profile,
-                    timing.clipboard_timeout,
-                )
-                .filter(|text| is_plausible_web_selected_text(text))
-                .filter(|text| !looks_like_hotkeyhandler_marker(text))
-            };
+            let selected = copy_web_keyboard_selected_text(
+                &snapshot,
+                timing.selected_timeout,
+                fast_profile,
+                timing.clipboard_timeout,
+            )
+            .filter(|text| is_plausible_web_selected_text(text))
+            .filter(|text| !looks_like_hotkeyhandler_marker(text));
             if let Some(text) = selected {
+                let chatgpt_selection = web_keyboard_uses_word_context_for_title(&foreground_title);
+                let text = if chatgpt_selection {
+                    normalize_chatgpt_selected_text(&text)
+                } else {
+                    text
+                };
                 append_hotkey_signal_log(&format!(
                     "web_keyboard_capture branch=selected len={}",
                     text.len()
@@ -421,10 +399,48 @@ impl WebKeyboardSelectionMethod {
                     focused_class,
                     foreground,
                     focused,
-                    "web-keyboard-selection-selected",
+                    if chatgpt_selection {
+                        "web-keyboard-chatgpt-selection-selected"
+                    } else {
+                        "web-keyboard-selection-selected"
+                    },
                     text,
                     true,
                 ));
+            }
+
+            if !scrolllock_mode && web_keyboard_uses_word_context_for_title(&foreground_title) {
+                select_web_line_left_context();
+                let copied = copy_web_keyboard_selected_text(
+                    &snapshot,
+                    timing.short_context_timeout,
+                    fast_profile,
+                    timing.clipboard_timeout,
+                )
+                .filter(|text| is_plausible_web_selected_text(text))
+                .filter(|text| !looks_like_hotkeyhandler_marker(text));
+                restore_web_line_left_context_caret();
+                let _ = restore_web_keyboard_clipboard(
+                    &snapshot,
+                    fast_profile,
+                    timing.clipboard_timeout,
+                );
+
+                if let Some(text) = copied {
+                    append_hotkey_signal_log(&format!(
+                        "web_keyboard_capture branch=word_left len={}",
+                        text.len()
+                    ));
+                    return Ok(web_keyboard_context(
+                        app_class,
+                        focused_class,
+                        foreground,
+                        focused,
+                        "web-keyboard-chatgpt-word-line-selection",
+                        text,
+                        false,
+                    ));
+                }
             }
 
             if scrolllock_mode {
@@ -553,15 +569,21 @@ impl WebKeyboardSelectionMethod {
                         "web_keyboard_capture branch=scrolllock_line_left len={}",
                         text.len()
                     ));
+                    let control_id = if web_keyboard_uses_word_context_for_title(&foreground_title)
+                    {
+                        "web-keyboard-chatgpt-line-selection"
+                    } else {
+                        web_keyboard_control_prefix(
+                            "web-keyboard-line-selection",
+                            effective_profile,
+                        )
+                    };
                     return Ok(web_keyboard_context(
                         app_class,
                         focused_class,
                         foreground,
                         focused,
-                        web_keyboard_control_prefix(
-                            "web-keyboard-line-selection",
-                            effective_profile,
-                        ),
+                        control_id,
                         text,
                         false,
                     ));
@@ -766,8 +788,8 @@ impl WebKeyboardSelectionMethod {
         }
 
         if context.selection_range.is_some() {
-            preflight_web_keyboard_selected_context(&actual_before)?;
-            send_unicode_text(&plan.replacement_text)?;
+            preflight_web_keyboard_selected_context(&context.control_id, &actual_before)?;
+            send_web_keyboard_selected_replacement(&context.control_id, &plan.replacement_text)?;
             return Ok(ApplyReplacementResult {
                 applied: true,
                 actual_before_text: Some(actual_before),
@@ -1044,18 +1066,30 @@ impl WebKeyboardSelectionMethod {
                 Duration::from_millis(450),
             );
         }
-        let selected_prefix_to_preserve =
-            if !replace_entire_context && selected.as_deref() != Some(expected_selection) {
+        let hidden_list_prefix = selected.as_deref().is_some_and(|selected| {
+            web_keyboard_context_ignores_hidden_list_prefix(
+                &context.control_id,
+                selected,
+                expected_selection,
+            )
+        });
+        let selected_prefix_to_preserve = if !replace_entire_context
+            && selected.as_deref() != Some(expected_selection)
+        {
+            if hidden_list_prefix {
+                String::new()
+            } else {
                 selected
                     .as_deref()
                     .and_then(|selected| shifted_web_selection_prefix(selected, expected_selection))
                     .unwrap_or_default()
                     .to_owned()
-            } else {
-                String::new()
-            };
+            }
+        } else {
+            String::new()
+        };
         if selected.as_deref() != Some(expected_selection) {
-            if selected_prefix_to_preserve.is_empty() {
+            if selected_prefix_to_preserve.is_empty() && !hidden_list_prefix {
                 send_key(VK_RIGHT);
                 let _ = restore_clipboard_text_only(&snapshot);
                 return Err(PlatformError::ReplacementUnavailableReason(format!(
@@ -1073,6 +1107,7 @@ impl WebKeyboardSelectionMethod {
         } else {
             format!("{selected_prefix_to_preserve}{replacement_text}")
         };
+
         send_unicode_text(&text_to_send)?;
 
         Ok(ApplyReplacementResult {
@@ -1087,9 +1122,13 @@ impl WebKeyboardSelectionMethod {
 }
 
 #[cfg(windows)]
-fn preflight_web_keyboard_selected_context(expected_selection: &str) -> Result<(), PlatformError> {
+fn preflight_web_keyboard_selected_context(
+    control_id: &str,
+    expected_selection: &str,
+) -> Result<(), PlatformError> {
     let snapshot = capture_clipboard_text_only()?;
-    let selected = copy_selected_text_checked(&snapshot, Duration::from_millis(260));
+    let selected = copy_selected_text_checked(&snapshot, Duration::from_millis(260))
+        .map(|text| normalize_chatgpt_selected_text_if_needed(control_id, &text));
     if selected.as_deref() == Some(expected_selection) {
         let _ = restore_clipboard_text_only(&snapshot);
         return Ok(());
@@ -1453,6 +1492,93 @@ pub(super) fn web_keyboard_rocket_active_line_context(control_id: &str) -> bool 
 }
 
 #[cfg(windows)]
+fn send_web_keyboard_selected_replacement(
+    control_id: &str,
+    replacement_text: &str,
+) -> Result<(), PlatformError> {
+    let Some(lines) = chatgpt_multiline_replacement_lines(control_id, replacement_text) else {
+        return send_unicode_text(replacement_text);
+    };
+
+    for (index, line) in lines.iter().enumerate() {
+        send_unicode_text(line)?;
+        if index + 1 < lines.len() {
+            send_key_virtual(VK_RETURN);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(super) fn chatgpt_multiline_replacement_lines<'a>(
+    control_id: &str,
+    replacement_text: &'a str,
+) -> Option<Vec<&'a str>> {
+    control_id
+        .starts_with("web-keyboard-chatgpt-selection-selected:")
+        .then(|| replacement_text.split('\n').collect::<Vec<_>>())
+        .filter(|lines| lines.len() > 1)
+        .map(|lines| {
+            lines
+                .into_iter()
+                .map(|line| line.strip_suffix('\r').unwrap_or(line))
+                .collect()
+        })
+}
+
+#[cfg(windows)]
+pub(super) fn normalize_chatgpt_selected_text_if_needed(control_id: &str, text: &str) -> String {
+    if control_id.starts_with("web-keyboard-chatgpt-selection-selected:") {
+        normalize_chatgpt_selected_text(text)
+    } else {
+        text.to_owned()
+    }
+}
+
+#[cfg(windows)]
+pub(super) fn normalize_chatgpt_selected_text(text: &str) -> String {
+    text.split('\n')
+        .map(strip_chatgpt_hidden_list_marker)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(windows)]
+fn strip_chatgpt_hidden_list_marker(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    let numeric_marker_end = trimmed
+        .char_indices()
+        .find_map(|(index, ch)| (!ch.is_ascii_digit()).then_some((index, ch)))
+        .and_then(|(index, ch)| {
+            matches!(ch, '.' | ')')
+                .then_some(index + ch.len_utf8())
+                .filter(|end| trimmed[*end..].starts_with(char::is_whitespace))
+        });
+    let bullet_marker_end = trimmed
+        .chars()
+        .next()
+        .filter(|ch| matches!(ch, '-' | '*' | '•'))
+        .map(char::len_utf8)
+        .filter(|end| trimmed[*end..].starts_with(char::is_whitespace));
+
+    numeric_marker_end
+        .or(bullet_marker_end)
+        .map(|end| trimmed[end..].trim_start())
+        .unwrap_or(line)
+}
+pub(super) fn web_keyboard_context_ignores_hidden_list_prefix(
+    control_id: &str,
+    selected: &str,
+    expected: &str,
+) -> bool {
+    (control_id.starts_with("web-keyboard-word-selection:")
+        || control_id.starts_with("web-keyboard-chatgpt-line-selection:")
+        || control_id.starts_with("web-keyboard-chatgpt-word-line-selection:"))
+        && selected
+            .strip_suffix(expected)
+            .is_some_and(web_keyboard_is_wrapped_list_marker_prefix)
+}
+#[cfg(windows)]
 pub(super) fn web_keyboard_captured_left_context(control_id: &str) -> bool {
     control_id.starts_with("web-keyboard-captured-left-selection:")
 }
@@ -1481,11 +1607,13 @@ pub(super) fn web_keyboard_selection_guard_result(
     focused_class: &str,
     _uia_selection: Option<bool>,
 ) -> WebKeyboardSelectionGuardResult {
-    if web_keyboard_selection_guard_applies(title, app_class, focused_class) {
-        WebKeyboardSelectionGuardResult::RejectAsImplicit
-    } else {
-        WebKeyboardSelectionGuardResult::Accept
-    }
+    let _ = (title, app_class, focused_class);
+    WebKeyboardSelectionGuardResult::Accept
+}
+
+#[cfg(windows)]
+fn web_keyboard_uses_word_context_for_title(title: &str) -> bool {
+    title.to_ascii_lowercase().contains("chatgpt")
 }
 
 #[cfg(windows)]
@@ -1876,6 +2004,7 @@ fn is_safe_shifted_web_selection_prefix(prefix: &str) -> bool {
 #[cfg(windows)]
 pub(super) fn is_web_keyboard_line_context(control_id: &str) -> bool {
     control_id.starts_with("web-keyboard-line-selection:")
+        || control_id.starts_with("web-keyboard-chatgpt-line-selection:")
         || control_id.starts_with("web-keyboard-fast-line-selection:")
         || control_id.starts_with("web-keyboard-rocket-fast-line-selection:")
 }

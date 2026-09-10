@@ -2671,6 +2671,7 @@ const VK_C: u32 = 0x43;
 #[cfg(windows)]
 const VK_V: u32 = 0x56;
 #[cfg(windows)]
+const VK_RETURN: u32 = 0x0D;
 const VK_BACK: u32 = 0x08;
 #[cfg(windows)]
 const VK_ESCAPE: u32 = 0x1B;

@@ -12,6 +12,7 @@ pub struct PerformanceEvent {
     pub outcome: OperationState,
     pub build_version: String,
     pub environment_label: String,
+    pub application_id: String,
     pub surface_kind: String,
     pub surface_confidence: u8,
     pub context_method: String,
@@ -78,6 +79,10 @@ impl PerformanceEvent {
             outcome,
             build_version: build_version.into(),
             environment_label: environment_label.into(),
+            application_id: context
+                .map(|value| value.app_id.clone())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| UNKNOWN.to_owned()),
             surface_kind: telemetry
                 .and_then(|value| value.surface_kind.clone())
                 .unwrap_or_else(|| UNKNOWN.to_owned()),
@@ -121,6 +126,7 @@ impl PerformanceEvent {
             "environment_label",
             &self.environment_label,
         ));
+        fields.push(json_string_field("application_id", &self.application_id));
         fields.push(json_string_field("surface_kind", &self.surface_kind));
         fields.push(format!(
             "\"surface_confidence\":{}",
@@ -205,6 +211,7 @@ mod tests {
     #[test]
     fn performance_event_is_observable_without_user_text() {
         let mut context = TextContext::new("secret user text");
+        context.app_id = "ChatGPT".to_owned();
         context.capabilities = Capabilities {
             can_replace_directly: true,
             can_read_selection: true,
@@ -253,6 +260,7 @@ mod tests {
 
         assert!(json.contains("performance_operation_v1"));
         assert!(json.contains("FastBrowserEditor"));
+        assert!(json.contains("\"application_id\":\"ChatGPT\""));
         assert!(json.contains("\"retry_count\":1"));
         assert!(json.contains("\"phase\":\"capture\""));
         assert!(json.contains("\"selection_state\":\"selected\""));

@@ -272,18 +272,18 @@ $build = (Get-Content .\dist\Stepler\BUILD_INFO.txt |
   Where-Object { $_ -like "BuildVersion:*" }).Split(":", 2)[1].Trim()
 $environment = "work-win11" # либо home-win11
 $source = "$env:LOCALAPPDATA\Stepler\logs\stepler_hotkey_log.jsonl"
-$input = Join-Path $env:TEMP "stepler-perf-$environment-$build.jsonl"
-$output = Join-Path $env:TEMP "stepler-perf-$environment-$build.snapshot.json"
+$inputPath = Join-Path $env:TEMP "stepler-perf-$environment-$($build).jsonl"
+$outputPath = Join-Path $env:TEMP "stepler-perf-$environment-$($build).snapshot.json"
 
 Get-Content $source | Where-Object {
   $_ -match '"event":"performance_operation_v1"' -and
   $_ -match ('"build_version":"' + [regex]::Escape($build) + '"') -and
   $_ -match ('"environment_label":"' + [regex]::Escape($environment) + '"')
-} | Set-Content $input -Encoding utf8
+} | Set-Content -LiteralPath $inputPath -Encoding utf8
 
 & .\dist\Stepler\stepler-cli.exe performance-snapshot `
-  --input $input `
-  --output $output
+  --input $inputPath `
+  --output $outputPath
 ```
 
 Команда обрабатывает только строки `event=performance_operation_v1`, исключает
@@ -304,6 +304,30 @@ assessment в `blocked_by_destructive_outcomes`.
 Вход должен быть записан текущей telemetry-схемой, где timings имеют вид
 `timings_ms[].phase`. Старый накопительный лог с `timings_ms[].state` не является
 воспроизводимым T03 baseline: сначала собери новый лог после T02.
+
+### Накопительный отчет реального использования
+
+Для повседневной работы не нужно вручную задавать `STEPLER_PERF_ENV` и собирать
+целевые повторы. После установки сборки с `performance-report` Stepler
+добавляет в новые performance events безопасный `application_id`, surface,
+adapter, P/CP, selection state, outcome и phase timings. В лог не попадают
+заголовок окна, пользовательский текст или путь документа.
+
+Команда ниже читает обычный локальный JSONL, включая `unlabeled` события, и
+создает информационный отчет. Он группирует completed latency по build,
+application, surface, context/replacement adapter, P/CP и selection state;
+profile и algorithm branch показаны как детализация группы.
+
+```powershell
+& .\dist\Stepler\stepler-cli.exe performance-report `
+  --output "$env:TEMP\stepler-performance-report.json"
+Get-Content "$env:TEMP\stepler-performance-report.json" -Raw
+```
+
+Без `--output` отчет выводится в консоль. Старые события, записанные до этого
+изменения, остаются в отчете с `application_id: "unknown"`. Этот отчет служит
+для поиска следующего bottleneck и не заменяет строгий `performance-snapshot`
+для release acceptance.
 
 Остановить runner можно через `Ctrl+C` в его консоли.
 

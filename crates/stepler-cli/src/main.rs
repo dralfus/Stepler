@@ -46,6 +46,10 @@ fn main() {
         performance_snapshot::run(&args);
         return;
     }
+    if args.first().map(String::as_str) == Some("performance-report") {
+        performance_snapshot::run_usage_report(&args);
+        return;
+    }
     if args.first().map(String::as_str) == Some("qwen-submit") {
         qwen_submit(&args);
         return;
@@ -68,7 +72,7 @@ fn main() {
         Some("scrolllock") | Some("ScrollLock") => CorrectionMode::ScrollLock,
         _ => {
             eprintln!(
-                "usage: stepler-cli <pause|scrolllock|diagnose-focus|run-hotkeys|uia-fixture> [--apply] [--delay seconds]\n       stepler-cli performance-snapshot --input <performance.jsonl> --output <snapshot.json>"
+                "usage: stepler-cli <pause|scrolllock|diagnose-focus|run-hotkeys|uia-fixture> [--apply] [--delay seconds]\n       stepler-cli performance-snapshot --input <performance.jsonl> --output <snapshot.json>\n       stepler-cli performance-report [--input <performance.jsonl>] [--output <report.json>]"
             );
             std::process::exit(2);
         }
@@ -1048,6 +1052,7 @@ fn ssh_remote_forwarded_performance_event(
         outcome: OperationState::Completed,
         build_version: build_version.into(),
         environment_label: environment_label.into(),
+        application_id: String::from("SshRemote"),
         surface_kind: String::from("SshRemote"),
         surface_confidence: 100,
         context_method: String::from("ssh_terminal"),

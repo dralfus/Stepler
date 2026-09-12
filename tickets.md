@@ -106,6 +106,9 @@ schema and rejects mixed build versions.
 - [x] Отчет включает phase contribution и выделяет фазу-bottleneck.
 - [x] Рабочий и домашний ПК представлены разными обезличенными environment labels.
 - [x] Snapshot сохраняется отдельно от накопительного runtime log через обязательный `--output`.
+- [x] `performance-report` агрегирует накопительные `unlabeled` события для
+  повседневной диагностики по build, application, surface, adapter, P/CP и
+  selection state, не ослабляя строгие правила snapshot.
 
 Snapshot принимает только актуальный формат `timings_ms[].phase`; старые строки
 с `timings_ms[].state` требуют нового запуска runner и не используются молча.

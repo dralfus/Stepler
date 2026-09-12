@@ -64,10 +64,69 @@ pub fn run(args: &[String]) {
     );
 }
 
+pub fn run_usage_report(args: &[String]) {
+    let input_path = arg_value(args, "--input")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_usage_log_path);
+    let output_path = arg_value(args, "--output").map(PathBuf::from);
+    if let Some(output_path) = &output_path {
+        if let Err(error) = ensure_distinct_paths(&input_path, output_path) {
+            eprintln!("performance-report error: {error}");
+            std::process::exit(2);
+        }
+    }
+
+    let source = match std::fs::read_to_string(&input_path) {
+        Ok(source) => source,
+        Err(error) => {
+            eprintln!("performance-report input error: {error}");
+            std::process::exit(1);
+        }
+    };
+    let report = match build_usage_report(&source) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("performance-report error: {error}");
+            std::process::exit(1);
+        }
+    };
+    let serialized = match serde_json::to_string_pretty(&report) {
+        Ok(serialized) => format!("{serialized}\n"),
+        Err(error) => {
+            eprintln!("performance-report serialization error: {error}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Some(output_path) = output_path {
+        if let Err(error) = std::fs::write(&output_path, serialized) {
+            eprintln!("performance-report output error: {error}");
+            std::process::exit(1);
+        }
+        let group_count = report["groups"].as_array().map_or(0, Vec::len);
+        println!(
+            "performance report written: {} ({} groups)",
+            output_path.display(),
+            group_count
+        );
+    } else {
+        print!("{serialized}");
+    }
+}
+
 fn arg_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.windows(2)
         .find(|pair| pair[0] == name)
         .map(|pair| pair[1].as_str())
+}
+
+fn default_usage_log_path() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Stepler")
+        .join("logs")
+        .join("stepler_hotkey_log.jsonl")
 }
 
 fn ensure_distinct_paths(input: &Path, output: &Path) -> Result<(), SnapshotError> {
@@ -166,10 +225,22 @@ struct BaselineGroupKey {
 #[derive(Debug)]
 struct Record {
     key: BaselineGroupKey,
+    application_id: String,
     outcome: String,
     duration_ms: u64,
     retry_count: u64,
     timings: Vec<Timing>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct UsageGroupKey {
+    build_version: String,
+    application_id: String,
+    surface_kind: String,
+    context_method: String,
+    replacement_method: String,
+    trigger: String,
+    selection_state: String,
 }
 
 #[derive(Debug)]
@@ -260,6 +331,91 @@ impl Aggregate {
             "retry_rate": rate(self.retried, n),
             "outcome_counts": self.outcomes,
             "phase_contribution": phases,
+            "bottleneck_phase": bottleneck_phase,
+        })
+    }
+}
+
+#[derive(Default)]
+struct UsageAggregate {
+    n: usize,
+    completed_durations_ms: Vec<u64>,
+    failed: usize,
+    retried: usize,
+    cold_n: usize,
+    warm_n: usize,
+    outcomes: BTreeMap<String, usize>,
+    profiles: BTreeSet<String>,
+    algorithm_branches: BTreeSet<String>,
+    phases_ms: BTreeMap<String, u64>,
+}
+
+impl UsageAggregate {
+    fn add(&mut self, record: Record) {
+        self.n += 1;
+        if record.outcome == "RolledBackOrFailed" {
+            self.failed += 1;
+        }
+        if record.retry_count > 0 {
+            self.retried += 1;
+        }
+        if record.key.cold_warm == "cold" {
+            self.cold_n += 1;
+        } else if record.key.cold_warm == "warm" {
+            self.warm_n += 1;
+        }
+        self.profiles.insert(record.key.series.profile.clone());
+        self.algorithm_branches
+            .insert(record.key.series.algorithm_branch.clone());
+        *self.outcomes.entry(record.outcome.clone()).or_default() += 1;
+
+        if record.outcome == "Completed" {
+            self.completed_durations_ms.push(record.duration_ms);
+            for timing in record.timings {
+                *self.phases_ms.entry(timing.phase).or_default() += timing.elapsed_ms;
+            }
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        let completed_n = self.completed_durations_ms.len();
+        let total_duration_ms = self.completed_durations_ms.iter().sum::<u64>();
+        let phase_contribution = self
+            .phases_ms
+            .iter()
+            .map(|(phase, total_ms)| {
+                json!({
+                    "phase": phase,
+                    "total_ms": total_ms,
+                    "share_of_completed_duration": if total_duration_ms == 0 {
+                        0.0
+                    } else {
+                        *total_ms as f64 / total_duration_ms as f64
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let bottleneck_phase = self
+            .phases_ms
+            .iter()
+            .max_by(|left, right| left.1.cmp(right.1).then_with(|| right.0.cmp(left.0)))
+            .map(|(phase, _)| phase.clone());
+
+        json!({
+            "n": self.n,
+            "completed_n": completed_n,
+            "cold_n": self.cold_n,
+            "warm_n": self.warm_n,
+            "p50_ms": percentile(&self.completed_durations_ms, 50),
+            "p90_ms": percentile(&self.completed_durations_ms, 90),
+            "p95_ms": percentile(&self.completed_durations_ms, 95),
+            "max_ms": self.completed_durations_ms.iter().copied().max().unwrap_or_default(),
+            "failure_rate": rate(self.failed, self.n),
+            "retry_rate": rate(self.retried, self.n),
+            "outcome_counts": self.outcomes,
+            "profiles": self.profiles,
+            "algorithm_branches": self.algorithm_branches,
+            "phase_contribution": phase_contribution,
             "bottleneck_phase": bottleneck_phase,
         })
     }
@@ -387,6 +543,65 @@ fn build_snapshot(source: &str) -> Result<Value, SnapshotError> {
     }))
 }
 
+fn build_usage_report(source: &str) -> Result<Value, SnapshotError> {
+    let mut groups = BTreeMap::<UsageGroupKey, UsageAggregate>::new();
+    let mut ignored_non_performance = 0usize;
+
+    for (line_index, line) in source.lines().enumerate() {
+        let line_number = line_index + 1;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value =
+            serde_json::from_str(line).map_err(|error| SnapshotError::InvalidJson {
+                line: line_number,
+                error: error.to_string(),
+            })?;
+        if value.get("event").and_then(Value::as_str) != Some(EVENT_NAME) {
+            ignored_non_performance += 1;
+            continue;
+        }
+        let record = parse_record(&value, line_number)?;
+        let key = UsageGroupKey {
+            build_version: record.key.series.build_version.clone(),
+            application_id: record.application_id.clone(),
+            surface_kind: record.key.series.surface_kind.clone(),
+            context_method: record.key.series.context_method.clone(),
+            replacement_method: record.key.series.replacement_method.clone(),
+            trigger: record.key.series.trigger.clone(),
+            selection_state: record.key.series.selection_state.clone(),
+        };
+        groups.entry(key).or_default().add(record);
+    }
+
+    if groups.is_empty() {
+        return Err(SnapshotError::EmptyDataset);
+    }
+
+    let groups = groups
+        .iter()
+        .map(|(key, aggregate)| {
+            let mut group = usage_group_key_json(key);
+            if let Value::Object(fields) = &mut group {
+                if let Value::Object(metrics) = aggregate.to_json() {
+                    fields.extend(metrics);
+                }
+            }
+            group
+        })
+        .collect::<Vec<_>>();
+
+    Ok(json!({
+        "schema": "performance_report_v1",
+        "source_event": EVENT_NAME,
+        "measurement": "completed operations only",
+        "ignored_lines": {
+            "non_performance_events": ignored_non_performance
+        },
+        "groups": groups
+    }))
+}
+
 fn parse_record(value: &Value, line: usize) -> Result<Record, SnapshotError> {
     let field = |name| required_string(value, name, line);
     let cold_warm = field("cold_warm")?;
@@ -404,7 +619,9 @@ fn parse_record(value: &Value, line: usize) -> Result<Record, SnapshotError> {
         ));
     }
     let environment_label = field("environment_label")?;
-    if !SUPPORTED_ENVIRONMENTS.contains(&environment_label.as_str()) {
+    if environment_label != "unlabeled"
+        && !SUPPORTED_ENVIRONMENTS.contains(&environment_label.as_str())
+    {
         return Err(invalid_event(
             line,
             format!(
@@ -472,6 +689,12 @@ fn parse_record(value: &Value, line: usize) -> Result<Record, SnapshotError> {
 
     Ok(Record {
         key: BaselineGroupKey { series, cold_warm },
+        application_id: value
+            .get("application_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown")
+            .to_owned(),
         outcome,
         duration_ms: required_u64(value, "duration_ms", line)?,
         retry_count: required_u64(value, "retry_count", line)?,
@@ -512,6 +735,18 @@ fn baseline_series_key_json(key: &BaselineSeriesKey) -> Value {
         "replacement_method": key.replacement_method,
         "profile": key.profile,
         "algorithm_branch": key.algorithm_branch,
+        "trigger": key.trigger,
+        "selection_state": key.selection_state,
+    })
+}
+
+fn usage_group_key_json(key: &UsageGroupKey) -> Value {
+    json!({
+        "build_version": key.build_version,
+        "application_id": key.application_id,
+        "surface_kind": key.surface_kind,
+        "context_method": key.context_method,
+        "replacement_method": key.replacement_method,
         "trigger": key.trigger,
         "selection_state": key.selection_state,
     })
@@ -825,5 +1060,68 @@ mod tests {
         assert_eq!(percentile(&[300, 100, 200], 50), 200);
         assert_eq!(percentile(&[300, 100, 200], 90), 300);
         assert_eq!(percentile(&[], 95), 0);
+    }
+
+    #[test]
+    fn usage_report_groups_unlabeled_completed_events_by_application_and_trigger() {
+        let source = [
+            event(
+                "1.0.test",
+                "unlabeled",
+                "cold",
+                200,
+                "Completed",
+                0,
+                &[("capture", 70), ("apply", 130)],
+            )
+            .replace(
+                "\"surface_kind\":\"FastBrowserEditor\"",
+                "\"application_id\":\"ChatGPT\",\"surface_kind\":\"FastBrowserEditor\"",
+            ),
+            event(
+                "1.0.test",
+                "unlabeled",
+                "warm",
+                100,
+                "Completed",
+                1,
+                &[("capture", 30), ("apply", 70)],
+            )
+            .replace(
+                "\"surface_kind\":\"FastBrowserEditor\"",
+                "\"application_id\":\"ChatGPT\",\"surface_kind\":\"FastBrowserEditor\"",
+            ),
+            event(
+                "1.0.test",
+                "unlabeled",
+                "warm",
+                400,
+                "Completed",
+                0,
+                &[("capture", 100), ("apply", 300)],
+            )
+            .replace(
+                "\"surface_kind\":\"FastBrowserEditor\"",
+                "\"application_id\":\"ChatGPT\",\"surface_kind\":\"FastBrowserEditor\"",
+            )
+            .replace("\"trigger\":\"Pause\"", "\"trigger\":\"ScrollLock\""),
+        ]
+        .join("\n");
+
+        let report = build_usage_report(&source).expect("usage report should build");
+        let groups = report["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+
+        let pause = groups
+            .iter()
+            .find(|group| group["trigger"] == "Pause")
+            .unwrap();
+        assert_eq!(pause["application_id"], "ChatGPT");
+        assert_eq!(pause["n"], 2);
+        assert_eq!(pause["completed_n"], 2);
+        assert_eq!(pause["p50_ms"], 100);
+        assert_eq!(pause["p95_ms"], 200);
+        assert_eq!(pause["retry_rate"], 0.5);
+        assert_eq!(pause["bottleneck_phase"], "apply");
     }
 }

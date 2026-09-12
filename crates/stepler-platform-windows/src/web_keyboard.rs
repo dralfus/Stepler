@@ -436,7 +436,7 @@ impl WebKeyboardSelectionMethod {
                         focused_class,
                         foreground,
                         focused,
-                        "web-keyboard-chatgpt-word-line-selection",
+                        web_keyboard_chatgpt_line_control_prefix(effective_profile, true),
                         text,
                         false,
                     ));
@@ -571,7 +571,7 @@ impl WebKeyboardSelectionMethod {
                     ));
                     let control_id = if web_keyboard_uses_word_context_for_title(&foreground_title)
                     {
-                        "web-keyboard-chatgpt-line-selection"
+                        web_keyboard_chatgpt_line_control_prefix(effective_profile, false)
                     } else {
                         web_keyboard_control_prefix(
                             "web-keyboard-line-selection",
@@ -1477,7 +1477,22 @@ fn normalize_web_keyboard_context_text(control_prefix: &str, text: String) -> St
 pub(super) fn web_keyboard_fast_context(control_id: &str) -> bool {
     control_id.starts_with("web-keyboard-fast-selection:")
         || control_id.starts_with("web-keyboard-fast-line-selection:")
+        || control_id.starts_with("web-keyboard-fast-chatgpt-line-selection:")
+        || control_id.starts_with("web-keyboard-fast-chatgpt-word-line-selection:")
         || web_keyboard_rocket_fast_context(control_id)
+}
+
+#[cfg(windows)]
+fn web_keyboard_chatgpt_line_control_prefix(
+    profile: WebKeyboardProfile,
+    word_context: bool,
+) -> &'static str {
+    match (web_keyboard_profile_is_fast(profile), word_context) {
+        (true, true) => "web-keyboard-fast-chatgpt-word-line-selection",
+        (true, false) => "web-keyboard-fast-chatgpt-line-selection",
+        (false, true) => "web-keyboard-chatgpt-word-line-selection",
+        (false, false) => "web-keyboard-chatgpt-line-selection",
+    }
 }
 
 #[cfg(windows)]
@@ -1658,10 +1673,14 @@ pub(super) fn web_keyboard_effective_profile_for_title(
     title: &str,
 ) -> WebKeyboardProfile {
     if profile == WebKeyboardProfile::Fast && web_keyboard_is_jira_like_title(title) {
-        WebKeyboardProfile::Standard
+        return WebKeyboardProfile::Standard;
     } else {
-        profile
+        if profile == WebKeyboardProfile::Standard && title.trim().eq_ignore_ascii_case("ChatGPT") {
+            return WebKeyboardProfile::Fast;
+        }
     }
+
+    profile
 }
 
 #[cfg(windows)]
@@ -2005,6 +2024,7 @@ fn is_safe_shifted_web_selection_prefix(prefix: &str) -> bool {
 pub(super) fn is_web_keyboard_line_context(control_id: &str) -> bool {
     control_id.starts_with("web-keyboard-line-selection:")
         || control_id.starts_with("web-keyboard-chatgpt-line-selection:")
+        || control_id.starts_with("web-keyboard-fast-chatgpt-line-selection:")
         || control_id.starts_with("web-keyboard-fast-line-selection:")
         || control_id.starts_with("web-keyboard-rocket-fast-line-selection:")
 }

@@ -134,24 +134,78 @@ pub fn try_forward_embedded_terminal_hotkey(
     }
 
     let foreground = foreground_hwnd()?;
-    if !foreground_is_codex_embedded_terminal(foreground) {
-        return Ok(false);
-    }
+    let forwarded_from_hook = take_embedded_terminal_hotkey_handoff(foreground);
+    if !forwarded_from_hook {
+        if !foreground_is_codex_embedded_terminal(foreground) {
+            return Ok(false);
+        }
 
-    let focus = uia_focus_diagnostics()?;
-    if !is_embedded_terminal_uia_focus(&focus) {
-        return Ok(false);
+        let focus = uia_focus_diagnostics()?;
+        if !is_embedded_terminal_uia_focus(&focus) {
+            return Ok(false);
+        }
     }
 
     release_modifier_keys();
     std::thread::sleep(Duration::from_millis(20));
     let key = embedded_terminal_psreadline_forward_key(mode);
     append_hotkey_signal_log(&format!(
-        "embedded_terminal_psreadline_forward chord=Ctrl+vk:{key}"
+        "embedded_terminal_psreadline_forward source={} chord=Ctrl+vk:{key}",
+        if forwarded_from_hook { "hook" } else { "uia" }
     ));
     send_key_chord(&[VK_CONTROL], key);
     release_modifier_keys();
     Ok(true)
+}
+
+#[cfg(windows)]
+const EMBEDDED_TERMINAL_HANDOFF_MAX_AGE: Duration = Duration::from_millis(750);
+
+#[cfg(windows)]
+static EMBEDDED_TERMINAL_HOTKEY_HANDOFF: OnceLock<Mutex<Option<(isize, Instant)>>> =
+    OnceLock::new();
+
+#[cfg(windows)]
+fn mark_embedded_terminal_hotkey_handoff(foreground: isize) {
+    if let Ok(mut handoff) = EMBEDDED_TERMINAL_HOTKEY_HANDOFF
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+    {
+        *handoff = Some((foreground, Instant::now()));
+    }
+}
+
+#[cfg(windows)]
+fn take_embedded_terminal_hotkey_handoff(foreground: isize) -> bool {
+    EMBEDDED_TERMINAL_HOTKEY_HANDOFF
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|mut handoff| handoff.take())
+        .is_some_and(|(handoff_foreground, created_at)| {
+            embedded_terminal_handoff_is_fresh(foreground, handoff_foreground, created_at)
+        })
+}
+
+#[cfg(windows)]
+fn embedded_terminal_hotkey_handoff_is_pending(foreground: isize) -> bool {
+    EMBEDDED_TERMINAL_HOTKEY_HANDOFF
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|handoff| *handoff)
+        .is_some_and(|(handoff_foreground, created_at)| {
+            embedded_terminal_handoff_is_fresh(foreground, handoff_foreground, created_at)
+        })
+}
+
+#[cfg(windows)]
+fn embedded_terminal_handoff_is_fresh(
+    foreground: isize,
+    handoff_foreground: isize,
+    created_at: Instant,
+) -> bool {
+    foreground == handoff_foreground && created_at.elapsed() <= EMBEDDED_TERMINAL_HANDOFF_MAX_AGE
 }
 
 #[cfg(not(windows))]
@@ -2095,10 +2149,22 @@ unsafe extern "system" fn low_level_keyboard_proc(
             ));
             return CallNextHookEx(0, code, wparam, lparam);
         }
-        if foreground_hwnd()
-            .map(refresh_foreground_is_codex_embedded_terminal)
-            .unwrap_or(false)
-        {
+        let embedded_terminal_foreground = foreground_hwnd().ok();
+        let embedded_terminal = if is_down {
+            embedded_terminal_foreground
+                .map(refresh_foreground_is_codex_embedded_terminal)
+                .unwrap_or(false)
+        } else {
+            embedded_terminal_foreground
+                .map(embedded_terminal_hotkey_handoff_is_pending)
+                .unwrap_or(false)
+        };
+        if embedded_terminal {
+            if is_down {
+                if let Some(foreground) = embedded_terminal_foreground {
+                    mark_embedded_terminal_hotkey_handoff(foreground);
+                }
+            }
             let mode = KEYBOARD_CONTROL_STATE
                 .get_or_init(|| Mutex::new(KeyboardControlHookState::default()))
                 .lock()

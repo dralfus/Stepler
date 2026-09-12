@@ -707,6 +707,12 @@ fn handle_hotkey_event<F, C, R, B>(
     B: stepler_platform::ClipboardBackend,
 {
     let started = Instant::now();
+    if matches!(try_forward_embedded_terminal_hotkey(mode), Ok(true)) {
+        log_embedded_terminal_forwarded(mode, started, log_path);
+        release_modifier_keys();
+        return;
+    }
+
     set_active_correction_mode(mode);
     release_modifier_keys();
     let pending_layout = RefCell::new(None);
@@ -807,27 +813,7 @@ fn handle_hotkey_event<F, C, R, B>(
                 let _ = layout_thread.join();
             }
             if matches!(try_forward_embedded_terminal_hotkey(mode), Ok(true)) {
-                eprintln!("{mode:?}: forwarded to embedded terminal PSReadLine");
-                let event = OperationLogEvent {
-                    operation_id: String::from("embedded-terminal"),
-                    timestamp_unix_ms: timestamp_unix_ms(),
-                    trigger: LogTrigger::from(mode),
-                    state: OperationState::Completed,
-                    app: Some(String::from("embedded_terminal")),
-                    provider: Some(String::from("WindowsTextContextProvider")),
-                    replacer: Some(String::from("embedded_terminal_psreadline")),
-                    range: None,
-                    expected_before_text: Some(String::from(
-                        "forwarded_to_embedded_terminal_psreadline",
-                    )),
-                    replacement_text: None,
-                    layout_result: None,
-                    resolver_trace: None,
-                    clipboard_used: false,
-                    duration_ms: started.elapsed().as_millis(),
-                    timings: Vec::new(),
-                };
-                append_log(log_path, &event.to_json_line());
+                log_embedded_terminal_forwarded(mode, started, log_path);
                 release_modifier_keys();
                 return;
             }
@@ -891,6 +877,32 @@ fn handle_hotkey_event<F, C, R, B>(
         }
     }
     release_modifier_keys();
+}
+
+fn log_embedded_terminal_forwarded(
+    mode: CorrectionMode,
+    started: Instant,
+    log_path: &std::path::Path,
+) {
+    eprintln!("{mode:?}: forwarded to embedded terminal PSReadLine");
+    let event = OperationLogEvent {
+        operation_id: String::from("embedded-terminal"),
+        timestamp_unix_ms: timestamp_unix_ms(),
+        trigger: LogTrigger::from(mode),
+        state: OperationState::Completed,
+        app: Some(String::from("embedded_terminal")),
+        provider: Some(String::from("WindowsTextContextProvider")),
+        replacer: Some(String::from("embedded_terminal_psreadline")),
+        range: None,
+        expected_before_text: Some(String::from("forwarded_to_embedded_terminal_psreadline")),
+        replacement_text: None,
+        layout_result: None,
+        resolver_trace: None,
+        clipboard_used: false,
+        duration_ms: started.elapsed().as_millis(),
+        timings: Vec::new(),
+    };
+    append_log(log_path, &event.to_json_line());
 }
 
 fn log_hotkey_received(log_path: &std::path::Path, mode: CorrectionMode) {

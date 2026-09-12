@@ -154,6 +154,11 @@ where
     where
         P: FnOnce(&TextContext, &ReplacementPlan),
     {
+        // Context capture may use a temporary clipboard marker. Keep the user's snapshot
+        // before that probe so the guard can never adopt the marker as its baseline.
+        let clipboard_before_context = self
+            .clipboard
+            .and_then(|clipboard| clipboard.capture().ok());
         let context = self
             .context_provider
             .text_context()
@@ -183,10 +188,7 @@ where
 
         let should_guard_clipboard = should_guard_clipboard(&context);
         let clipboard_before = should_guard_clipboard
-            .then(|| {
-                self.clipboard
-                    .and_then(|clipboard| clipboard.capture().ok())
-            })
+            .then_some(clipboard_before_context)
             .flatten();
         pre_apply(&context, &plan);
         let foreground_after_pre_apply = self
@@ -202,7 +204,7 @@ where
             Err(error) => {
                 if should_guard_clipboard {
                     if let (Some(clipboard), Some(before)) = (self.clipboard, clipboard_before) {
-                        let _ = guard_clipboard_from_snapshot(clipboard, before);
+                        let _ = guard_clipboard_for_context(clipboard, before, &context);
                     }
                 }
                 return Err(OperationError::Platform(error));
@@ -213,7 +215,8 @@ where
             .map_err(OperationError::Transaction)?;
         let clipboard_guard = if should_guard_clipboard {
             self.clipboard.and_then(|clipboard| {
-                clipboard_before.map(|before| guard_clipboard_from_snapshot(clipboard, before))
+                clipboard_before
+                    .map(|before| guard_clipboard_for_context(clipboard, before, &context))
             })
         } else {
             None
@@ -256,7 +259,56 @@ pub fn guard_clipboard_from_snapshot<B: ClipboardBackend>(
     clipboard: &B,
     before: ClipboardSnapshot,
 ) -> ClipboardGuardReport {
-    std::thread::sleep(Duration::from_millis(80));
+    guard_clipboard_from_snapshot_with_timing(clipboard, before, ClipboardGuardTiming::STANDARD)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClipboardGuardTiming {
+    settle_before_capture: Duration,
+    stable_for: Duration,
+    retry_pause: Duration,
+}
+
+impl ClipboardGuardTiming {
+    const STANDARD: Self = Self {
+        settle_before_capture: Duration::from_millis(80),
+        stable_for: Duration::from_millis(250),
+        retry_pause: Duration::from_millis(40),
+    };
+
+    const FAST_CHATGPT: Self = Self {
+        settle_before_capture: Duration::from_millis(50),
+        stable_for: Duration::from_millis(120),
+        retry_pause: Duration::from_millis(40),
+    };
+}
+
+fn guard_clipboard_for_context<B: ClipboardBackend>(
+    clipboard: &B,
+    before: ClipboardSnapshot,
+    context: &TextContext,
+) -> ClipboardGuardReport {
+    guard_clipboard_from_snapshot_with_timing(
+        clipboard,
+        before,
+        clipboard_guard_timing_for_context(context),
+    )
+}
+
+fn clipboard_guard_timing_for_context(context: &TextContext) -> ClipboardGuardTiming {
+    if context.control_id.starts_with("web-keyboard-fast-chatgpt-") {
+        ClipboardGuardTiming::FAST_CHATGPT
+    } else {
+        ClipboardGuardTiming::STANDARD
+    }
+}
+
+fn guard_clipboard_from_snapshot_with_timing<B: ClipboardBackend>(
+    clipboard: &B,
+    before: ClipboardSnapshot,
+    timing: ClipboardGuardTiming,
+) -> ClipboardGuardReport {
+    std::thread::sleep(timing.settle_before_capture);
     let after_before_restore = clipboard.capture().ok();
     let clipboard_changed = after_before_restore
         .as_ref()
@@ -281,7 +333,13 @@ pub fn guard_clipboard_from_snapshot<B: ClipboardBackend>(
         };
     }
 
-    restore_clipboard_until_stable(clipboard, before, after_before_restore, donor_marker_seen)
+    restore_clipboard_until_stable(
+        clipboard,
+        before,
+        after_before_restore,
+        donor_marker_seen,
+        timing,
+    )
 }
 
 fn restore_clipboard_until_stable<B: ClipboardBackend>(
@@ -289,10 +347,10 @@ fn restore_clipboard_until_stable<B: ClipboardBackend>(
     before: ClipboardSnapshot,
     initial_after: Option<ClipboardSnapshot>,
     initial_donor_marker_seen: bool,
+    timing: ClipboardGuardTiming,
 ) -> ClipboardGuardReport {
     let started = Instant::now();
     let timeout = Duration::from_millis(2_000);
-    let stable_for = Duration::from_millis(250);
     let mut attempts = 0;
     let mut donor_marker_seen = initial_donor_marker_seen;
     let mut last_error = None;
@@ -304,7 +362,7 @@ fn restore_clipboard_until_stable<B: ClipboardBackend>(
             Ok(snapshot) if clipboard_contents_equal(&snapshot, &before) => {
                 final_snapshot = Some(snapshot);
                 if restored_at
-                    .map(|time: Instant| time.elapsed() >= stable_for)
+                    .map(|time: Instant| time.elapsed() >= timing.stable_for)
                     .unwrap_or(false)
                 {
                     return ClipboardGuardReport {
@@ -345,7 +403,7 @@ fn restore_clipboard_until_stable<B: ClipboardBackend>(
             }
         }
 
-        std::thread::sleep(Duration::from_millis(40));
+        std::thread::sleep(timing.retry_pause);
     }
 
     let restore_ok = final_snapshot
@@ -421,6 +479,22 @@ mod tests {
 
     impl TextContextProvider for FakeWebKeyboardContextProvider {
         fn text_context(&self) -> Result<TextContext, PlatformError> {
+            let mut context = TextContext::new("k.,jdm");
+            context.capabilities.method_binding = Some(stepler_core::MethodBinding::new(
+                MethodId::WebKeyboardSelection,
+                vec![MethodId::WebKeyboardSelection],
+            ));
+            Ok(context)
+        }
+    }
+
+    struct MarkerLeakingWebContextProvider<'a> {
+        clipboard: &'a FakeClipboard,
+    }
+
+    impl TextContextProvider for MarkerLeakingWebContextProvider<'_> {
+        fn text_context(&self) -> Result<TextContext, PlatformError> {
+            self.clipboard.set_text("__STEPLER_COPY_MARKER_context__");
             let mut context = TextContext::new("k.,jdm");
             context.capabilities.method_binding = Some(stepler_core::MethodBinding::new(
                 MethodId::WebKeyboardSelection,
@@ -581,6 +655,19 @@ mod tests {
     }
 
     #[test]
+    fn fast_chatgpt_context_uses_a_shorter_clipboard_guard_window() {
+        let mut context = TextContext::new("ghbdtn");
+        context.control_id = String::from("web-keyboard-fast-chatgpt-line-selection:hwnd:1");
+
+        let fast = clipboard_guard_timing_for_context(&context);
+        let standard = ClipboardGuardTiming::STANDARD;
+
+        assert!(fast.settle_before_capture < standard.settle_before_capture);
+        assert!(fast.stable_for < standard.stable_for);
+        assert_eq!(fast.retry_pause, standard.retry_pause);
+    }
+
+    #[test]
     fn clipboard_guard_restores_changed_format_bytes() {
         let mut before = clipboard_snapshot("original clipboard", 1);
         before.formats.push(ClipboardFormatSnapshot {
@@ -684,6 +771,32 @@ mod tests {
 
         assert!(report.clipboard_changed);
         assert!(report.restore_ok);
+        assert_eq!(
+            clipboard.capture().unwrap().text.as_deref(),
+            Some("original clipboard")
+        );
+    }
+
+    #[test]
+    fn runner_restores_clipboard_when_context_capture_leaves_stepler_marker() {
+        let foreground = FakeForeground {
+            controls: vec![control()],
+        };
+        let clipboard = FakeClipboard::new("original clipboard");
+        let context_provider = MarkerLeakingWebContextProvider {
+            clipboard: &clipboard,
+        };
+        let replacer = FakeReplacer;
+        let mut runner = OperationRunner::new_with_clipboard(
+            &foreground,
+            &context_provider,
+            &replacer,
+            &clipboard,
+        );
+
+        let outcome = runner.handle_hotkey(CorrectionMode::Pause).unwrap();
+
+        assert!(outcome.clipboard_guard.unwrap().restore_ok);
         assert_eq!(
             clipboard.capture().unwrap().text.as_deref(),
             Some("original clipboard")

@@ -214,6 +214,27 @@ fn codex_embedded_terminal_host_titles_are_allowlisted() {
     assert!(!is_codex_embedded_terminal_host_title("Windows PowerShell"));
 }
 
+#[cfg(windows)]
+#[test]
+fn embedded_terminal_handoff_expires_before_a_late_message_can_be_forwarded() {
+    let foreground = 0x1234;
+    assert!(embedded_terminal_handoff_is_fresh(
+        foreground,
+        foreground,
+        Instant::now() - Duration::from_millis(100)
+    ));
+    assert!(!embedded_terminal_handoff_is_fresh(
+        foreground,
+        foreground,
+        Instant::now() - Duration::from_millis(800)
+    ));
+    assert!(!embedded_terminal_handoff_is_fresh(
+        foreground,
+        0x5678,
+        Instant::now()
+    ));
+}
+
 #[test]
 fn context_capabilities_carry_method_binding() {
     let capabilities = Capabilities {
@@ -845,8 +866,17 @@ fn web_keyboard_fast_context_is_line_compatible() {
     assert!(web_keyboard_fast_context(
         "web-keyboard-fast-line-selection:hwnd:1"
     ));
+    assert!(web_keyboard_fast_context(
+        "web-keyboard-fast-chatgpt-line-selection:hwnd:1"
+    ));
+    assert!(web_keyboard_fast_context(
+        "web-keyboard-fast-chatgpt-word-line-selection:hwnd:1"
+    ));
     assert!(is_web_keyboard_line_context(
         "web-keyboard-fast-line-selection:hwnd:1"
+    ));
+    assert!(is_web_keyboard_line_context(
+        "web-keyboard-fast-chatgpt-line-selection:hwnd:1"
     ));
     assert!(!web_keyboard_fast_context(
         "web-keyboard-line-selection:hwnd:1"
@@ -1513,6 +1543,26 @@ fn web_keyboard_effective_profile_reports_jira_as_standard() {
     assert_eq!(
         web_keyboard_effective_profile_for_title(WebKeyboardProfile::Fast, "Codex"),
         WebKeyboardProfile::Fast
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn web_keyboard_effective_profile_accelerates_only_chatgpt_desktop() {
+    assert_eq!(
+        web_keyboard_effective_profile_for_title(WebKeyboardProfile::Standard, "ChatGPT"),
+        WebKeyboardProfile::Fast
+    );
+    assert_eq!(
+        web_keyboard_effective_profile_for_title(WebKeyboardProfile::Standard, " ChatGPT "),
+        WebKeyboardProfile::Fast
+    );
+    assert_eq!(
+        web_keyboard_effective_profile_for_title(
+            WebKeyboardProfile::Standard,
+            "ChatGPT - Google Chrome"
+        ),
+        WebKeyboardProfile::Standard
     );
 }
 

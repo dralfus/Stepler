@@ -71,9 +71,10 @@ contract fixtures. Если хочется менять `WebKeyboardSelectionMet
    cargo test -p stepler-platform
    ```
 
-Актуальный план стабилизации архитектуры находится в
-`docs/stabilization_plan_ru.md`. Старые phase-by-phase hardening/review
-документы больше не являются источником правды.
+Актуальные архитектурные правила находятся в `TECHNICAL_SPEC_RU.md` и
+`docs/stabilization_plan_ru.md`. Очередь работ и незакрытые checkpoint-ы
+находятся в `tickets.md`; временные `.scratch`-артефакты не являются источником
+правды.
 
 ## Ручной smoke без hotkey
 

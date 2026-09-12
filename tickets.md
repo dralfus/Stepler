@@ -6,15 +6,34 @@
 
 ## Текущий frontier
 
-T01-T03 реализованы. Перед запуском любой runtime-оптимизации T04-T13 нужно
-собрать labeled snapshot для конкретной release-сборки и target surface.
-Неполные либо `unlabeled` данные не являются основанием менять timeout, retry
-или порядок adapter methods.
+T01-T03 реализованы. T04 получил ограниченные изменения ChatGPT WebKeyboard и
+clipboard guard, T09 - embedded terminal handoff; оба остаются `IN PROGRESS` до
+labeled performance acceptance. Перед новой runtime-оптимизацией T04-T13 нужна
+серия конкретной release-сборки и target surface. Неполные либо `unlabeled`
+данные не являются основанием глобально менять timeout, retry или порядок
+adapter methods.
 
 Работать следует по **frontier**: можно начинать только задачу, все blockers
 которой уже завершены. Из-за чувствительности adapter layer рекомендуется
 выполнять доступные задачи по одной и после каждой сохранять зеленые contracts
 и manual smoke затронутых surfaces.
+
+### Ближайшие checkpoint-ы закрытия
+
+- **T04:** снять labeled series текущей release-сборки для ChatGPT, проверить
+  effective fast profile в telemetry и провести regression smoke JIRA,
+  Confluence и clipboard с изображением. Только после этого сравнивать p50/p95
+  с budget.
+- **T09:** снять раздельные labeled series standalone и embedded PowerShell,
+  затем подтвердить layout, SSH marker policy и отсутствие повторных
+  synchronous CLI calls в critical path.
+- **T15:** провести 30 повторов compose/search Outlook 2016 с Zimbra после
+  сохранения dump и убедиться по логу, что не вернулся прямой
+  `WM_INPUTLANGCHANGEREQUEST` path.
+- **T16:** выполнить короткий cross-surface smoke и подтвердить, что layout
+  завершился не позднее replacement либо вернулся явный partial result.
+- **T17:** провести smoke с реально установленной `en-GB` в обычном приложении
+  и terminal fallback.
 
 ## T01. Единая performance-телеметрия OperationRunner
 
@@ -98,21 +117,28 @@ assessment в `blocked_by_destructive_outcomes`.
 
 ## T04. Ускорение WebKeyboard для FastBrowserEditor
 
-**Status:** profiles/contracts частично реализованы, но performance acceptance
-не подтвержден: нужен baseline текущей release-сборки.
+**Status:** `IN PROGRESS`. Для ChatGPT desktop реализованы fast no-selection
+apply path и сокращенное окно clipboard guard; пользователь вручную подтвердил
+улучшение. Формальный performance acceptance и проверка остальных
+FastBrowserEditor surfaces не выполнены.
 
-**What to build:** P/CP в Codex, JIRA и Confluence выполняются быстро на
-разрешенных FastBrowserEditor surfaces, при этом сохраняются clipboard, caret,
-focus, переносы строк, таблицы и точный replacement range.
+**What to build:** ChatGPT desktop использует подтвержденный fast WebKeyboard
+path. JIRA и Confluence сохраняют собственный безопасный WebKeyboard path без
+случайного получения ChatGPT profile. Во всех трех поверхностях сохраняются
+clipboard, caret, focus, переносы строк, таблицы и точный replacement range.
 
 **Blocked by:** labeled baseline текущей release-сборки для целевой
 FastBrowserEditor branch.
 
-- [ ] Из baseline выбрана конкретная FastBrowserEditor branch с подтвержденным bottleneck.
+- [x] Для ChatGPT desktop без selection выбрана конкретная branch: WebKeyboard
+  capture/apply и clipboard guard; исторический bottleneck `Verified` устранен.
 - [ ] Retry запускается после наблюдаемого отрицательного результата, а не только после фиксированной паузы.
 - [ ] Раннее завершение verify допускается только при положительном доказательстве примененной замены.
-- [ ] Preflight, clipboard restore и focus/caret restore не удалены.
-- [ ] Codex Windows app проходит P и CP с selection и без selection.
+- [x] Preflight, clipboard restore и focus/caret restore не удалены.
+- [x] ChatGPT/Codex desktop прошел целевой ручной smoke P и CP с selection и
+  без selection после изменений 2026-09-11/12.
+- [ ] Performance telemetry для fast ChatGPT branch отражает effective profile,
+  а не только исходный surface profile.
 - [ ] JIRA проходит P и CP без удаления строки и вставки clipboard.
 - [ ] Confluence проходит P и CP внутри обычного текста и таблицы без изменения соседних блоков.
 - [ ] Clipboard с изображением сохраняется.
@@ -190,8 +216,10 @@ surfaces выполняют capture и replacement через изолирова
 
 ## T09. Ускорение PSReadLine bridge
 
-**Status:** telemetry готова; runtime-оптимизация не начата и ожидает
-отдельные labeled baseline для standalone и embedded PowerShell.
+**Status:** `IN PROGRESS`. Embedded Codex terminal больше не выполняет UIA
+проверку на keyup и повторную проверку в handler: используется короткоживущий
+handoff. Пользователь подтвердил приемлемую работу P и CP. Отдельные labeled
+baseline для standalone и embedded PowerShell всё ещё отсутствуют.
 
 **What to build:** локальный PowerShell и PowerShell внутри Codex быстро
 исправляют строку и переключают раскладку, не блокируя ввод повторными
@@ -200,11 +228,11 @@ control-plane process calls.
 **Blocked by:** labeled baseline текущей release-сборки для standalone и
 embedded PowerShell.
 
-- [ ] Correction plan, PSReadLine replacement и primary layout switch измеряются раздельно.
+- [x] Correction plan, PSReadLine replacement и primary layout switch измеряются раздельно.
 - [ ] Повторные синхронные CLI-запуски удалены из critical path либо объединены в один persistent request.
 - [ ] Delayed layout repair выполняется после текстовой операции и логируется отдельно.
 - [ ] Локальное отдельное окно PowerShell проходит P и CP.
-- [ ] Embedded PowerShell в Codex проходит P и CP без появления `^C`.
+- [x] Embedded PowerShell в Codex проходит P и CP без появления `^C`.
 - [ ] PowerShell с SSH не получает generic local path без remote helper marker.
 - [ ] Layout после успешной конвертации соответствует replacement language.
 - [ ] Собрано не меньше 30 warm операций для отдельного и embedded PowerShell.

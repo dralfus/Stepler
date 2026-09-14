@@ -564,6 +564,7 @@ fn run_hotkeys() {
     let log_path = hotkey_log_path();
     let settings = RuntimeSettings::from_env();
     let performance_tracker = RefCell::new(PerformanceTracker::default());
+    let hotkey_starts = RefCell::new(PendingHotkeyStarts::default());
 
     eprintln!("Stepler hotkey runner started.");
     eprintln!("Registered: Pause, Ctrl+Pause. Controls: LeftCtrl=RU, RightCtrl=EN, Menu=next.");
@@ -584,18 +585,21 @@ fn run_hotkeys() {
         |mode| {
             if settings.hotkey_enabled(mode) {
                 let mut tracker = performance_tracker.borrow_mut();
+                let started = hotkey_starts.borrow_mut().take_or_now(mode);
                 handle_hotkey_event(
                     mode,
                     &mut runner,
                     &layout_switcher,
                     &mut tracker,
                     log_path.as_path(),
+                    started,
                 );
             } else {
                 eprintln!("{mode:?}: disabled");
             }
         },
         |mode| {
+            hotkey_starts.borrow_mut().record(mode, Instant::now());
             log_hotkey_received(log_path.as_path(), mode);
         },
         |mode| {
@@ -645,6 +649,29 @@ struct RuntimeSettings {
     disable_caps_lock: bool,
     insert_as_backspace: bool,
     risky_fallbacks_enabled: bool,
+}
+
+#[derive(Default)]
+struct PendingHotkeyStarts {
+    pause: Option<Instant>,
+    scrolllock: Option<Instant>,
+}
+
+impl PendingHotkeyStarts {
+    fn record(&mut self, mode: CorrectionMode, started: Instant) {
+        match mode {
+            CorrectionMode::Pause => self.pause = Some(started),
+            CorrectionMode::ScrollLock => self.scrolllock = Some(started),
+        }
+    }
+
+    fn take_or_now(&mut self, mode: CorrectionMode) -> Instant {
+        match mode {
+            CorrectionMode::Pause => self.pause.take(),
+            CorrectionMode::ScrollLock => self.scrolllock.take(),
+        }
+        .unwrap_or_else(Instant::now)
+    }
 }
 
 impl RuntimeSettings {
@@ -704,13 +731,13 @@ fn handle_hotkey_event<F, C, R, B>(
     layout_switcher: &WindowsLayoutSwitcher,
     performance_tracker: &mut PerformanceTracker,
     log_path: &std::path::Path,
+    started: Instant,
 ) where
     F: stepler_platform::ForegroundProvider,
     C: stepler_platform::TextContextProvider,
     R: stepler_platform::TextReplacer,
     B: stepler_platform::ClipboardBackend,
 {
-    let started = Instant::now();
     if matches!(try_forward_embedded_terminal_hotkey(mode), Ok(true)) {
         log_embedded_terminal_forwarded(mode, started, log_path);
         release_modifier_keys();
@@ -1296,6 +1323,16 @@ mod tests {
         let context = context("rctrl_renwnd32/RICHEDIT60W", "richedit:hwnd:1234");
 
         assert!(should_skip_layout_after_replacement(&context));
+    }
+
+    #[test]
+    fn pending_hotkey_start_preserves_scrolllock_receipt_before_ctrl_release_delay() {
+        let received_at = Instant::now() - Duration::from_millis(180);
+        let mut starts = PendingHotkeyStarts::default();
+
+        starts.record(CorrectionMode::ScrollLock, received_at);
+
+        assert_eq!(starts.take_or_now(CorrectionMode::ScrollLock), received_at);
     }
 
     #[test]

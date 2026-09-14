@@ -1477,8 +1477,6 @@ fn normalize_web_keyboard_context_text(control_prefix: &str, text: String) -> St
 pub(super) fn web_keyboard_fast_context(control_id: &str) -> bool {
     control_id.starts_with("web-keyboard-fast-selection:")
         || control_id.starts_with("web-keyboard-fast-line-selection:")
-        || control_id.starts_with("web-keyboard-fast-chatgpt-line-selection:")
-        || control_id.starts_with("web-keyboard-fast-chatgpt-word-line-selection:")
         || web_keyboard_rocket_fast_context(control_id)
 }
 
@@ -1588,7 +1586,9 @@ pub(super) fn web_keyboard_context_ignores_hidden_list_prefix(
 ) -> bool {
     (control_id.starts_with("web-keyboard-word-selection:")
         || control_id.starts_with("web-keyboard-chatgpt-line-selection:")
-        || control_id.starts_with("web-keyboard-chatgpt-word-line-selection:"))
+        || control_id.starts_with("web-keyboard-fast-chatgpt-line-selection:")
+        || control_id.starts_with("web-keyboard-chatgpt-word-line-selection:")
+        || control_id.starts_with("web-keyboard-fast-chatgpt-word-line-selection:"))
         && selected
             .strip_suffix(expected)
             .is_some_and(web_keyboard_is_wrapped_list_marker_prefix)
@@ -2024,7 +2024,9 @@ fn is_safe_shifted_web_selection_prefix(prefix: &str) -> bool {
 pub(super) fn is_web_keyboard_line_context(control_id: &str) -> bool {
     control_id.starts_with("web-keyboard-line-selection:")
         || control_id.starts_with("web-keyboard-chatgpt-line-selection:")
+        || control_id.starts_with("web-keyboard-chatgpt-word-line-selection:")
         || control_id.starts_with("web-keyboard-fast-chatgpt-line-selection:")
+        || control_id.starts_with("web-keyboard-fast-chatgpt-word-line-selection:")
         || control_id.starts_with("web-keyboard-fast-line-selection:")
         || control_id.starts_with("web-keyboard-rocket-fast-line-selection:")
 }

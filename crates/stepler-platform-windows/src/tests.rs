@@ -866,10 +866,13 @@ fn web_keyboard_fast_context_is_line_compatible() {
     assert!(web_keyboard_fast_context(
         "web-keyboard-fast-line-selection:hwnd:1"
     ));
-    assert!(web_keyboard_fast_context(
+    assert!(!web_keyboard_fast_context(
         "web-keyboard-fast-chatgpt-line-selection:hwnd:1"
     ));
-    assert!(web_keyboard_fast_context(
+    assert!(!web_keyboard_fast_context(
+        "web-keyboard-fast-chatgpt-word-line-selection:hwnd:1"
+    ));
+    assert!(is_web_keyboard_line_context(
         "web-keyboard-fast-chatgpt-word-line-selection:hwnd:1"
     ));
     assert!(is_web_keyboard_line_context(
@@ -933,6 +936,23 @@ fn chatgpt_pause_line_context_ignores_hidden_list_prefix() {
         "3. yb;t",
         "yb;t"
     ));
+}
+
+#[cfg(windows)]
+#[test]
+fn chatgpt_pause_word_line_context_avoids_fast_apply_for_list_markers() {
+    for control_id in [
+        "web-keyboard-fast-chatgpt-word-line-selection:hwnd:1",
+        "web-keyboard-fast-chatgpt-line-selection:hwnd:1",
+    ] {
+        assert!(is_web_keyboard_line_context(control_id));
+        assert!(!web_keyboard_fast_context(control_id));
+        assert!(web_keyboard_context_ignores_hidden_list_prefix(
+            control_id,
+            "2. пшедфи",
+            "пшедфи"
+        ));
+    }
 }
 
 #[cfg(windows)]

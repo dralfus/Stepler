@@ -67,8 +67,8 @@ state и не применяется как release acceptance. Новые со�
 1. Для активной release-сборки задать `STEPLER_PERF_ENV=work-win11` или
    `home-win11`, собрать отдельные 30 warm / 5 cold серии ChatGPT P и CP с
    selection и без него, затем сохранить snapshot через `--output`.
-2. Закрыть либо скорректировать T04 по фактическим p50/p95. Отдельно проверить,
-   что telemetry записывает effective Fast profile для fast ChatGPT branch.
+2. Зафиксировать итог fast ChatGPT/Codex branch по фактическим p50/p95. Отдельно
+   проверить, что telemetry записывает effective Fast profile для этого маршрута.
 3. Собрать отдельные series для standalone и embedded PSReadLine; менять только
    фазу, которая остается dominant после handoff-оптимизации.
 4. До любых UIA worker, WordCom worker или Qwen Xterm изменений получить

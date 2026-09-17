@@ -73,7 +73,7 @@ contract fixtures. Если хочется менять `WebKeyboardSelectionMet
 
 Актуальные архитектурные правила находятся в `TECHNICAL_SPEC_RU.md` и
 `docs/stabilization_plan_ru.md`. Очередь работ и незакрытые checkpoint-ы
-находятся в `tickets.md`; временные `.scratch`-артефакты не являются источником
+находятся в `.scratch/<feature>/issues/`; корневой `tickets.md` не используется.
 правды.
 
 ## Ручной smoke без hotkey

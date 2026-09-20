@@ -106,14 +106,14 @@ HotkeyReceived
 19. Как пользователь PowerShell с SSH, я хочу работать через установленный на удаленном Linux host `stepler-remote`.
 20. Как пользователь Qwen CLI, я хочу, чтобы P/CP не посылали Ctrl+C или Ctrl+Shift+C и не закрывали Qwen.
 21. Как пользователь Qwen, я хочу безопасно отправить готовый текст через side-channel input file.
-22. Как пользователь Qwen Input, я хочу исправить текст, сохранить фокус и отправить результат в запущенный Qwen.
+22. Как пользователь Qwen Workspace, я хочу иметь отдельный per-prompt режим с русским вводом, stream-json ответом и лимитами на один prompt.
 23. Как пользователь Qwen Workspace, я хочу иметь terminal/Qwen и Stepler input в одном окне, сохраняя terminal session при перезапуске Stepler.
 24. Как пользователь браузерного редактора, я хочу работать в Confluence, JIRA, ChatGPT/Codex, Rocket.Chat, Telegram и похожих полях через policy, учитывающую реальный control и caret.
 25. Как пользователь Sticky Notes, я хочу исправлять текст в Note Editor и сохранять переносы строк.
 26. Как пользователь неизвестного UIA поля, я хочу получить только безопасный пробный путь или понятный отказ вместо случайной вставки буфера.
 27. Как пользователь Windows Terminal, я хочу, чтобы PowerShell, cmd, Qwen и SSH различались как разные поверхности, даже если у них одинаковый hosting window class.
 28. Как пользователь, я хочу включать и выключать P, CP, layout controls, Caps Lock, Insert-as-Backspace, risky fallbacks и автозапуск из tray.
-29. Как пользователь, я хочу переключать светлую и темную тему tray и Qwen Input и настраивать длительность timing overlay.
+29. Как пользователь, я хочу переключать светлую и темную тему tray и Qwen Workspace и настраивать длительность timing overlay.
 30. Как разработчик, я хочу видеть structured JSONL с методом, surface, confidence, стадиями, retry и временем.
 31. Как разработчик, я хочу иметь contract tests для классификаторов, policy, resolver и проверенных поверхностей.
 32. Как разработчик, я хочу измерять P50/P95 только для одной сборки, окружения, surface, режима и ветки алгоритма.
@@ -138,7 +138,7 @@ HotkeyReceived
   PowerShell bridge, CLI-команды, диагностика focus и performance snapshot.
 - `Stepler.Tray` является .NET tray host и settings UI. Он не реализует
   текстовую коррекцию и не выбирает адаптер.
-- `Stepler.Shared` содержит общую логику Qwen Input/Workspace UI.
+- `Stepler.Shared` содержит общий P/CP-контроллер и stream-json контракт для Qwen Workspace.
 - `Stepler.QwenWorkspace` объединяет terminal session и Stepler input, но не
   заменяет общий resolver для обычных приложений.
 - `stepler-remote` является малым Linux helper для Bash/readline по SSH, а не
@@ -327,26 +327,36 @@ PSReadLine adapter использует `GetBufferState`, строит план 
 операция должна завершиться безопасным отказом; удаленный host не должен
 получать произвольные команды из clipboard fallback.
 
-### 10. Qwen Input и Qwen Workspace
+### 10. Qwen Workspace и Qwen transport
 
 Qwen CLI запускается через wrapper/marker и использует `--input-file` для
 безопасной отправки подготовленного текста. Нельзя получать текущий TUI
 prompt через Ctrl+Shift+C: Qwen может трактовать это как interrupt.
 
-Qwen Input является отдельным .NET окном с общим P/CP поведением, ранней
-индикацией, timing overlay, восстановлением фокуса/caret, отправкой и
-переключением языка по результату.
+Старый Qwen Workspace запускает PowerShell/wrapper с `--input-file`. Он
+сохраняется для совместимости, включая пункты tray `Qwen workspace...` и
+`Qwen workspace (--continue)`; отдельное окно `Qwen input...` удалено.
 
-Qwen Workspace содержит terminal/Qwen session и Stepler input в одном рабочем
-окне. Рабочий каталог задается настройкой/окружением, поддерживается запуск с
-`--continue`, а перезапуск Stepler не должен сам по себе завершать внешнюю
-PowerShell/Qwen session. Реальное взаимодействие с Qwen terminal остается
-ограниченным его TUI и отдельной policy.
+Новый режим `Qwen workspace (per-prompt)...` запускает один Qwen-процесс с
+`--input-format stream-json`, `--output-format stream-json` и
+`--include-partial-messages`. Нижнее поле Workspace отправляет каждый prompt
+отдельным JSONL-сообщением `type=user`, а верхняя панель отображает потоковые
+ответы. `--model`, `--max-session-turns`, `--max-tool-calls`, `--max-wall-time`
+и `--max-subagent-depth` передаются при старте процесса; значения по умолчанию:
+`qwen38-flash-next`, `16`, `30`, `20m`, `1` соответственно.
+
+Qwen stream-json сбрасывает эти лимиты для каждого нового user message, но
+сохраняет историю внутри живого процесса. Поэтому `--continue` относится к
+восстановлению истории при запуске нового процесса, а не превращает лимиты в
+общие на всё дальнейшее общение. Служебные stream-json флаги принадлежат
+Workspace и не редактируются пользователем; модель и лимиты редактируются в
+tray-настройках. P/CP в нижнем поле используют общий контроллер и не читают
+prompt из логов.
 
 ### 11. Tray, настройки и индикация
 
 Tray-only UI предоставляет статус, запуск/перезапуск runner, выход, открытие
-Qwen Input/Workspace, логи и настройки. Настройки сохраняются в пользовательском
+Qwen Workspace, логи и настройки. Настройки сохраняются в пользовательском
 профиле Windows и включают как минимум:
 
 - `PauseEnabled` и `ScrollLockEnabled`;
@@ -357,6 +367,11 @@ Qwen Input/Workspace, логи и настройки. Настройки сох�
 - `DarkTheme`;
 - `ShowTimingOverlay` и `TimingOverlayDurationMs`;
 - `QwenWorkspaceDirectory`.
+- `QwenWorkspaceModel`;
+- `QwenWorkspaceMaxSessionTurns`;
+- `QwenWorkspaceMaxToolCalls`;
+- `QwenWorkspaceMaxWallTime`;
+- `QwenWorkspaceMaxSubagentDepth`.
 
 Индикация P/CP создается на уровне hotkey runtime как можно раньше и не
 зависит от того, найден ли подходящий адаптер. Затем она обновляется результатом
@@ -427,7 +442,7 @@ classification и resolver используют один target snapshot.
 verify, clipboard guard, focus/caret restore и no-partial-mutation. В Windows
 integration smoke используются реальные или fixture controls для Win32 edit,
 UIA editable/document, classic console, Windows Terminal, Word/Outlook,
-browser-like editor, Sticky Notes и Qwen input. Для ChatGPT в
+browser-like editor, Sticky Notes и Qwen Workspace. Для ChatGPT в
 `Chrome_WidgetWin_1` отдельно проверяются no-selection, explicit-selection и
 UIA-unavailable сценарии: первый не должен принимать ложный selected clipboard,
 второй должен сохранять selected-path, третий должен оставаться совместимым и
@@ -463,7 +478,7 @@ performance snapshot и ручная матрица приложений. В sna
 | PowerShell / Windows Terminal | поддерживается через `PSReadLine` при корректном profile |
 | PowerShell с SSH | поддерживается только с remote helper |
 | Qwen CLI | безопасный wrapper/side-channel; live prompt ограничен |
-| Qwen Input/Workspace | поддерживается отдельным UI/runtime path |
+| Qwen Workspace | поддерживается отдельным UI/runtime path |
 | Confluence/JIRA/ChatGPT/Codex web/editor | зависит от UIA/WebKeyboard preflight |
 | Rocket.Chat | отдельные editor/search surface contracts |
 | Sticky Notes | UIA document path, CP сохраняет line breaks |

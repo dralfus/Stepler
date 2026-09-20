@@ -37,7 +37,9 @@ F:\distr\system\Stepler\dist\Stepler\stepler-cli.exe qwen-submit --text "про�
 
 Команда дописывает JSONL `submit` в Qwen `--input-file`. Это не заменяет P/CP для уже набранной строки в TUI, но позволяет безопасно отправлять готовый текст без терминальных copy shortcuts.
 
-В tray-меню есть пункт `Qwen input...`: это небольшое окно ввода, где можно набрать текст, применить `P`/`CP` к содержимому окна и отправить результат в запущенный через wrapper Qwen.
+Старые пункты tray `Qwen workspace...` и `Qwen workspace (--continue)` сохраняют этот terminal/`--input-file` сценарий.
+
+Для нового режима доступны отдельные пункты `Qwen workspace (per-prompt)...` и `Qwen workspace (per-prompt, --continue)`. Они запускают один headless Qwen-процесс с `--input-format stream-json` и `--output-format stream-json`; каждый prompt из нижнего поля отправляется отдельной JSONL-командой. Поэтому `--max-session-turns`, `--max-tool-calls`, `--max-wall-time` и `--max-subagent-depth` применяются к каждому prompt, а история текущей Qwen-сессии сохраняется. Параметры модели и лимитов редактируются через `Параметры запуска Qwen per-prompt...`; рабочий каталог задаётся отдельно.
 
 ## Требования для PowerShell
 
@@ -137,6 +139,7 @@ Risky/fallback методы по умолчанию не должны включ
 | PowerShell / Windows Terminal, локальная сессия | `P`, `CP`, selection, переключение раскладки после конвертации | `PSReadLine` |
 | PowerShell / Windows Terminal, внутри запущен SSH | `P`/`CP` работают только после установки remote helper на Linux host и opt-in на Windows клиенте | `SshTerminal` / Bash readline helper |
 | Qwen CLI / terminal TUI в Windows Terminal | безопасное подавление `P`/`CP`; side-channel submit через `--input-file`; уже набранный prompt buffer не читается | `TerminalApp` policy + Qwen `--input-file` |
+| Qwen Workspace per-prompt | отдельный prompt в stream-json, ответ в верхней панели, лимиты на один prompt | Qwen `stream-json` transport |
 | Microsoft Word desktop | `P`, `CP`, выделение, диапазон слева от курсора | `WordCom` |
 | Microsoft Outlook desktop compose | WordEditor в письме, ожидаемый путь поддержки | `WordCom` через Outlook WordEditor |
 | Windows Settings / Feedback Hub / WPF TextBox fixture | caret-aware замена в editable UIA поле | `UIAutomationEditableText` / `UIAutomationText` |

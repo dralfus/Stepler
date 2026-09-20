@@ -121,7 +121,6 @@ internal static class Program
         }
     }
 }
-
 internal sealed class SteplerTrayForm : Form
 {
     private readonly NotifyIcon _notifyIcon;
@@ -143,15 +142,16 @@ internal sealed class SteplerTrayForm : Form
     private readonly ToolStripMenuItem _showTimingOverlayItem;
     private readonly ToolStripMenuItem _timingOverlayDurationItem;
     private readonly ToolStripMenuItem _autostartItem;
-    private readonly ToolStripMenuItem _qwenInputItem;
     private readonly ToolStripMenuItem _qwenWorkspaceItem;
     private readonly ToolStripMenuItem _qwenWorkspaceContinueItem;
+    private readonly ToolStripMenuItem _qwenWorkspacePerPromptItem;
+    private readonly ToolStripMenuItem _qwenWorkspacePerPromptContinueItem;
+    private readonly ToolStripMenuItem _qwenWorkspaceLaunchParametersItem;
     private readonly ToolStripMenuItem _qwenWorkspaceDirectoryItem;
     private readonly ToolStripMenuItem _openLayoutOverridesItem;
     private readonly ToolStripMenuItem _openHotkeyLogItem;
     private readonly ToolStripMenuItem _openTrayLogItem;
     private ControlWindow? _controlWindow;
-    private QwenInputWindow? _qwenInputWindow;
     private HotkeyTimingOverlay? _timingOverlay;
     private FileSystemWatcher? _hotkeyLogWatcher;
     private readonly System.Windows.Forms.Timer _embeddedTerminalAckTimer;
@@ -260,14 +260,25 @@ internal sealed class SteplerTrayForm : Form
         _autostartItem = new ToolStripMenuItem("Автозапуск Windows");
         _autostartItem.Click += (_, _) => ToggleAutostart();
 
-        _qwenInputItem = new ToolStripMenuItem("Qwen input...");
-        _qwenInputItem.Click += (_, _) => RunAfterMenuClose(ShowQwenInputWindow);
-
         _qwenWorkspaceItem = new ToolStripMenuItem("Qwen workspace...");
         _qwenWorkspaceItem.Click += (_, _) => RunAfterMenuClose(() => LaunchQwenWorkspace());
 
         _qwenWorkspaceContinueItem = new ToolStripMenuItem("Qwen workspace (--continue)");
         _qwenWorkspaceContinueItem.Click += (_, _) => RunAfterMenuClose(() => LaunchQwenWorkspace("--continue"));
+
+        _qwenWorkspacePerPromptItem = new ToolStripMenuItem("Qwen workspace (per-prompt)...");
+        _qwenWorkspacePerPromptItem.Click += (_, _) =>
+            RunAfterMenuClose(() => LaunchQwenPerPromptWorkspace(continueSession: false));
+
+        _qwenWorkspacePerPromptContinueItem =
+            new ToolStripMenuItem("Qwen workspace (per-prompt, --continue)");
+        _qwenWorkspacePerPromptContinueItem.Click += (_, _) =>
+            RunAfterMenuClose(() => LaunchQwenPerPromptWorkspace(continueSession: true));
+
+        _qwenWorkspaceLaunchParametersItem =
+            new ToolStripMenuItem("Параметры запуска Qwen per-prompt...");
+        _qwenWorkspaceLaunchParametersItem.Click += (_, _) =>
+            RunAfterMenuClose(ShowQwenWorkspaceLaunchParametersDialog);
 
         _qwenWorkspaceDirectoryItem = new ToolStripMenuItem("Папка проекта Qwen...");
         _qwenWorkspaceDirectoryItem.Click += (_, _) => RunAfterMenuClose(ShowQwenWorkspaceDirectoryDialog);
@@ -306,9 +317,11 @@ internal sealed class SteplerTrayForm : Form
         menu.Items.Add(_timingOverlayDurationItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_autostartItem);
-        menu.Items.Add(_qwenInputItem);
         menu.Items.Add(_qwenWorkspaceItem);
         menu.Items.Add(_qwenWorkspaceContinueItem);
+        menu.Items.Add(_qwenWorkspacePerPromptItem);
+        menu.Items.Add(_qwenWorkspacePerPromptContinueItem);
+        menu.Items.Add(_qwenWorkspaceLaunchParametersItem);
         menu.Items.Add(_qwenWorkspaceDirectoryItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_openLayoutOverridesItem);
@@ -382,28 +395,23 @@ internal sealed class SteplerTrayForm : Form
         ShowAndFocusControlWindow(_controlWindow);
     }
 
-    private void ShowQwenInputWindow()
+    private void LaunchQwenWorkspace(params string[] arguments)
     {
-        if (_qwenInputWindow is { IsDisposed: false })
-        {
-            ShowAndFocusWindow(_qwenInputWindow);
-            return;
-        }
-
-        _qwenInputWindow = new QwenInputWindow(
-            ResolveCliPath(),
-            _settings.DarkTheme,
-            (text, failed) =>
-            {
-                if (_settings.ShowTimingOverlay)
-                {
-                    ShowTimingOverlay(text, failed);
-                }
-            });
-        ShowAndFocusWindow(_qwenInputWindow);
+        LaunchQwenWorkspaceCore(perPrompt: false, arguments);
     }
 
-    private void LaunchQwenWorkspace(params string[] arguments)
+    private void LaunchQwenPerPromptWorkspace(bool continueSession)
+    {
+        var arguments = new List<string>();
+        if (continueSession)
+        {
+            arguments.Add("--continue");
+        }
+
+        LaunchQwenWorkspaceCore(perPrompt: true, arguments.ToArray());
+    }
+
+    private void LaunchQwenWorkspaceCore(bool perPrompt, params string[] arguments)
     {
         var workspacePath = ResolveQwenWorkspacePath();
         if (!File.Exists(workspacePath))
@@ -424,6 +432,14 @@ internal sealed class SteplerTrayForm : Form
             startInfo.ArgumentList.Add(ResolveQwenWorkspaceWorkingDirectory());
             startInfo.ArgumentList.Add("--dark-theme");
             startInfo.ArgumentList.Add(_settings.DarkTheme ? "true" : "false");
+            if (perPrompt)
+            {
+                startInfo.ArgumentList.Add("--per-prompt");
+                foreach (var argument in BuildPerPromptLaunchSettings().ToArgumentList())
+                {
+                    startInfo.ArgumentList.Add(argument);
+                }
+            }
             foreach (var argument in arguments)
             {
                 startInfo.ArgumentList.Add(argument);
@@ -454,6 +470,147 @@ internal sealed class SteplerTrayForm : Form
         UpdateSetting(
             settings => settings.QwenWorkspaceDirectory = dialog.SelectedPath,
             restartRunner: false);
+    }
+
+    private QwenPerPromptLaunchSettings BuildPerPromptLaunchSettings()
+    {
+        return QwenPerPromptLaunchSettings.Normalize(new QwenPerPromptLaunchSettings(
+            _settings.QwenWorkspaceModel,
+            _settings.QwenWorkspaceMaxSessionTurns,
+            _settings.QwenWorkspaceMaxToolCalls,
+            _settings.QwenWorkspaceMaxWallTime,
+            _settings.QwenWorkspaceMaxSubagentDepth));
+    }
+
+    private void ShowQwenWorkspaceLaunchParametersDialog()
+    {
+        var current = BuildPerPromptLaunchSettings();
+        using var form = new Form
+        {
+            Text = "Параметры запуска Qwen per-prompt",
+            ShowInTaskbar = false,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            StartPosition = FormStartPosition.CenterScreen,
+            ClientSize = new Size(480, 312),
+        };
+
+        var modelLabel = new Label
+        {
+            Text = "Модель:",
+            Location = new Point(16, 16),
+            Size = new Size(190, 24),
+        };
+        var model = new TextBox
+        {
+            Text = current.Model,
+            Location = new Point(212, 14),
+            Size = new Size(246, 24),
+        };
+        var sessionTurnsLabel = new Label
+        {
+            Text = "Макс. ходов сессии на prompt:",
+            Location = new Point(16, 54),
+            Size = new Size(190, 24),
+        };
+        var sessionTurns = NumericInput(current.MaxSessionTurns, 1, 10000, 52);
+        var toolCallsLabel = new Label
+        {
+            Text = "Макс. вызовов tools на prompt:",
+            Location = new Point(16, 92),
+            Size = new Size(190, 24),
+        };
+        var toolCalls = NumericInput(current.MaxToolCalls, 0, 10000, 90);
+        var wallTimeLabel = new Label
+        {
+            Text = "Макс. wall time на prompt:",
+            Location = new Point(16, 130),
+            Size = new Size(190, 24),
+        };
+        var wallTime = new TextBox
+        {
+            Text = current.MaxWallTime,
+            Location = new Point(212, 128),
+            Size = new Size(246, 24),
+        };
+        var depthLabel = new Label
+        {
+            Text = "Макс. глубина subagent:",
+            Location = new Point(16, 168),
+            Size = new Size(190, 24),
+        };
+        var depth = NumericInput(current.MaxSubagentDepth, 1, 100, 166);
+        var hint = new Label
+        {
+            Text = "stream-json и per-prompt режим задаются самим Workspace.",
+            Location = new Point(16, 208),
+            Size = new Size(442, 36),
+        };
+        var ok = new Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            Location = new Point(282, 264),
+            Size = new Size(82, 30),
+        };
+        var cancel = new Button
+        {
+            Text = "Отмена",
+            DialogResult = DialogResult.Cancel,
+            Location = new Point(374, 264),
+            Size = new Size(82, 30),
+        };
+        form.Controls.AddRange(new Control[]
+        {
+            modelLabel, model,
+            sessionTurnsLabel, sessionTurns,
+            toolCallsLabel, toolCalls,
+            wallTimeLabel, wallTime,
+            depthLabel, depth,
+            hint, ok, cancel,
+        });
+        ThemeApplier.Apply(form, ThemePalette.FromDarkTheme(_settings.DarkTheme));
+        form.AcceptButton = ok;
+        form.CancelButton = cancel;
+
+        if (form.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(model.Text)
+            || !QwenPerPromptLaunchSettings.IsValidWallTime(wallTime.Text))
+        {
+            MessageBox.Show(
+                this,
+                "Модель не может быть пустой, а wall time должен быть числом в секундах или duration вида 20m/1h.",
+                "Параметры Qwen");
+            return;
+        }
+
+        UpdateSetting(
+            settings =>
+            {
+                settings.QwenWorkspaceModel = model.Text.Trim();
+                settings.QwenWorkspaceMaxSessionTurns = (int)sessionTurns.Value;
+                settings.QwenWorkspaceMaxToolCalls = (int)toolCalls.Value;
+                settings.QwenWorkspaceMaxWallTime = wallTime.Text.Trim();
+                settings.QwenWorkspaceMaxSubagentDepth = (int)depth.Value;
+            },
+            restartRunner: false);
+    }
+
+    private static NumericUpDown NumericInput(int value, int minimum, int maximum, int y)
+    {
+        return new NumericUpDown
+        {
+            Minimum = minimum,
+            Maximum = maximum,
+            Value = Math.Clamp(value, minimum, maximum),
+            Location = new Point(212, y),
+            Size = new Size(246, 24),
+        };
     }
 
     private void ShowTrayMenu()
@@ -971,7 +1128,6 @@ internal sealed class SteplerTrayForm : Form
         var palette = ThemePalette.FromDarkTheme(_settings.DarkTheme);
         ThemeApplier.Apply(_trayMenu, palette);
         _controlWindow?.ApplyTheme(_settings.DarkTheme);
-        _qwenInputWindow?.ApplyTheme(_settings.DarkTheme);
     }
 
     private static bool TryFormatHotkeyTiming(string line, out string text, out bool failed)
@@ -1636,6 +1792,11 @@ internal sealed class SteplerSettings
     public bool ShowTimingOverlay { get; set; } = true;
     public int TimingOverlayDurationMs { get; set; } = 1000;
     public string? QwenWorkspaceDirectory { get; set; }
+    public string QwenWorkspaceModel { get; set; } = QwenPerPromptLaunchSettings.Default.Model;
+    public int QwenWorkspaceMaxSessionTurns { get; set; } = QwenPerPromptLaunchSettings.Default.MaxSessionTurns;
+    public int QwenWorkspaceMaxToolCalls { get; set; } = QwenPerPromptLaunchSettings.Default.MaxToolCalls;
+    public string QwenWorkspaceMaxWallTime { get; set; } = QwenPerPromptLaunchSettings.Default.MaxWallTime;
+    public int QwenWorkspaceMaxSubagentDepth { get; set; } = QwenPerPromptLaunchSettings.Default.MaxSubagentDepth;
 }
 
 internal readonly record struct ThemePalette(
@@ -2136,204 +2297,4 @@ internal sealed class ControlWindow : Form
         button.Click += (_, _) => action();
         return button;
     }
-}
-
-internal sealed class QwenInputWindow : Form
-{
-    private readonly string _cliPath;
-    private readonly TextBox _input;
-    private readonly Label _status;
-    private readonly QwenInputCorrectionController _correction;
-
-    public QwenInputWindow(string cliPath, bool darkTheme, Action<string, bool> showTiming)
-    {
-        _cliPath = cliPath;
-
-        Text = "Stepler Qwen Input";
-        ShowInTaskbar = true;
-        FormBorderStyle = FormBorderStyle.Sizable;
-        MaximizeBox = true;
-        MinimizeBox = false;
-        ClientSize = new Size(520, 236);
-        MinimumSize = new Size(540, 220);
-        StartPosition = FormStartPosition.CenterScreen;
-        KeyPreview = true;
-
-        _input = new TextBox
-        {
-            AcceptsReturn = true,
-            AcceptsTab = true,
-            Multiline = true,
-            ScrollBars = ScrollBars.Vertical,
-            Location = new Point(12, 12),
-            Size = new Size(496, 144),
-            Font = new Font("Segoe UI", 10),
-            Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
-            AllowDrop = true,
-        };
-        _input.DragEnter += OnInputDragEnter;
-        _input.DragDrop += OnInputDragDrop;
-
-        var submitButton = Button("Отправить", 12, 194, Submit);
-        submitButton.Size = new Size(496, 30);
-        submitButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
-
-        _status = new Label
-        {
-            AutoSize = false,
-            Text = "Готово",
-            TextAlign = ContentAlignment.MiddleLeft,
-            Location = new Point(12, 164),
-            Size = new Size(496, 24),
-            Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
-        };
-
-        Controls.AddRange(new Control[]
-        {
-            _input,
-            submitButton,
-            _status,
-        });
-
-        _correction = new QwenInputCorrectionController(
-            _cliPath,
-            this,
-            _input,
-            SetStatus,
-            Program.SafeLog,
-            showTiming,
-            "qwen input");
-        KeyDown += OnQwenInputKeyDown;
-        ApplyTheme(darkTheme);
-    }
-
-    public void ApplyTheme(bool darkTheme)
-    {
-        ThemeApplier.Apply(this, ThemePalette.FromDarkTheme(darkTheme));
-    }
-
-    private void OnQwenInputKeyDown(object? sender, KeyEventArgs e)
-    {
-        if (!QwenInputCorrectionController.TryGetCorrectionMode(e.KeyCode, e.Control, out var mode))
-        {
-            return;
-        }
-
-        e.Handled = true;
-        e.SuppressKeyPress = true;
-        _correction.ApplyCorrection(mode);
-    }
-
-    private void OnInputDragEnter(object? sender, DragEventArgs e)
-    {
-        e.Effect = e.Data?.GetDataPresent(DataFormats.FileDrop) == true
-            ? DragDropEffects.Copy
-            : DragDropEffects.None;
-    }
-
-    private void OnInputDragDrop(object? sender, DragEventArgs e)
-    {
-        if (e.Data?.GetData(DataFormats.FileDrop) is not string[] paths || paths.Length == 0)
-        {
-            return;
-        }
-
-        var clientPoint = _input.PointToClient(new Point(e.X, e.Y));
-        var insertionPoint = _input.GetCharIndexFromPosition(clientPoint);
-        if (clientPoint.Y >= _input.ClientSize.Height - 4 && insertionPoint < _input.TextLength)
-        {
-            insertionPoint = _input.TextLength;
-        }
-
-        _input.Focus();
-        _input.SelectionStart = Math.Clamp(insertionPoint, 0, _input.TextLength);
-        _input.SelectedText = string.Join(Environment.NewLine, paths);
-        SetStatus(paths.Length == 1 ? "Путь файла вставлен" : $"Пути файлов вставлены: {paths.Length}");
-    }
-
-    private void Submit()
-    {
-        if (!File.Exists(_cliPath))
-        {
-            SetStatus("stepler-cli.exe не найден");
-            return;
-        }
-
-        var text = _input.Text;
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return;
-        }
-
-        var result = RunCli(new[] { "qwen-submit", "--text", text });
-        if (result.ExitCode == 0)
-        {
-            SetStatus("Отправлено в Qwen");
-            _input.Clear();
-        }
-        else
-        {
-            SetStatus("Qwen input-file не найден");
-        }
-    }
-
-    private CliResult RunCli(IEnumerable<string> arguments)
-    {
-        try
-        {
-            using var process = new Process();
-            process.StartInfo = new ProcessStartInfo
-            {
-                FileName = _cliPath,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-            foreach (var argument in arguments)
-            {
-                process.StartInfo.ArgumentList.Add(argument);
-            }
-
-            process.Start();
-            var stdout = process.StandardOutput.ReadToEnd();
-            var stderr = process.StandardError.ReadToEnd();
-            process.WaitForExit(5000);
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-                return new CliResult(1, stdout, "timeout");
-            }
-
-            if (!string.IsNullOrWhiteSpace(stderr))
-            {
-                Program.SafeLog($"qwen input cli stderr {stderr.Trim()}");
-            }
-            return new CliResult(process.ExitCode, stdout, stderr);
-        }
-        catch (Exception error)
-        {
-            Program.SafeLog($"qwen input cli error {error}");
-            return new CliResult(1, string.Empty, error.Message);
-        }
-    }
-
-    private void SetStatus(string text)
-    {
-        _status.Text = text;
-    }
-
-    private static Button Button(string text, int x, int y, Action action)
-    {
-        var button = new Button
-        {
-            Text = text,
-            Location = new Point(x, y),
-            Size = new Size(92, 30),
-        };
-        button.Click += (_, _) => action();
-        return button;
-    }
-
-    private readonly record struct CliResult(int ExitCode, string Stdout, string Stderr);
 }

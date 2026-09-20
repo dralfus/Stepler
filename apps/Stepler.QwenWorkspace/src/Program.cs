@@ -39,14 +39,19 @@ internal sealed class WorkspaceForm : Form
     private readonly string _qwenScriptPath;
     private readonly string _qwenWorkingDirectory;
     private readonly string[] _qwenArguments;
+    private readonly bool _perPromptMode;
+    private readonly bool _continueSession;
+    private readonly QwenPerPromptLaunchSettings _perPromptLaunchSettings;
     private readonly bool _darkTheme;
     private readonly SplitContainer _split;
     private readonly Panel _terminalHost;
+    private readonly RichTextBox? _streamOutput;
     private readonly TextBox _input;
     private readonly Label _status;
     private readonly Button _submitButton;
     private readonly QwenInputCorrectionController _correction;
     private readonly System.Windows.Forms.Timer _syncTimer;
+    private readonly QwenStreamJsonSession? _streamSession;
     private Process? _terminalProcess;
     private IntPtr _terminalHwnd;
     private nint _originalParent;
@@ -60,6 +65,9 @@ internal sealed class WorkspaceForm : Form
         _qwenScriptPath = Path.Combine(_baseDirectory, "scripts", "Stepler.Qwen.ps1");
         _qwenWorkingDirectory = options.WorkingDirectory;
         _qwenArguments = options.QwenArguments;
+        _perPromptMode = options.PerPrompt;
+        _continueSession = options.ContinueSession;
+        _perPromptLaunchSettings = options.PerPromptLaunchSettings;
         _darkTheme = options.DarkTheme;
 
         Text = "Stepler Qwen Workspace";
@@ -82,6 +90,25 @@ internal sealed class WorkspaceForm : Form
             Dock = DockStyle.Fill,
             BackColor = Color.Black,
         };
+        if (_perPromptMode)
+        {
+            _streamOutput = new RichTextBox
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                DetectUrls = true,
+                BorderStyle = BorderStyle.None,
+                Font = new Font("Segoe UI", 10),
+                BackColor = Color.Black,
+                ForeColor = Color.White,
+                Padding = new Padding(10),
+            };
+            _terminalHost.Controls.Add(_streamOutput);
+        }
+        else
+        {
+            _streamOutput = null;
+        }
         _split.Panel1.Controls.Add(_terminalHost);
 
         _input = new TextBox
@@ -105,6 +132,14 @@ internal sealed class WorkspaceForm : Form
             Program.SafeLog,
             showTiming: null,
             "qwen workspace");
+        _streamSession = _perPromptMode
+            ? new QwenStreamJsonSession(
+                _qwenWorkingDirectory,
+                _perPromptLaunchSettings,
+                _continueSession,
+                OnStreamOutput,
+                OnStreamStatusChanged)
+            : null;
 
         _submitButton = new Button
         {
@@ -137,7 +172,14 @@ internal sealed class WorkspaceForm : Form
         Shown += (_, _) =>
         {
             SetInitialSplitterDistance();
-            LaunchAndEmbedTerminal();
+            if (_perPromptMode)
+            {
+                LaunchStreamJsonSession();
+            }
+            else
+            {
+                LaunchAndEmbedTerminal();
+            }
         };
         Resize += (_, _) => ResizeEmbeddedTerminal();
         Move += (_, _) => ResizeEmbeddedTerminal();
@@ -207,6 +249,21 @@ internal sealed class WorkspaceForm : Form
         BeginInvoke(FocusInput);
     }
 
+    private void LaunchStreamJsonSession()
+    {
+        try
+        {
+            _streamSession?.Start();
+            SetStatus("Qwen per-prompt готов; введи prompt");
+            BeginInvoke(FocusInput);
+        }
+        catch (Exception error)
+        {
+            Program.SafeLog($"stream-json Qwen start failed type={error.GetType().Name}");
+            SetStatus("Не удалось запустить Qwen per-prompt");
+        }
+    }
+
     private void EmbedTerminal(IntPtr hwnd)
     {
         _terminalHwnd = hwnd;
@@ -265,6 +322,7 @@ internal sealed class WorkspaceForm : Form
 
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
+        _streamSession?.Dispose();
         if (_terminalHwnd == IntPtr.Zero)
         {
             return;
@@ -286,6 +344,12 @@ internal sealed class WorkspaceForm : Form
 
     private void Submit()
     {
+        if (_perPromptMode)
+        {
+            SubmitPerPrompt();
+            return;
+        }
+
         var text = _input.Text;
         if (string.IsNullOrWhiteSpace(text))
         {
@@ -340,6 +404,126 @@ internal sealed class WorkspaceForm : Form
         }
     }
 
+    private async void SubmitPerPrompt()
+    {
+        var text = _input.Text;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        if (_streamSession is null || !_streamSession.IsRunning)
+        {
+            SetStatus("Qwen per-prompt не запущен");
+            return;
+        }
+
+        _submitButton.Enabled = false;
+        SetStatus("Prompt отправляется в Qwen...");
+        try
+        {
+            await _streamSession.SendPromptAsync(text);
+            _input.Clear();
+            SetStatus("Prompt отправлен; ожидаем ответ Qwen");
+        }
+        catch (Exception error)
+        {
+            Program.SafeLog($"stream-json Qwen submit failed type={error.GetType().Name}");
+            _submitButton.Enabled = true;
+            SetStatus("Ошибка отправки prompt в Qwen");
+        }
+    }
+
+    private void OnStreamOutput(QwenStreamJsonOutput output)
+    {
+        if (IsDisposed || !IsHandleCreated)
+        {
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => OnStreamOutput(output));
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(output.Text))
+        {
+            _streamOutput?.AppendText(output.Text);
+            _streamOutput?.ScrollToCaret();
+        }
+
+        if (output.Type == "control_request"
+            && output.Subtype == "can_use_tool"
+            && !string.IsNullOrWhiteSpace(output.RequestId))
+        {
+            var toolName = string.IsNullOrWhiteSpace(output.ToolName)
+                ? "инструмент"
+                : output.ToolName;
+            var decision = MessageBox.Show(
+                this,
+                $"Qwen запрашивает разрешение на использование: {toolName}.\n\nРазрешить?",
+                "Разрешение Qwen",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+            _ = RespondToPermissionAsync(output.RequestId, decision == DialogResult.Yes);
+        }
+
+        if (output.Type == "result")
+        {
+            _submitButton.Enabled = true;
+            SetStatus(output.IsError
+                ? "Qwen завершил prompt с ошибкой"
+                : "Qwen завершил prompt; можно отправить следующий");
+            _streamOutput?.AppendText(Environment.NewLine);
+        }
+        else if (output.Type == "system" && !string.IsNullOrWhiteSpace(output.Subtype))
+        {
+            SetStatus($"Qwen: {output.Subtype}");
+        }
+    }
+
+    private async Task RespondToPermissionAsync(string requestId, bool allowed)
+    {
+        try
+        {
+            if (_streamSession is not null)
+            {
+                await _streamSession.RespondToPermissionAsync(requestId, allowed);
+            }
+        }
+        catch (Exception error)
+        {
+            Program.SafeLog($"stream-json Qwen permission response failed type={error.GetType().Name}");
+            SetStatus("Не удалось ответить на запрос Qwen");
+        }
+    }
+
+    private void OnStreamStatusChanged(string status)
+    {
+        if (IsDisposed || !IsHandleCreated)
+        {
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => OnStreamStatusChanged(status));
+            return;
+        }
+
+        if (status == "Qwen завершил работу")
+        {
+            _submitButton.Enabled = false;
+        }
+        else if (status == "Qwen: некорректный stream-json output")
+        {
+            _submitButton.Enabled = true;
+        }
+
+        SetStatus(status);
+    }
+
     private void OnInputDragEnter(object? sender, DragEventArgs e)
     {
         e.Effect = e.Data?.GetDataPresent(DataFormats.FileDrop) == true
@@ -381,6 +565,7 @@ internal sealed class WorkspaceForm : Form
         if (disposing)
         {
             _syncTimer.Dispose();
+            _streamSession?.Dispose();
         }
 
         base.Dispose(disposing);
@@ -394,6 +579,11 @@ internal sealed class WorkspaceForm : Form
         _split.BackColor = palette.Border;
         _split.Panel2.BackColor = palette.Window;
         _terminalHost.BackColor = Color.Black;
+        if (_streamOutput is not null)
+        {
+            _streamOutput.BackColor = palette.Input;
+            _streamOutput.ForeColor = palette.InputText;
+        }
         _input.BackColor = palette.Input;
         _input.ForeColor = palette.InputText;
         _input.BorderStyle = BorderStyle.FixedSingle;
@@ -442,12 +632,21 @@ internal sealed class WorkspaceForm : Form
 
 }
 
-internal sealed record WorkspaceOptions(string WorkingDirectory, bool DarkTheme, string[] QwenArguments)
+internal sealed record WorkspaceOptions(
+    string WorkingDirectory,
+    bool DarkTheme,
+    string[] QwenArguments,
+    bool PerPrompt,
+    bool ContinueSession,
+    QwenPerPromptLaunchSettings PerPromptLaunchSettings)
 {
     public static WorkspaceOptions Parse(string[] args)
     {
         var workingDirectory = Environment.GetEnvironmentVariable("STEPLER_QWEN_WORKDIR");
         var darkTheme = true;
+        var perPrompt = args.Any(arg => string.Equals(arg, "--per-prompt", StringComparison.OrdinalIgnoreCase));
+        var continueSession = false;
+        var launchSettings = QwenPerPromptLaunchSettings.Default;
         var qwenArguments = new List<string>();
 
         for (var index = 0; index < args.Length; index++)
@@ -464,6 +663,58 @@ internal sealed record WorkspaceOptions(string WorkingDirectory, bool DarkTheme,
                 continue;
             }
 
+            if (string.Equals(args[index], "--per-prompt", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (perPrompt && string.Equals(args[index], "--model", StringComparison.OrdinalIgnoreCase)
+                && index + 1 < args.Length)
+            {
+                launchSettings = launchSettings with { Model = args[++index] };
+                continue;
+            }
+
+            if (perPrompt && string.Equals(args[index], "--max-session-turns", StringComparison.OrdinalIgnoreCase)
+                && index + 1 < args.Length
+                && int.TryParse(args[++index], out var maxSessionTurns)
+                && maxSessionTurns > 0)
+            {
+                launchSettings = launchSettings with { MaxSessionTurns = maxSessionTurns };
+                continue;
+            }
+
+            if (perPrompt && string.Equals(args[index], "--max-tool-calls", StringComparison.OrdinalIgnoreCase)
+                && index + 1 < args.Length
+                && int.TryParse(args[++index], out var maxToolCalls)
+                && maxToolCalls > 0)
+            {
+                launchSettings = launchSettings with { MaxToolCalls = maxToolCalls };
+                continue;
+            }
+
+            if (perPrompt && string.Equals(args[index], "--max-wall-time", StringComparison.OrdinalIgnoreCase)
+                && index + 1 < args.Length
+                && !string.IsNullOrWhiteSpace(args[index + 1]))
+            {
+                launchSettings = launchSettings with { MaxWallTime = args[++index] };
+                continue;
+            }
+
+            if (perPrompt && string.Equals(args[index], "--max-subagent-depth", StringComparison.OrdinalIgnoreCase)
+                && index + 1 < args.Length
+                && int.TryParse(args[++index], out var maxSubagentDepth)
+                && maxSubagentDepth >= 0)
+            {
+                launchSettings = launchSettings with { MaxSubagentDepth = maxSubagentDepth };
+                continue;
+            }
+
+            if (perPrompt && string.Equals(args[index], "--continue", StringComparison.OrdinalIgnoreCase))
+            {
+                continueSession = true;
+            }
+
             qwenArguments.Add(args[index]);
         }
 
@@ -472,7 +723,13 @@ internal sealed record WorkspaceOptions(string WorkingDirectory, bool DarkTheme,
             workingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         }
 
-        return new WorkspaceOptions(workingDirectory, darkTheme, qwenArguments.ToArray());
+        return new WorkspaceOptions(
+            workingDirectory,
+            darkTheme,
+            qwenArguments.ToArray(),
+            perPrompt,
+            continueSession,
+            QwenPerPromptLaunchSettings.Normalize(launchSettings));
     }
 }
 

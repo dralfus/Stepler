@@ -15,5 +15,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\Stepler.Shared\QwenInputCorrectionController.cs" Link="QwenInputCorrectionController.cs" />
+    <Compile Include="..\Stepler.Shared\QwenStreamJsonProtocol.cs" Link="QwenStreamJsonProtocol.cs" />
   </ItemGroup>
 </Project>

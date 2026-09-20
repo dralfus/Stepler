@@ -14,12 +14,12 @@ Adapter contracts и продуктовый smoke проверяют разны�
   `cargo test -p stepler-platform-windows`;
 - hotkey/layout/tray lifecycle: ручной smoke через tray из `dist` или debug
   build, плюс проверка логов;
-- Qwen input/workspace: ручной smoke окна ввода, workspace attach/focus и
-  отправки текста;
+- Qwen Workspace: ручной smoke старого terminal режима и нового per-prompt
+  stream-json режима;
 - installer/release package: ручной install smoke из `SetupOutput`.
 
 Если меняется adapter policy или classifier, сначала должны пройти contract
-tests. Если меняется tray, installer, Qwen input/workspace или запуск процесса,
+tests. Если меняется tray, installer, Qwen Workspace или запуск процесса,
 нужен ручной smoke соответствующего продукта. Не добавлять большую матрицу
 ручных проверок без повторяющейся регрессии.
 
@@ -209,11 +209,15 @@ cargo run -p stepler-cli -- diagnose-focus --delay 3 --methods
 - выключить `Left/Right Ctrl`, проверить что одиночные Ctrl больше не переключают раскладку Stepler;
 - перезапустить tray, убедиться, что настройки сохранились;
 - файл настроек существует в `%APPDATA%\Stepler\settings.json`;
-- открыть `Qwen input...`, проверить ввод текста, `Pause`/`Ctrl+Pause`,
-  отображение результата P/CP и отправку в Qwen;
-- открыть `Qwen workspace`, проверить, что окно терминала прикрепилось,
-  фокус остается в Stepler Qwen input, а перезапуск Stepler не закрывает
-  существующую Qwen-сессию.
+- открыть `Qwen workspace`, проверить, что окно terminal прикрепилось,
+  фокус остается в нижнем поле Workspace, а перезапуск Stepler не закрывает
+  существующую Qwen-сессию;
+- открыть `Qwen workspace (per-prompt)...`, проверить запуск stream-json,
+  отправку русского prompt из нижнего поля, ответ в верхней панели и возможность
+  отправить следующий prompt после завершения первого;
+- открыть `Параметры запуска Qwen per-prompt...`, проверить сохранение модели и
+  лимитов, затем открыть `Qwen workspace (per-prompt, --continue)` и проверить,
+  что история продолжается. Отдельного пункта `Qwen input...` быть не должно.
 
 ## 10. Логи
 

@@ -239,6 +239,8 @@ struct UsageGroupKey {
     surface_kind: String,
     context_method: String,
     replacement_method: String,
+    profile: String,
+    algorithm_branch: String,
     trigger: String,
     selection_state: String,
 }
@@ -345,8 +347,6 @@ struct UsageAggregate {
     cold_n: usize,
     warm_n: usize,
     outcomes: BTreeMap<String, usize>,
-    profiles: BTreeSet<String>,
-    algorithm_branches: BTreeSet<String>,
     phases_ms: BTreeMap<String, u64>,
 }
 
@@ -364,9 +364,6 @@ impl UsageAggregate {
         } else if record.key.cold_warm == "warm" {
             self.warm_n += 1;
         }
-        self.profiles.insert(record.key.series.profile.clone());
-        self.algorithm_branches
-            .insert(record.key.series.algorithm_branch.clone());
         *self.outcomes.entry(record.outcome.clone()).or_default() += 1;
 
         if record.outcome == "Completed" {
@@ -413,8 +410,6 @@ impl UsageAggregate {
             "failure_rate": rate(self.failed, self.n),
             "retry_rate": rate(self.retried, self.n),
             "outcome_counts": self.outcomes,
-            "profiles": self.profiles,
-            "algorithm_branches": self.algorithm_branches,
             "phase_contribution": phase_contribution,
             "bottleneck_phase": bottleneck_phase,
         })
@@ -568,6 +563,8 @@ fn build_usage_report(source: &str) -> Result<Value, SnapshotError> {
             surface_kind: record.key.series.surface_kind.clone(),
             context_method: record.key.series.context_method.clone(),
             replacement_method: record.key.series.replacement_method.clone(),
+            profile: record.key.series.profile.clone(),
+            algorithm_branch: record.key.series.algorithm_branch.clone(),
             trigger: record.key.series.trigger.clone(),
             selection_state: record.key.series.selection_state.clone(),
         };
@@ -747,6 +744,8 @@ fn usage_group_key_json(key: &UsageGroupKey) -> Value {
         "surface_kind": key.surface_kind,
         "context_method": key.context_method,
         "replacement_method": key.replacement_method,
+        "profile": key.profile,
+        "algorithm_branch": key.algorithm_branch,
         "trigger": key.trigger,
         "selection_state": key.selection_state,
     })
@@ -1123,5 +1122,55 @@ mod tests {
         assert_eq!(pause["p95_ms"], 200);
         assert_eq!(pause["retry_rate"], 0.5);
         assert_eq!(pause["bottleneck_phase"], "apply");
+    }
+
+    #[test]
+    fn usage_report_separates_effective_profile_and_algorithm_branch() {
+        let source = [
+            event(
+                "1.0.test",
+                "unlabeled",
+                "warm",
+                100,
+                "Completed",
+                0,
+                &[("capture", 100)],
+            )
+            .replace(
+                "\"surface_kind\":\"FastBrowserEditor\"",
+                "\"application_id\":\"ChatGPT\",\"surface_kind\":\"FastBrowserEditor\"",
+            )
+            .replace("\"profile\":\"Fast\"", "\"profile\":\"Standard\""),
+            event(
+                "1.0.test",
+                "unlabeled",
+                "warm",
+                200,
+                "Completed",
+                0,
+                &[("apply", 200)],
+            )
+            .replace(
+                "\"surface_kind\":\"FastBrowserEditor\"",
+                "\"application_id\":\"ChatGPT\",\"surface_kind\":\"FastBrowserEditor\"",
+            )
+            .replace(
+                "\"algorithm_branch\":\"web-keyboard-line-selection\"",
+                "\"algorithm_branch\":\"web-keyboard-fast-chatgpt-word-line-selection\"",
+            ),
+        ]
+        .join("\n");
+
+        let report = build_usage_report(&source).expect("usage report should build");
+        let groups = report["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert!(groups.iter().any(|group| {
+            group["profile"] == "Standard"
+                && group["algorithm_branch"] == "web-keyboard-line-selection"
+        }));
+        assert!(groups.iter().any(|group| {
+            group["profile"] == "Fast"
+                && group["algorithm_branch"] == "web-keyboard-fast-chatgpt-word-line-selection"
+        }));
     }
 }

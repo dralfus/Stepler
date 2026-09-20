@@ -31,8 +31,8 @@ platform floor и причина, а не включается рискован�
 
 Для накопления реальной пользовательской статистики предусмотрен отдельный
 `stepler-cli performance-report`. Он включает `unlabeled` события, группирует
-их по build, безопасному `application_id`, surface, adapter, P/CP и selection
-state и не применяется как release acceptance. Новые события не содержат
+их по build, безопасному `application_id`, surface, adapter, effective profile,
+algorithm branch, P/CP и selection state и не применяется как release acceptance. Новые события не содержат
 заголовок окна, пользовательский текст или путь документа.
 
 ## Подтвержденные результаты

@@ -310,13 +310,14 @@ assessment в `blocked_by_destructive_outcomes`.
 Для повседневной работы не нужно вручную задавать `STEPLER_PERF_ENV` и собирать
 целевые повторы. После установки сборки с `performance-report` Stepler
 добавляет в новые performance events безопасный `application_id`, surface,
-adapter, P/CP, selection state, outcome и phase timings. В лог не попадают
+adapter, effective profile, algorithm branch, P/CP, selection state, outcome и
+phase timings. В лог не попадают
 заголовок окна, пользовательский текст или путь документа.
 
 Команда ниже читает обычный локальный JSONL, включая `unlabeled` события, и
 создает информационный отчет. Он группирует completed latency по build,
-application, surface, context/replacement adapter, P/CP и selection state;
-profile и algorithm branch показаны как детализация группы.
+application, surface, context/replacement adapter, effective profile, algorithm
+branch, P/CP и selection state.
 
 ```powershell
 & .\dist\Stepler\stepler-cli.exe performance-report `

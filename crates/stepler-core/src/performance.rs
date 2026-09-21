@@ -3,6 +3,19 @@ use crate::transaction::{OperationMetrics, OperationState};
 use crate::types::{ReplacementPlan, TelemetryTiming, TextContext};
 
 const UNKNOWN: &str = "unknown";
+pub const PERFORMANCE_SURFACE_ID_CHATGPT_CODEX: &str = "chatgpt_codex";
+pub const PERFORMANCE_SURFACE_ID_JIRA: &str = "jira";
+pub const PERFORMANCE_SURFACE_ID_CONFLUENCE: &str = "confluence";
+pub const PERFORMANCE_SURFACE_ID_FIREFOX_GENERIC: &str = "firefox_generic";
+pub const PERFORMANCE_SURFACE_ID_LEGACY: &str = "legacy_surface";
+
+pub const PERFORMANCE_SURFACE_IDS: &[&str] = &[
+    PERFORMANCE_SURFACE_ID_CHATGPT_CODEX,
+    PERFORMANCE_SURFACE_ID_JIRA,
+    PERFORMANCE_SURFACE_ID_CONFLUENCE,
+    PERFORMANCE_SURFACE_ID_FIREFOX_GENERIC,
+    PERFORMANCE_SURFACE_ID_LEGACY,
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerformanceEvent {
@@ -15,6 +28,7 @@ pub struct PerformanceEvent {
     pub application_id: String,
     pub surface_kind: String,
     pub surface_confidence: u8,
+    pub performance_surface_id: String,
     pub context_method: String,
     pub replacement_method: String,
     pub profile: String,
@@ -89,6 +103,9 @@ impl PerformanceEvent {
             surface_confidence: telemetry
                 .and_then(|value| value.surface_confidence)
                 .unwrap_or_default(),
+            performance_surface_id: telemetry
+                .and_then(|value| value.performance_surface_id.clone())
+                .unwrap_or_else(|| PERFORMANCE_SURFACE_ID_LEGACY.to_owned()),
             context_method: binding
                 .map(|value| value.context_method.as_str().to_owned())
                 .unwrap_or_else(|| UNKNOWN.to_owned()),
@@ -131,6 +148,10 @@ impl PerformanceEvent {
         fields.push(format!(
             "\"surface_confidence\":{}",
             self.surface_confidence
+        ));
+        fields.push(json_string_field(
+            "performance_surface_id",
+            &self.performance_surface_id,
         ));
         fields.push(json_string_field("context_method", &self.context_method));
         fields.push(json_string_field(
@@ -224,6 +245,7 @@ mod tests {
         context.telemetry = ContextTelemetry {
             surface_kind: Some("FastBrowserEditor".to_owned()),
             surface_confidence: Some(95),
+            performance_surface_id: Some("chatgpt_codex".to_owned()),
             profile: Some("Fast".to_owned()),
             capture_branch: Some("web-keyboard-line-selection".to_owned()),
             retry_count: 1,
@@ -260,11 +282,15 @@ mod tests {
 
         assert!(json.contains("performance_operation_v1"));
         assert!(json.contains("FastBrowserEditor"));
+        assert!(json.contains("\"performance_surface_id\":\"chatgpt_codex\""));
         assert!(json.contains("\"application_id\":\"ChatGPT\""));
         assert!(json.contains("\"retry_count\":1"));
         assert!(json.contains("\"phase\":\"capture\""));
         assert!(json.contains("\"selection_state\":\"selected\""));
         assert!(!json.contains("secret user text"));
         assert!(!json.contains("secret"));
+        assert!(!json.contains("https://private.example"));
+        assert!(!json.contains("document-path"));
+        assert!(!json.contains("clipboard payload"));
     }
 }

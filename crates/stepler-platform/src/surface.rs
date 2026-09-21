@@ -1,5 +1,9 @@
 use crate::{target_facts::target_facts, ForegroundTarget, ALL_METHOD_IDS};
-use stepler_core::{CorrectionMode, MethodId};
+use stepler_core::{
+    CorrectionMode, MethodId, PERFORMANCE_SURFACE_ID_CHATGPT_CODEX,
+    PERFORMANCE_SURFACE_ID_CONFLUENCE, PERFORMANCE_SURFACE_ID_FIREFOX_GENERIC,
+    PERFORMANCE_SURFACE_ID_JIRA, PERFORMANCE_SURFACE_ID_LEGACY,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SurfaceKind {
@@ -773,6 +777,25 @@ pub fn classify_surface(target: &ForegroundTarget) -> SurfaceClassification {
     }
 
     surface(SurfaceKind::Unknown, 10, vec!["no explicit surface match"])
+}
+
+pub fn performance_surface_id(target: &ForegroundTarget) -> &'static str {
+    let facts = target_facts(target);
+
+    if facts.is_chatgpt_codex_surface {
+        return PERFORMANCE_SURFACE_ID_CHATGPT_CODEX;
+    }
+    if facts.is_jira_surface {
+        return PERFORMANCE_SURFACE_ID_JIRA;
+    }
+    if facts.is_confluence_surface {
+        return PERFORMANCE_SURFACE_ID_CONFLUENCE;
+    }
+    if facts.is_firefox_browser_route {
+        return PERFORMANCE_SURFACE_ID_FIREFOX_GENERIC;
+    }
+
+    PERFORMANCE_SURFACE_ID_LEGACY
 }
 
 pub fn surface_allows_risky_method(kind: SurfaceKind, method: MethodId) -> bool {

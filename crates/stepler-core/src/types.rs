@@ -82,6 +82,7 @@ pub struct TelemetryTiming {
 pub struct ContextTelemetry {
     pub surface_kind: Option<String>,
     pub surface_confidence: Option<u8>,
+    pub performance_surface_id: Option<String>,
     pub profile: Option<String>,
     pub capture_branch: Option<String>,
     pub retry_count: u32,
@@ -93,6 +94,7 @@ impl Default for ContextTelemetry {
         Self {
             surface_kind: None,
             surface_confidence: None,
+            performance_surface_id: None,
             profile: None,
             capture_branch: None,
             retry_count: 0,

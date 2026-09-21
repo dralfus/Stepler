@@ -3,6 +3,7 @@ use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
+use stepler_core::{PERFORMANCE_SURFACE_IDS, PERFORMANCE_SURFACE_ID_LEGACY};
 
 const EVENT_NAME: &str = "performance_operation_v1";
 const WARM_COMPLETED_MINIMUM: usize = 30;
@@ -208,6 +209,7 @@ struct BaselineSeriesKey {
     environment_label: String,
     surface_kind: String,
     surface_confidence: u64,
+    performance_surface_id: String,
     context_method: String,
     replacement_method: String,
     profile: String,
@@ -237,6 +239,7 @@ struct UsageGroupKey {
     build_version: String,
     application_id: String,
     surface_kind: String,
+    performance_surface_id: String,
     context_method: String,
     replacement_method: String,
     profile: String,
@@ -561,6 +564,7 @@ fn build_usage_report(source: &str) -> Result<Value, SnapshotError> {
             build_version: record.key.series.build_version.clone(),
             application_id: record.application_id.clone(),
             surface_kind: record.key.series.surface_kind.clone(),
+            performance_surface_id: record.key.series.performance_surface_id.clone(),
             context_method: record.key.series.context_method.clone(),
             replacement_method: record.key.series.replacement_method.clone(),
             profile: record.key.series.profile.clone(),
@@ -640,11 +644,27 @@ fn parse_record(value: &Value, line: usize) -> Result<Record, SnapshotError> {
             format!("unsupported terminal outcome {outcome:?}"),
         ));
     }
+    let performance_surface_id = value
+        .get("performance_surface_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(PERFORMANCE_SURFACE_ID_LEGACY)
+        .to_owned();
+    if !PERFORMANCE_SURFACE_IDS.contains(&performance_surface_id.as_str()) {
+        return Err(invalid_event(
+            line,
+            format!(
+                "performance_surface_id must be one of {}, got {performance_surface_id:?}",
+                PERFORMANCE_SURFACE_IDS.join(", ")
+            ),
+        ));
+    }
     let series = BaselineSeriesKey {
         build_version,
         environment_label,
         surface_kind: field("surface_kind")?,
         surface_confidence,
+        performance_surface_id,
         context_method: field("context_method")?,
         replacement_method: field("replacement_method")?,
         profile: field("profile")?,
@@ -728,6 +748,7 @@ fn baseline_series_key_json(key: &BaselineSeriesKey) -> Value {
         "environment_label": key.environment_label,
         "surface_kind": key.surface_kind,
         "surface_confidence": key.surface_confidence,
+        "performance_surface_id": key.performance_surface_id,
         "context_method": key.context_method,
         "replacement_method": key.replacement_method,
         "profile": key.profile,
@@ -742,6 +763,7 @@ fn usage_group_key_json(key: &UsageGroupKey) -> Value {
         "build_version": key.build_version,
         "application_id": key.application_id,
         "surface_kind": key.surface_kind,
+        "performance_surface_id": key.performance_surface_id,
         "context_method": key.context_method,
         "replacement_method": key.replacement_method,
         "profile": key.profile,
@@ -1007,6 +1029,67 @@ mod tests {
 
         let snapshot = build_snapshot(&source).unwrap();
         assert_eq!(snapshot["groups"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn snapshot_separates_performance_surface_ids() {
+        let source = [
+            event("1.0.test", "home-win11", "warm", 10, "Completed", 0, &[]).replace(
+                "\"surface_kind\":\"FastBrowserEditor\"",
+                "\"performance_surface_id\":\"jira\",\"surface_kind\":\"FastBrowserEditor\"",
+            ),
+            event("1.0.test", "home-win11", "warm", 10, "Completed", 0, &[]).replace(
+                "\"surface_kind\":\"FastBrowserEditor\"",
+                "\"performance_surface_id\":\"confluence\",\"surface_kind\":\"FastBrowserEditor\"",
+            ),
+        ]
+        .join("\n");
+
+        let snapshot = build_snapshot(&source).expect("snapshot should build");
+        let groups = snapshot["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert!(groups
+            .iter()
+            .any(|group| group["performance_surface_id"] == "jira"));
+        assert!(groups
+            .iter()
+            .any(|group| group["performance_surface_id"] == "confluence"));
+    }
+
+    #[test]
+    fn usage_report_keeps_legacy_events_under_a_named_surface_id() {
+        let source = event("1.0.test", "unlabeled", "warm", 10, "Completed", 0, &[]);
+
+        let report = build_usage_report(&source).expect("legacy event should remain reportable");
+        assert_eq!(
+            report["groups"][0]["performance_surface_id"],
+            "legacy_surface"
+        );
+    }
+
+    #[test]
+    fn usage_report_separates_known_performance_surface_ids() {
+        let source = [
+            event("1.0.test", "unlabeled", "warm", 10, "Completed", 0, &[]).replace(
+                "\"surface_kind\":\"FastBrowserEditor\"",
+                "\"performance_surface_id\":\"jira\",\"surface_kind\":\"FastBrowserEditor\"",
+            ),
+            event("1.0.test", "unlabeled", "warm", 10, "Completed", 0, &[]).replace(
+                "\"surface_kind\":\"FastBrowserEditor\"",
+                "\"performance_surface_id\":\"confluence\",\"surface_kind\":\"FastBrowserEditor\"",
+            ),
+        ]
+        .join("\n");
+
+        let report = build_usage_report(&source).expect("usage report should build");
+        let groups = report["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert!(groups
+            .iter()
+            .any(|group| group["performance_surface_id"] == "jira"));
+        assert!(groups
+            .iter()
+            .any(|group| group["performance_surface_id"] == "confluence"));
     }
 
     #[test]

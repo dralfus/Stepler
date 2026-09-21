@@ -7,11 +7,11 @@ use stepler_core::{
     TelemetryTiming, TextContext, TextRange,
 };
 use stepler_platform::{
-    classify_surface, probe_plan_for, surface_policy_for, web_keyboard_profile_for_surface,
-    ApplyReplacementResult, ClipboardBackend, ClipboardFormatSnapshot, ClipboardSnapshot,
-    ForegroundControl, ForegroundProvider, ForegroundTarget, HotkeyListener, MethodProbe,
-    MethodResolver, PlatformError, SurfaceKind, TextContextProvider, TextReplacer,
-    WebKeyboardProfile,
+    classify_surface, performance_surface_id, probe_plan_for, surface_policy_for,
+    web_keyboard_profile_for_surface, ApplyReplacementResult, ClipboardBackend,
+    ClipboardFormatSnapshot, ClipboardSnapshot, ForegroundControl, ForegroundProvider,
+    ForegroundTarget, HotkeyListener, MethodProbe, MethodResolver, PlatformError, SurfaceKind,
+    TextContextProvider, TextReplacer, WebKeyboardProfile,
 };
 
 mod clipboard;
@@ -698,6 +698,7 @@ fn text_context() -> Result<TextContext, PlatformError> {
                 context.telemetry = ContextTelemetry {
                     surface_kind: Some(surface.kind.as_str().to_owned()),
                     surface_confidence: Some(surface.confidence),
+                    performance_surface_id: Some(performance_surface_id(&target).to_owned()),
                     profile: Some(profile.to_owned()),
                     capture_branch: Some(branch.to_owned()),
                     retry_count: u32::from(branch.contains("retry")),

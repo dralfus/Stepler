@@ -1,4 +1,6 @@
-use stepler_platform::{classify_surface, target_facts, ForegroundTarget, SurfaceKind};
+use stepler_platform::{
+    classify_surface, performance_surface_id, target_facts, ForegroundTarget, SurfaceKind,
+};
 
 #[test]
 fn facts_detect_rocket_chat_title_and_process() {
@@ -56,6 +58,60 @@ fn facts_detect_fast_browser_titles_without_turning_unknown_into_browser() {
             "{title}"
         );
     }
+}
+
+#[test]
+fn performance_surface_id_separates_known_browser_surfaces_without_leaking_title() {
+    let cases = [
+        ("Codex", Some("Codex"), "chatgpt_codex"),
+        ("ChatGPT", Some("chrome"), "chatgpt_codex"),
+        (
+            "[CTP-11796] GS-Labs JIRA - Google Chrome",
+            Some("chrome"),
+            "jira",
+        ),
+        (
+            "CVE - Chips - GS-Labs Wiki - Mozilla Firefox",
+            Some("firefox"),
+            "confluence",
+        ),
+        (
+            "Chips status - Mozilla Firefox",
+            Some("firefox"),
+            "firefox_generic",
+        ),
+        ("Mozilla Firefox", Some("firefox"), "firefox_generic"),
+    ];
+
+    for (title, process_name, expected) in cases {
+        let target = target(
+            if process_name == Some("firefox") {
+                "MozillaWindowClass"
+            } else {
+                "Chrome_WidgetWin_1"
+            },
+            if process_name == Some("firefox") {
+                "MozillaWindowClass"
+            } else {
+                "Chrome_WidgetWin_1"
+            },
+            process_name,
+            title,
+        );
+
+        assert_eq!(performance_surface_id(&target), expected, "{title}");
+    }
+
+    let unknown = target(
+        "Chrome_WidgetWin_1",
+        "Chrome_WidgetWin_1",
+        Some("chrome"),
+        "Private workspace title",
+    );
+    assert_eq!(performance_surface_id(&unknown), "legacy_surface");
+
+    let title_like_jira = target("CustomWindow", "CustomControl", Some("custom"), "Jira");
+    assert_eq!(performance_surface_id(&title_like_jira), "legacy_surface");
 }
 
 #[test]

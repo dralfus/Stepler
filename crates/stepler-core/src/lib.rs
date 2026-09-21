@@ -9,7 +9,11 @@ mod types;
 pub use engine::{build_replacement_plan, CorrectionError};
 pub use layout::{convert_layout_text, convert_selected_text};
 pub use log_event::{LogTrigger, OperationLogEvent};
-pub use performance::PerformanceEvent;
+pub use performance::{
+    PerformanceEvent, PERFORMANCE_SURFACE_IDS, PERFORMANCE_SURFACE_ID_CHATGPT_CODEX,
+    PERFORMANCE_SURFACE_ID_CONFLUENCE, PERFORMANCE_SURFACE_ID_FIREFOX_GENERIC,
+    PERFORMANCE_SURFACE_ID_JIRA, PERFORMANCE_SURFACE_ID_LEGACY,
+};
 pub use transaction::{
     OperationGate, OperationMetrics, OperationState, StageTiming, Transaction, TransactionError,
 };

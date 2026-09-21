@@ -1082,6 +1082,7 @@ fn ssh_remote_forwarded_performance_event(
         application_id: String::from("SshRemote"),
         surface_kind: String::from("SshRemote"),
         surface_confidence: 100,
+        performance_surface_id: String::from("legacy_surface"),
         context_method: String::from("ssh_terminal"),
         replacement_method: String::from("ssh_terminal"),
         profile: String::from("none"),

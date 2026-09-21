@@ -27,6 +27,10 @@ pub struct TargetFacts {
     pub is_whatsapp_desktop: bool,
     pub is_browser_like_technical_target: bool,
     pub is_fast_browser_title: bool,
+    pub is_chatgpt_codex_surface: bool,
+    pub is_jira_surface: bool,
+    pub is_confluence_surface: bool,
+    pub is_firefox_browser_route: bool,
     pub is_rocket_chat: bool,
     pub title_has_terminal_app_marker: bool,
 }
@@ -93,6 +97,15 @@ pub fn target_facts(target: &ForegroundTarget) -> TargetFacts {
             || title_contains(title, "gs-labs wiki")
             || title_contains(title, "chips")
             || title_contains(title, "codex"),
+        is_chatgpt_codex_surface: is_browser_editor_class
+            && (title_contains(title, "chatgpt")
+                || title_contains(title, "codex")
+                || process_eq(process, "ChatGPT")
+                || process_eq(process, "Codex")),
+        is_jira_surface: is_browser_editor_class && title_contains(title, "jira"),
+        is_confluence_surface: is_browser_editor_class
+            && (title_contains(title, "confluence") || title_contains(title, "gs-labs wiki")),
+        is_firefox_browser_route: is_browser_editor_class && process_eq(process, "firefox"),
         is_rocket_chat: process_eq(process, "Rocket.Chat")
             || title_contains(title, "rocket.chat")
             || title_contains(title, "gs.chat")

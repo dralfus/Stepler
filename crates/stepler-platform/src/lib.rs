@@ -7,8 +7,8 @@ pub use resolver::{
 };
 pub use surface::{
     classify_surface, default_app_policies, default_app_policy, default_probe_policies,
-    default_surface_policies, default_surface_policy, probe_plan_for, probe_policy_for,
-    split_preferences, surface_allows_risky_method, surface_policy_for,
+    default_surface_policies, default_surface_policy, performance_surface_id, probe_plan_for,
+    probe_policy_for, split_preferences, surface_allows_risky_method, surface_policy_for,
     surface_uses_fast_web_keyboard, surface_uses_rocket_web_keyboard,
     web_keyboard_profile_for_surface, MethodPreferences, ProbePlan, ProbePolicy,
     SurfaceClassification, SurfaceKind, SurfacePolicy, WebKeyboardProfile,

@@ -1197,12 +1197,15 @@ fn web_keyboard_captured_left_apply_allows_wrapped_list_tail_selection() {
 
 #[cfg(windows)]
 #[test]
-fn sticky_notes_scrolllock_prefers_current_line_selection() {
+fn browser_scrolllock_prefers_current_line_selection() {
     assert!(web_keyboard_prefers_line_context_for_scrolllock(
         SurfaceKind::StickyNotes
     ));
-    assert!(!web_keyboard_prefers_line_context_for_scrolllock(
+    assert!(web_keyboard_prefers_line_context_for_scrolllock(
         SurfaceKind::BrowserEditor
+    ));
+    assert!(web_keyboard_prefers_line_context_for_scrolllock(
+        SurfaceKind::FastBrowserEditor
     ));
 }
 

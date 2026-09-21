@@ -1910,7 +1910,10 @@ fn is_sticky_notes_context(context: &TextContext) -> bool {
 
 #[cfg(windows)]
 pub(super) fn web_keyboard_prefers_line_context_for_scrolllock(surface_kind: SurfaceKind) -> bool {
-    surface_kind == SurfaceKind::StickyNotes
+    matches!(
+        surface_kind,
+        SurfaceKind::BrowserEditor | SurfaceKind::FastBrowserEditor | SurfaceKind::StickyNotes
+    )
 }
 
 #[cfg(windows)]

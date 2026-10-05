@@ -469,9 +469,7 @@ fn begin_outlook_layout_change(
 }
 
 fn is_outlook_editable_focus_class(class_name: &str) -> bool {
-    class_name.eq_ignore_ascii_case("_WwG")
-        || class_name.eq_ignore_ascii_case("edit")
-        || class_name.to_ascii_lowercase().starts_with("richedit")
+    class_name.eq_ignore_ascii_case("_WwG") || is_supported_edit_class(class_name)
 }
 
 #[cfg(windows)]
@@ -662,6 +660,14 @@ mod tests {
         assert!(is_outlook_editable_focus_class("Edit"));
         assert!(!is_outlook_editable_focus_class("OutlookGrid"));
         assert!(!is_outlook_editable_focus_class("Button"));
+    }
+
+    #[test]
+    fn outlook_meeting_recombo_allows_language_controls() {
+        assert!(is_outlook_editable_focus_class("REComboBox20W"));
+        assert!(is_outlook_editable_focus_class("recombobox20w"));
+        assert!(!is_outlook_editable_focus_class("ComboBox"));
+        assert!(!is_outlook_editable_focus_class("REComboBoxUnknown"));
     }
 
     #[test]

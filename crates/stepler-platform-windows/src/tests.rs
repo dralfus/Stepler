@@ -1211,6 +1211,32 @@ fn browser_scrolllock_prefers_current_line_selection() {
 
 #[cfg(windows)]
 #[test]
+fn outlook_meeting_recombo_supports_pause_and_ctrl_pause() {
+    let target = ForegroundTarget {
+        app_class: String::from("rctrl_renwnd32"),
+        focused_class: String::from("REComboBox20W"),
+        title: String::from("Stepler regression appointment"),
+        process_name: Some(String::from("OUTLOOK")),
+        window_id: String::from("hwnd:1"),
+        control_id: String::from("hwnd:2"),
+    };
+    let probe = Win32EditMessagesMethod
+        .probe(&target)
+        .expect("Outlook meeting rich edit combo must expose Win32 text replacement");
+    let resolver = stepler_platform::MethodResolver::default();
+    for mode in [CorrectionMode::Pause, CorrectionMode::ScrollLock] {
+        let decision = resolver
+            .resolve_for_mode(&target, &[probe.clone()], mode)
+            .unwrap();
+        assert_eq!(decision.context_method, MethodId::Win32EditMessages);
+        assert_eq!(decision.replacement_method, MethodId::Win32EditMessages);
+    }
+    assert!(!is_supported_edit_class("ComboBox"));
+    assert!(!is_supported_edit_class("REComboBoxUnknown"));
+}
+
+#[cfg(windows)]
+#[test]
 fn web_keyboard_precise_range_apply_is_confluence_line_only() {
     assert!(web_keyboard_uses_precise_range_apply(
         "Security features - Chips - GS-Labs Wiki — Mozilla Firefox",

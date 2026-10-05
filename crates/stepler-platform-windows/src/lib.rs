@@ -872,7 +872,8 @@ fn foreground_control() -> Result<ForegroundControl, PlatformError> {
 
 fn is_supported_edit_class(class_name: &str) -> bool {
     let class_name = class_name.to_ascii_lowercase();
-    class_name == "edit" || class_name.starts_with("richedit")
+    // Outlook 2016 meeting fields expose this Rich Edit combo as the focused HWND.
+    class_name == "edit" || class_name.starts_with("richedit") || class_name == "recombobox20w"
 }
 
 fn is_word_target(target: &ForegroundTarget) -> bool {

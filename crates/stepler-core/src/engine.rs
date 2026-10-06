@@ -63,6 +63,9 @@ fn pause_range_with_sparse_fallback(
     range: TextRange,
 ) -> Result<TextRange, CorrectionError> {
     let expected = slice_by_range(text, range)?;
+    if let Some(component) = pause_path_component_range(text, caret, range) {
+        return Ok(component);
+    }
     if expected.trim().is_empty()
         || (!looks_like_filename_or_path_token(expected)
             && convert_layout_text(expected) != expected)
@@ -84,6 +87,33 @@ fn pause_range_with_sparse_fallback(
     }
 
     Ok(range)
+}
+
+fn pause_path_component_range(text: &str, caret: usize, range: TextRange) -> Option<TextRange> {
+    let token = text.get(range.start..range.end)?;
+    if !token.contains(['\\', '/']) || caret < range.start || caret > range.end {
+        return None;
+    }
+    let boundary = |ch: char| matches!(ch, '\\' | '/' | ':' | '\'' | '"') || ch.is_whitespace();
+    let left = text.get(range.start..caret)?;
+    let start = left
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| boundary(*ch))
+        .map_or(range.start, |(index, ch)| {
+            range.start + index + ch.len_utf8()
+        });
+    let right = text.get(caret..range.end)?;
+    let end = right
+        .char_indices()
+        .find(|(_, ch)| boundary(*ch))
+        .map_or(range.end, |(index, _)| caret + index);
+    // Explicit Pause may fix a Cyrillic path component, but must preserve the
+    // drive, other directories, quotes and filename rather than convert the path.
+    text.get(start..end)?
+        .chars()
+        .any(is_russian_layout_letter)
+        .then_some(TextRange::new(start, end))
 }
 
 fn looks_like_filename_or_path_token(text: &str) -> bool {

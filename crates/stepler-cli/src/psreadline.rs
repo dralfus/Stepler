@@ -360,6 +360,47 @@ mod tests {
     }
 
     #[test]
+    fn psreadline_pause_converts_only_cyrillic_path_component_at_caret() {
+        let text = r#""C:\Users\фдучунб\.ssh""#;
+        for prefix in [r#""C:\Users\фду"#, r#""C:\Users\фдучунб"#] {
+            let plan = PsReadLineMethod
+                .plan(PsReadLineRequest {
+                    mode: CorrectionMode::Pause,
+                    text_b64: encode_utf16le_base64(text),
+                    cursor_utf16: prefix.encode_utf16().count(),
+                    selection_start_utf16: None,
+                    selection_length_utf16: None,
+                })
+                .unwrap();
+            assert!(plan.json.contains("\"expected\":\"фдучунб\""));
+            assert!(plan.json.contains("\"replacement\":\"alexey,\""));
+            let result_b64 = encode_utf16le_base64(r#""C:\Users\alexey,\.ssh""#);
+            assert!(plan
+                .json
+                .contains(&format!("\"text_b64\":\"{result_b64}\"")));
+        }
+    }
+
+    #[test]
+    fn psreadline_pause_preserves_partial_path_selection() {
+        let text = r#""C:\Users\фдучунб\.ssh""#;
+        let plan = PsReadLineMethod
+            .plan(PsReadLineRequest {
+                mode: CorrectionMode::Pause,
+                text_b64: encode_utf16le_base64(text),
+                cursor_utf16: 17,
+                selection_start_utf16: Some(11),
+                selection_length_utf16: Some(6),
+            })
+            .unwrap();
+        let result_b64 = encode_utf16le_base64(r#""C:\Users\фlexey,\.ssh""#);
+        assert!(plan
+            .json
+            .contains(&format!("\"text_b64\":\"{result_b64}\"")));
+        assert!(plan.json.contains("\"expected\":\"дучунб\""));
+    }
+
+    #[test]
     fn psreadline_method_builds_selection_plan() {
         let text = "echo ghbdtn vbh";
         let plan = PsReadLineMethod

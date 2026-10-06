@@ -109,6 +109,31 @@ mod tests {
     }
 
     #[test]
+    fn pause_path_component_keeps_surrounding_path_unchanged() {
+        for (text, prefix) in [
+            (r#""C:\Users\фдучунб\.ssh""#, r#""C:\Users\фдучунб"#),
+            ("'/home/фдучунб/.ssh'", "'/home/фдучунб"),
+        ] {
+            let context = TextContext::new(text).with_caret(TextRange::caret(prefix.len()));
+            let plan = build_replacement_plan(&context, CorrectionMode::Pause).unwrap();
+            assert_eq!(plan.expected_before_text, "фдучунб");
+            assert_eq!(plan.replacement_text, "alexey,");
+            assert_eq!(plan.range.end, prefix.len());
+        }
+    }
+
+    #[test]
+    fn pause_does_not_pick_another_path_component() {
+        for text in [r#"C:\Users\alexey\.ssh"#, r#"C:\Users\фдучунб\.ssh"#] {
+            let context = TextContext::new(text).with_caret(TextRange::caret(text.len()));
+            assert_eq!(
+                build_replacement_plan(&context, CorrectionMode::Pause),
+                Err(CorrectionError::NoTextToReplace)
+            );
+        }
+    }
+
+    #[test]
     fn pause_returns_none_when_no_word_is_available() {
         let context = TextContext::new("   ").with_caret(TextRange::caret(3));
 

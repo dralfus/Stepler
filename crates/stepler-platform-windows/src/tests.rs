@@ -1262,6 +1262,59 @@ fn web_keyboard_precise_range_apply_is_confluence_line_only() {
 
 #[cfg(windows)]
 #[test]
+fn confluence_active_line_does_not_plan_over_clipboard_paragraph_breaks() {
+    for (source, mode, expected, replacement) in [
+        ("baremetal ilo\r\n", CorrectionMode::Pause, "ilo", "шдщ"),
+        ("ghbdtn\r\n", CorrectionMode::Pause, "ghbdtn", "привет"),
+        ("ghbdtn\r\n", CorrectionMode::ScrollLock, "ghbdtn", "привет"),
+    ] {
+        let context = web_keyboard_context(
+            "MozillaWindowClass",
+            "MozillaWindowClass",
+            1,
+            1,
+            "web-keyboard-confluence-active-line",
+            source.to_owned(),
+            false,
+        );
+        let plan = stepler_core::build_replacement_plan(&context, mode).unwrap();
+        assert_eq!(plan.expected_before_text, expected);
+        assert_eq!(plan.replacement_text, replacement);
+        assert!(!context.text_snapshot.contains(['\r', '\n']));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn confluence_active_line_requires_exact_selection_before_rebuilding() {
+    let context = web_keyboard_context(
+        "MozillaWindowClass",
+        "MozillaWindowClass",
+        1,
+        1,
+        "web-keyboard-confluence-active-line",
+        "baremetal ilo".to_owned(),
+        false,
+    );
+    let plan = stepler_core::build_replacement_plan(&context, CorrectionMode::Pause).unwrap();
+    assert_eq!(
+        confluence_active_line_replacement_text(&context, &plan, Some("baremetal ilo\r\n"))
+            .unwrap(),
+        "baremetal шдщ"
+    );
+    for selected in [
+        None,
+        Some("ilo"),
+        Some("baremetbaremetal ilo"),
+        Some("KEEP\tbaremetal ilo"),
+        Some("MDS PROD\r\nbaremetal ilo"),
+    ] {
+        assert!(confluence_active_line_replacement_text(&context, &plan, selected).is_err());
+    }
+}
+
+#[cfg(windows)]
+#[test]
 fn web_keyboard_captured_left_context_trims_trailing_line_breaks_before_planning() {
     let context = web_keyboard_context(
         "ApplicationFrameWindow",

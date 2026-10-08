@@ -409,6 +409,71 @@ impl WebKeyboardSelectionMethod {
                 ));
             }
 
+            if web_keyboard_is_confluence_like_title(&foreground_title) {
+                // Keep this exact selection until replacement. Reconstructing it
+                // with character arrows can cross paragraph and table boundaries.
+                select_web_line_left_context();
+                let mut copied = copy_web_keyboard_selected_text(
+                    &snapshot,
+                    timing.line_context_timeout,
+                    fast_profile,
+                    timing.clipboard_timeout,
+                );
+                if copied.is_none() {
+                    // A delayed clipboard response must not trigger a second
+                    // selection or navigation into the preceding paragraph.
+                    copied = copy_web_keyboard_selected_text(
+                        &snapshot,
+                        Duration::from_millis(450),
+                        fast_profile,
+                        timing.clipboard_timeout,
+                    );
+                }
+                let _ = restore_web_keyboard_clipboard(
+                    &snapshot,
+                    fast_profile,
+                    timing.clipboard_timeout,
+                );
+                let Some(text) = copied else {
+                    return Err(PlatformError::ReplacementUnavailableReason(String::from(
+                        "confluence_line_copy_unavailable",
+                    )));
+                };
+                let context = web_keyboard_context(
+                    app_class,
+                    focused_class,
+                    foreground,
+                    focused,
+                    "web-keyboard-confluence-active-line",
+                    text,
+                    false,
+                );
+                if context.text_snapshot.trim().is_empty()
+                    || web_keyboard_text_has_line_break(&context.text_snapshot)
+                    || stepler_core::build_replacement_plan(
+                        &context,
+                        if scrolllock_mode {
+                            CorrectionMode::ScrollLock
+                        } else {
+                            CorrectionMode::Pause
+                        },
+                    )
+                    .is_err()
+                {
+                    // A nonempty copied selection can be collapsed safely; never
+                    // extend it into the previous cell to look for more context.
+                    restore_web_line_left_context_caret();
+                    return Err(PlatformError::ReplacementUnavailableReason(String::from(
+                        "confluence_line_context_rejected",
+                    )));
+                }
+                append_hotkey_signal_log(&format!(
+                    "web_keyboard_capture branch=confluence_active_line len={}",
+                    context.text_snapshot.len()
+                ));
+                return Ok(context);
+            }
+
             if !scrolllock_mode && web_keyboard_uses_word_context_for_title(&foreground_title) {
                 select_web_line_left_context();
                 let copied = copy_web_keyboard_selected_text(
@@ -790,6 +855,45 @@ impl WebKeyboardSelectionMethod {
         if context.selection_range.is_some() {
             preflight_web_keyboard_selected_context(&context.control_id, &actual_before)?;
             send_web_keyboard_selected_replacement(&context.control_id, &plan.replacement_text)?;
+            return Ok(ApplyReplacementResult {
+                applied: true,
+                actual_before_text: Some(actual_before),
+                actual_after_text: Some(plan.replacement_text.clone()),
+                method: MethodId::WebKeyboardSelection.as_str().to_owned(),
+                retry_count: 0,
+                timings: Vec::new(),
+            });
+        }
+
+        if context
+            .control_id
+            .starts_with("web-keyboard-confluence-active-line:")
+        {
+            let snapshot = capture_clipboard_text_only()?;
+            let mut selected = copy_selected_text_checked_with_chord(
+                &snapshot,
+                &[VK_CONTROL],
+                VK_INSERT,
+                Duration::from_millis(650),
+            );
+            if selected.is_none() {
+                // Retry only the copy. Shift+Left here would extend an already
+                // active selection and may move into a different table cell.
+                selected = copy_selected_text_checked_with_chord(
+                    &snapshot,
+                    &[VK_CONTROL],
+                    VK_INSERT,
+                    Duration::from_millis(450),
+                );
+            }
+            let replacement =
+                confluence_active_line_replacement_text(context, plan, selected.as_deref());
+            let _ = restore_clipboard_text_only(&snapshot);
+            let replacement = replacement?;
+            if foreground_hwnd()? != expected_foreground {
+                return Err(PlatformError::PreflightFailed);
+            }
+            send_unicode_text(&replacement)?;
             return Ok(ApplyReplacementResult {
                 applied: true,
                 actual_before_text: Some(actual_before),
@@ -1465,6 +1569,9 @@ pub(super) fn web_keyboard_context(
 
 #[cfg(windows)]
 fn normalize_web_keyboard_context_text(control_prefix: &str, text: String) -> String {
+    if control_prefix == "web-keyboard-confluence-active-line" {
+        return text.trim_end_matches(['\r', '\n']).to_owned();
+    }
     if control_prefix != "web-keyboard-captured-left-selection" {
         return text;
     }
@@ -1914,6 +2021,25 @@ pub(super) fn web_keyboard_prefers_line_context_for_scrolllock(surface_kind: Sur
         surface_kind,
         SurfaceKind::BrowserEditor | SurfaceKind::FastBrowserEditor | SurfaceKind::StickyNotes
     )
+}
+
+#[cfg(windows)]
+pub(super) fn confluence_active_line_replacement_text(
+    context: &TextContext,
+    plan: &ReplacementPlan,
+    selected: Option<&str>,
+) -> Result<String, PlatformError> {
+    let selected = selected.ok_or(PlatformError::PreflightFailed)?;
+    if selected.trim_end_matches(['\r', '\n']) != context.text_snapshot
+        || web_keyboard_text_has_line_break(&context.text_snapshot)
+        || web_keyboard_text_has_line_break(&plan.replacement_text)
+        || slice_by_range(&context.text_snapshot, plan.range)
+            != Some(plan.expected_before_text.as_str())
+    {
+        return Err(PlatformError::PreflightFailed);
+    }
+    replace_range_text(&context.text_snapshot, plan.range, &plan.replacement_text)
+        .ok_or(PlatformError::PreflightFailed)
 }
 
 #[cfg(windows)]

@@ -1358,6 +1358,25 @@ fn copy_selected_text_checked_with_chord_and_clipboard_timeout(
     timeout: Duration,
     clipboard_timeout: Duration,
 ) -> Option<String> {
+    copy_selected_text_checked_with_sender(
+        snapshot,
+        modifiers,
+        key,
+        timeout,
+        clipboard_timeout,
+        send_key_chord_virtual,
+    )
+}
+
+#[cfg(windows)]
+fn copy_selected_text_checked_with_sender(
+    snapshot: &ClipboardSnapshot,
+    modifiers: &[u32],
+    key: u32,
+    timeout: Duration,
+    clipboard_timeout: Duration,
+    send_chord: fn(&[u32], u32),
+) -> Option<String> {
     let marker = format!(
         "__STEPLER_COPY_MARKER_{}__",
         snapshot.sequence_number.unwrap_or(0)
@@ -1366,7 +1385,7 @@ fn copy_selected_text_checked_with_chord_and_clipboard_timeout(
         .ok()?;
     release_modifier_keys();
     std::thread::sleep(Duration::from_millis(8));
-    send_key_chord_virtual(modifiers, key);
+    send_chord(modifiers, key);
     wait_for_clipboard_text_different_from_with_clipboard_timeout(
         &marker,
         timeout,

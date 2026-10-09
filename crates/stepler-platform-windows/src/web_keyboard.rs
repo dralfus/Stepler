@@ -420,13 +420,15 @@ impl WebKeyboardSelectionMethod {
                     timing.clipboard_timeout,
                 );
                 if copied.is_none() {
-                    // A delayed clipboard response must not trigger a second
-                    // selection or navigation into the preceding paragraph.
-                    copied = copy_web_keyboard_selected_text(
+                    // The editor may intercept Ctrl+Insert. Try standard Copy
+                    // on the same selection without extending it across cells.
+                    copied = copy_selected_text_checked_with_sender(
                         &snapshot,
+                        &[VK_CONTROL],
+                        VK_C,
                         Duration::from_millis(450),
-                        fast_profile,
                         timing.clipboard_timeout,
+                        send_key_chord,
                     );
                 }
                 let _ = restore_web_keyboard_clipboard(
@@ -877,13 +879,15 @@ impl WebKeyboardSelectionMethod {
                 Duration::from_millis(650),
             );
             if selected.is_none() {
-                // Retry only the copy. Shift+Left here would extend an already
-                // active selection and may move into a different table cell.
-                selected = copy_selected_text_checked_with_chord(
+                // Switch the copy shortcut, keeping the exact selection. A
+                // second Shift+Left could extend it into a different table cell.
+                selected = copy_selected_text_checked_with_sender(
                     &snapshot,
                     &[VK_CONTROL],
-                    VK_INSERT,
+                    VK_C,
                     Duration::from_millis(450),
+                    Duration::from_millis(450),
+                    send_key_chord,
                 );
             }
             let replacement =

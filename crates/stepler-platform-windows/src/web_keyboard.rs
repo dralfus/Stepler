@@ -369,9 +369,16 @@ impl WebKeyboardSelectionMethod {
         let fast_profile = web_keyboard_profile_is_fast(effective_profile);
         let rocket_fast = web_keyboard_profile_is_rocket(effective_profile);
         let allow_captured_left = web_keyboard_allows_captured_left_for_title(&foreground_title);
+        let confluence = web_keyboard_is_confluence_like_title(&foreground_title);
 
         for attempt in 0..2 {
-            let snapshot = capture_web_keyboard_clipboard(fast_profile, timing.clipboard_timeout)?;
+            let snapshot = if confluence {
+                // Keep every supported format so the final clipboard guard
+                // need not repair a text-only restoration after each probe.
+                capture_clipboard()?
+            } else {
+                capture_web_keyboard_clipboard(fast_profile, timing.clipboard_timeout)?
+            };
             let scrolllock_mode = active_correction_mode_is_scrolllock();
 
             let selected = copy_web_keyboard_selected_text(
@@ -409,7 +416,7 @@ impl WebKeyboardSelectionMethod {
                 ));
             }
 
-            if web_keyboard_is_confluence_like_title(&foreground_title) {
+            if confluence {
                 // Keep this exact selection until replacement. Reconstructing it
                 // with character arrows can cross paragraph and table boundaries.
                 select_web_line_left_context();
@@ -431,11 +438,7 @@ impl WebKeyboardSelectionMethod {
                         send_key_chord,
                     );
                 }
-                let _ = restore_web_keyboard_clipboard(
-                    &snapshot,
-                    fast_profile,
-                    timing.clipboard_timeout,
-                );
+                let _ = restore_clipboard(snapshot.clone());
                 let Some(text) = copied else {
                     return Err(PlatformError::ReplacementUnavailableReason(String::from(
                         "confluence_line_copy_unavailable",
@@ -871,7 +874,7 @@ impl WebKeyboardSelectionMethod {
             .control_id
             .starts_with("web-keyboard-confluence-active-line:")
         {
-            let snapshot = capture_clipboard_text_only()?;
+            let snapshot = capture_clipboard()?;
             let mut selected = copy_selected_text_checked_with_chord(
                 &snapshot,
                 &[VK_CONTROL],
@@ -892,7 +895,7 @@ impl WebKeyboardSelectionMethod {
             }
             let replacement =
                 confluence_active_line_replacement_text(context, plan, selected.as_deref());
-            let _ = restore_clipboard_text_only(&snapshot);
+            let _ = restore_clipboard(snapshot);
             let replacement = replacement?;
             if foreground_hwnd()? != expected_foreground {
                 return Err(PlatformError::PreflightFailed);
